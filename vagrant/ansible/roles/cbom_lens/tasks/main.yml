@@ -1,0 +1,148 @@
+---
+# CBOM-Lens role: install CZERTAINLY CBOM-Lens active network scanner
+# Go-based tool that probes TLS/SSH endpoints via nmap and produces CycloneDX CBOM JSON
+#
+# Caching: saves ~3 min on cold-builds after the first.
+# Cached binary lives at `{{ software_source_linux }}/scanner-cache/cbom-lens.bin`
+# (host: `vagrant/resources/software/scanner-cache/cbom-lens.bin`). First cold-build
+# fetches Go, clones, builds, AND saves the binary to the cache. Subsequent builds
+# just copy from cache.
+
+- name: Create CBOM-Lens directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/cbom-lens
+    - /opt/cbom-lens/output
+
+- name: Check if CBOM-Lens binary is already present
+  ansible.builtin.stat:
+    path: /opt/cbom-lens/cbom-lens
+  register: cbom_lens_binary
+
+- name: Check for cached CBOM-Lens binary
+  ansible.builtin.stat:
+    path: "{{ software_source_linux }}/scanner-cache/cbom-lens.bin"
+  register: cbom_lens_cache
+  when:
+    - not cbom_lens_binary.stat.exists
+    - software_source_linux is defined
+
+- name: Restore CBOM-Lens from cache
+  ansible.builtin.copy:
+    src: "{{ software_source_linux }}/scanner-cache/cbom-lens.bin"
+    dest: /opt/cbom-lens/cbom-lens
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - not cbom_lens_binary.stat.exists
+    - software_source_linux is defined
+    - cbom_lens_cache.stat.exists | default(false)
+  register: cbom_lens_restored
+
+- name: Install nmap (required by CBOM-Lens at runtime)
+  ansible.builtin.apt:
+    name: nmap
+    state: present
+    update_cache: true
+
+# Go toolchain install — runs regardless of cbom-lens binary cache state,
+# because downstream roles (e.g. cloudflare_pqc) depend on Go being present.
+# The version-check guard below keeps it idempotent across re-provisions.
+- name: Check if Go 1.25.6 is installed
+  ansible.builtin.command:
+    cmd: /usr/local/go/bin/go version
+  register: go_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Check for staged Go 1.25.6 tarball in local software cache
+  ansible.builtin.stat:
+    path: "{{ software_source_linux }}/go1.25.6.linux-amd64.tar.gz"
+  register: go_local
+  when:
+    - go_version_check.rc != 0 or 'go1.25.6' not in (go_version_check.stdout | default(''))
+    - software_source_linux is defined
+
+- name: Copy Go 1.25.6 tarball from local cache
+  ansible.builtin.copy:
+    src: "{{ software_source_linux }}/go1.25.6.linux-amd64.tar.gz"
+    dest: /tmp/go1.25.6.linux-amd64.tar.gz
+    remote_src: true
+    mode: "0644"
+  when:
+    - go_version_check.rc != 0 or 'go1.25.6' not in (go_version_check.stdout | default(''))
+    - software_source_linux is defined
+    - go_local.stat.exists | default(false)
+
+- name: Download Go 1.25.6 from upstream
+  # SHA256 source: https://go.dev/dl/?mode=json&include=all (go1.25.6.linux-amd64.tar.gz)
+  ansible.builtin.get_url:
+    url: https://go.dev/dl/go1.25.6.linux-amd64.tar.gz
+    dest: /tmp/go1.25.6.linux-amd64.tar.gz
+    mode: "0644"
+    checksum: "sha256:f022b6aad78e362bcba9b0b94d09ad58c5a70c6ba3b7582905fababf5fe0181a"
+  when:
+    - go_version_check.rc != 0 or 'go1.25.6' not in (go_version_check.stdout | default(''))
+    - software_source_linux is not defined or not (go_local.stat.exists | default(false))
+
+- name: Remove old Go installation
+  ansible.builtin.file:
+    path: /usr/local/go
+    state: absent
+  when:
+    - go_version_check.rc != 0 or 'go1.25.6' not in (go_version_check.stdout | default(''))
+
+- name: Extract Go 1.25.6
+  ansible.builtin.unarchive:
+    src: /tmp/go1.25.6.linux-amd64.tar.gz
+    dest: /usr/local
+    remote_src: true
+  when:
+    - go_version_check.rc != 0 or 'go1.25.6' not in (go_version_check.stdout | default(''))
+
+# Pinned to main (HEAD as of 2026-05-26) — update via 'git ls-remote' when bumping
+- name: Clone CBOM-Lens repository
+  ansible.builtin.git:
+    repo: https://github.com/CZERTAINLY/CBOM-Lens.git
+    dest: /opt/cbom-lens/src
+    version: 3289db269b5067af24a8901bdadf1a60d812aaaf
+    update: false
+  when:
+    - not cbom_lens_binary.stat.exists
+    - not (cbom_lens_restored.changed | default(false))
+
+- name: Build CBOM-Lens binary
+  ansible.builtin.command:
+    cmd: /usr/local/go/bin/go build -o /opt/cbom-lens/cbom-lens ./cmd/cbom-lens
+    chdir: /opt/cbom-lens/src
+    creates: /opt/cbom-lens/cbom-lens
+  environment:
+    GOPATH: /opt/cbom-lens/go
+    GOCACHE: /opt/cbom-lens/go-cache
+    PATH: "/usr/local/go/bin:{{ ansible_env.PATH }}"
+  when:
+    - not cbom_lens_binary.stat.exists
+    - not (cbom_lens_restored.changed | default(false))
+
+- name: Save built CBOM-Lens binary to cache (for next cold-build)
+  ansible.builtin.copy:
+    src: /opt/cbom-lens/cbom-lens
+    dest: "{{ software_source_linux }}/scanner-cache/cbom-lens.bin"
+    remote_src: true
+    mode: "0644"
+  when:
+    - not cbom_lens_binary.stat.exists
+    - not (cbom_lens_restored.changed | default(false))
+    - software_source_linux is defined
+  ignore_errors: true
+
+- name: Display CBOM-Lens status
+  ansible.builtin.debug:
+    msg: "CBOM-Lens installed at /opt/cbom-lens/cbom-lens — run: /opt/cbom-lens/cbom-lens scan -t {{ lab_subnet_cidr | default('192.168.56.0/24') }}"

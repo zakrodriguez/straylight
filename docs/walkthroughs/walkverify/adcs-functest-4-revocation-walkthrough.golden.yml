@@ -1,0 +1,438 @@
+lab: adcs-functest-4-revocation-walkthrough
+profile: ad-cs-two-tier
+parameters: {}
+normalizers:
+  serial:
+    pattern: '[Ss]erial\s*[Nn]umber:\s*[0-9A-Fa-f]+'
+    placeholder: <SERIAL>
+steps:
+- step: host-connectivity-precheck
+  host: lab
+  command: 'vagrant status dc1 issueca manage1 | grep -E ''^(dc1|issueca|manage1)
+    ''
+
+    # Expected: all three show "running"'
+  rc: 0
+  expect:
+  - running
+  strict: false
+  captured: 'dc1                       running (virtualbox)
+
+    issueca                   running (virtualbox)
+
+    manage1                   running (virtualbox)
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: setup-ca
+  host: issueca
+  command: '$CA = "ISSUECA.yourlab.local\YOURLAB-Issuing-CA"
+
+    $Work = "C:\ProgramData\adcs-functest"
+
+    New-Item -Path $Work -ItemType Directory -Force | Out-Null
+
+    Set-Location $Work'
+  rc: 0
+  expect: []
+  strict: false
+  captured: '[lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: setup-client
+  host: manage1
+  command: '$Work = "C:\ProgramData\adcs-functest"
+
+    New-Item -Path $Work -ItemType Directory -Force | Out-Null
+
+    Set-Location $Work'
+  rc: 0
+  expect: []
+  strict: false
+  captured: '[lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: resolve-cert-ids
+  host: issueca
+  command: '$ids = Get-Content "$Work\functest-cert-ids.txt" | ConvertFrom-Json
+
+    Write-Host "RequestID=$($ids.RequestId) SerialNumber=$($ids.SerialNumber)"'
+  rc: 0
+  expect:
+  - RequestID=
+  strict: false
+  captured: 'RequestID=600 SerialNumber=3A000002582AFF81DF5485F5F4000000000258
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: preflight-ca
+  host: issueca
+  command: "certutil -config $CA -view `\n    -restrict \"RequestID=$RequestId\" `\n\
+    \    -out \"RequestID,Disposition,DispositionMessage,SerialNumber\"\n# Expected:\n\
+    #   Request Disposition: 0x14 (20) -- Issued\n#   Serial Number: \"$SerialNumber\""
+  rc: 0
+  expect:
+  - 0x14 \(20\) -- Issued
+  strict: false
+  captured: "Schema:\n  Column Name                   Localized Name             \
+    \   Type    MaxLength\n  ----------------------------  ----------------------------\
+    \  ------  ---------\n  RequestID                     Issued Request ID      \
+    \       Long    4 -- Indexed\n  Request.Disposition           Request Disposition\
+    \           Long    4 -- Indexed\n  Request.DispositionMessage    Request Disposition\
+    \ Message   String  8192\n  SerialNumber                  Serial Number      \
+    \           String  128 -- Indexed\n\nRow 1:\n  Issued Request ID: 0x258 (600)\n\
+    \  Request Disposition: 0x14 (20) -- Issued\n  Request Disposition Message: \"\
+    Issued\"\n  Serial Number: \"3a000002582aff81df5485f5f4000000000258\"\n\nMaximum\
+    \ Row Index: 1\n\n1 Rows\n   4 Row Properties, Total Size = 96, Max Size = 76,\
+    \ Ave Size = 24\n   0 Request Attributes, Total Size = 0, Max Size = 0, Ave Size\
+    \ = 0\n   0 Certificate Extensions, Total Size = 0, Max Size = 0, Ave Size = 0\n\
+    \   4 Total Fields, Total Size = 96, Max Size = 76, Ave Size = 24\nCertUtil: -view\
+    \ command completed successfully.\n[lab_profile] active: ad-cs-two-tier (5 VMs,\
+    \ source=lab_profile)\n"
+- step: stage-cert
+  host: manage1
+  command: 'Test-Path "$Work\functest.cer"
+
+    # Expected: True'
+  rc: 0
+  expect:
+  - 'True'
+  strict: false
+  captured: 'True
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: baseline-verify
+  host: manage1
+  command: "certutil -verify -urlfetch \"$Work\\functest.cer\" |\n    Select-String\
+    \ -Pattern 'Revocation Status:|completed successfully|Failed'\n# Expected: CertUtil:\
+    \ -verify command completed successfully."
+  rc: 0
+  expect:
+  - completed successfully
+  strict: false
+  captured: "\n  Failed \"AIA\" Time: 0 (null)\n  Failed \"AIA\" Time: 0 (null)\n\
+    CertUtil: -verify command completed successfully.\n\n\n[lab_profile] active: ad-cs-two-tier\
+    \ (5 VMs, source=lab_profile)\n"
+- step: revoke-cert
+  host: issueca
+  command: 'certutil -config $CA -revoke $SerialNumber 4
+
+    # Expected (the -revoke command reports only success; the new Revoked
+
+    # disposition is confirmed in the next step''s CA-DB view):
+
+    #   CertUtil: -revoke command completed successfully.'
+  rc: 0
+  expect:
+  - completed successfully
+  strict: false
+  captured: 'Revoking "3a000002582aff81df5485f5f4000000000258" -- Reason: Superseded
+
+    CertUtil: -revoke command completed successfully.
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: confirm-revoked
+  host: issueca
+  command: "certutil -config $CA -view `\n    -restrict \"RequestID=$RequestId\" `\n\
+    \    -out \"RequestID,Disposition,DispositionMessage,RevokedReason,RevokedWhen,SerialNumber\"\
+    \n# Expected:\n#   Request Disposition: 0x15 (21) -- Revoked\n#   Request Disposition\
+    \ Message: \"Revoked by ...\"\n#   Revocation Reason: 0x4 -- Reason: Superseded\n\
+    #   Revocation Date: <now>\n#   Serial Number: \"$SerialNumber\""
+  rc: 0
+  expect:
+  - 0x15 \(21\) -- Revoked
+  - 'Reason: Superseded'
+  strict: false
+  captured: "Schema:\n  Column Name                   Localized Name             \
+    \   Type    MaxLength\n  ----------------------------  ----------------------------\
+    \  ------  ---------\n  RequestID                     Issued Request ID      \
+    \       Long    4 -- Indexed\n  Request.Disposition           Request Disposition\
+    \           Long    4 -- Indexed\n  Request.DispositionMessage    Request Disposition\
+    \ Message   String  8192\n  Request.RevokedReason         Revocation Reason  \
+    \           Long    4\n  Request.RevokedWhen           Revocation Date       \
+    \        Date    8\n  SerialNumber                  Serial Number            \
+    \     String  128 -- Indexed\n\nRow 1:\n  Issued Request ID: 0x258 (600)\n  Request\
+    \ Disposition: 0x15 (21) -- Revoked\n  Request Disposition Message: \"Revoked\
+    \ by ISSUECA\\vagrant\"\n  Revocation Reason: 0x4 -- Reason: Superseded\n  Revocation\
+    \ Date: 7/11/2026 9:35 PM\n  Serial Number: \"3a000002582aff81df5485f5f4000000000258\"\
+    \n\nMaximum Row Index: 1\n\n1 Rows\n   6 Row Properties, Total Size = 148, Max\
+    \ Size = 76, Ave Size = 24\n   0 Request Attributes, Total Size = 0, Max Size\
+    \ = 0, Ave Size = 0\n   0 Certificate Extensions, Total Size = 0, Max Size = 0,\
+    \ Ave Size = 0\n   6 Total Fields, Total Size = 148, Max Size = 76, Ave Size =\
+    \ 24\nCertUtil: -view command completed successfully.\n[lab_profile] active: ad-cs-two-tier\
+    \ (5 VMs, source=lab_profile)\n"
+- step: force-crl-publish
+  host: issueca
+  command: 'certutil -CRL
+
+    # Distribute the freshly-published CRL to the CDP (web1) so relying parties see
+    it.
+
+    net use \\web1.yourlab.local\PKI$ /user:vagrant vagrant | Out-Null
+
+    Copy-Item ''C:\Windows\System32\CertSrv\CertEnroll\*.crl'' ''\\web1.yourlab.local\PKI$\crl\''
+    -Force
+
+    net use \\web1.yourlab.local\PKI$ /delete /y | Out-Null
+
+    # Expected output (truncated):
+
+    #   CertUtil: -CRL command completed successfully.'
+  rc: 0
+  expect:
+  - completed successfully
+  strict: false
+  captured: 'CertUtil: -CRL command completed successfully.
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: list-crl-files
+  host: issueca
+  command: "Get-ChildItem 'C:\\Windows\\System32\\CertSrv\\CertEnroll\\*.crl' |\n\
+    \    Sort-Object LastWriteTime -Descending |\n    Select-Object -First 4 Name,\
+    \ Length, LastWriteTime\n# Expected: 1-2 .crl files with LastWriteTime within\
+    \ the last minute.\n# Typically:\n#   YOURLAB-Issuing-CA.crl       (full / base\
+    \ CRL)\n#   YOURLAB-Issuing-CA+.crl      (delta CRL; the + is literal)"
+  rc: 0
+  expect:
+  - YOURLAB-Issuing-CA.crl
+  strict: false
+  captured: "\nName                    Length LastWriteTime       \n----         \
+    \           ------ -------------       \nYOURLAB-Issuing-CA+.crl   1199 7/11/2026\
+    \ 9:36:48 PM\nYOURLAB-Issuing-CA.crl    1257 7/11/2026 9:36:48 PM\n\n\n[lab_profile]\
+    \ active: ad-cs-two-tier (5 VMs, source=lab_profile)\n"
+- step: crl-metadata-check
+  host: issueca
+  command: "certutil -dump 'C:\\Windows\\System32\\CertSrv\\CertEnroll\\YOURLAB-Issuing-CA.crl'\
+    \ > \"$Work\\latest-crl-dump.txt\"\n\n# The revoked SerialNumber appears in the\
+    \ dump\nSelect-String -Path \"$Work\\latest-crl-dump.txt\" -Pattern $SerialNumber\n\
+    # Expected: a line like  Serial Number: 210000000C...\n\nSelect-String -Path \"\
+    $Work\\latest-crl-dump.txt\" `\n    -Pattern 'Issuer:|CN=|This Update:|Next Update:|CRL\
+    \ Number:|Signature Algorithm|Algorithm ObjectId'\n# Expected:\n#   Issuer:\n\
+    #       CN=YOURLAB-Issuing-CA, DC=yourlab, DC=local\n#   This Update: <now>\n\
+    #   Next Update: <now + 26 weeks>   (per lab CRLPeriod)\n#   CRL Number: 0x...\
+    \                (monotonic across publications)\n#   Signature Algorithm:\n#\
+    \       Algorithm ObjectId: 1.2.840.113549.1.1.11 sha256RSA"
+  rc: 0
+  expect:
+  - YOURLAB-Issuing-CA
+  - sha256RSA
+  strict: false
+  captured: '
+
+    latest-crl-dump.txt:17:  <SERIAL>
+
+    latest-crl-dump.txt:3:Signature Algorithm:
+
+    latest-crl-dump.txt:4:    Algorithm ObjectId: 1.2.840.113549.1.1.11 sha256RSA
+
+    latest-crl-dump.txt:7:Issuer:
+
+    latest-crl-dump.txt:8:    CN=YOURLAB-Issuing-CA
+
+    latest-crl-dump.txt:97:Signature Algorithm:
+
+    latest-crl-dump.txt:98:    Algorithm ObjectId: 1.2.840.113549.1.1.11 sha256RSA
+
+
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: clear-url-cache
+  host: manage1
+  command: '# Clear CRL cache
+
+    certutil -urlcache crl delete
+
+    # Expected: a list of deleted cached CRL files, ending in
+
+    #   CertUtil: -URLCache command completed successfully.
+
+
+    # Clear AIA cache (cert files for chain building)
+
+    certutil -urlcache aia delete
+
+    # Expected: similar deletion list
+
+
+    # Optional: clear OCSP cache too. straylight doesn''t run an Online
+
+    # Responder bound to issueca, but if you ever add one this is the
+
+    # command:
+
+    # certutil -urlcache ocsp delete'
+  rc: 0
+  expect:
+  - completed successfully
+  strict: false
+  captured: 'WinINet Cache entries deleted: 0
+
+
+    http://pki.yourlab.local/crl/YOURLAB-Issuing-CA.crl
+
+
+    http://ctldl.windowsupdate.com/msdownload/update/v3/static/trustedr/en/disallowedcertstl.cab
+
+
+    http://ctldl.windowsupdate.com/msdownload/update/v3/static/trustedr/en/authrootstl.cab
+
+
+    http://pki.yourlab.local/crl/YOURLAB-Root-CA.crl
+
+
+    http://pki.yourlab.local/crl/YOURLAB-Issuing-CA+.crl
+
+
+    WinHttp Cache entries deleted: 5
+
+
+    CertUtil: -URLCache command completed successfully.
+
+    WinHttp Cache entries deleted: 0
+
+
+    CertUtil: -URLCache command completed successfully.
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: reverify-revoked
+  host: manage1
+  command: "certutil -verify -urlfetch \"$Work\\functest.cer\" > \"$Work\\functest-verify-after.txt\"\
+    \ 2>&1\nGet-Content \"$Work\\functest-verify-after.txt\" |\n    Select-String\
+    \ -Pattern 'REVOKED|CRYPT_E_REVOKED|URL =|HTTPStatus|completed|Failed|Error'"
+  rc: 0
+  expect:
+  - CERT_TRUST_IS_REVOKED
+  - CRYPT_E_REVOKED
+  strict: false
+  captured: "\nChainContext.dwErrorStatus = CERT_TRUST_IS_REVOKED (0x4)\nSimpleChain.dwErrorStatus\
+    \ = CERT_TRUST_IS_REVOKED (0x4)\nCertContext[0][0]: dwInfoStatus=102 dwErrorStatus=4\n\
+    \  Element.dwErrorStatus = CERT_TRUST_IS_REVOKED (0x4)\n  Failed \"AIA\" Time:\
+    \ 0 (null)\n    Error retrieving URL: Not found (404). 0x80190194 (-2145844844\
+    \ HTTP_E_STATUS_NOT_FOUND)\nCertContext[0][1]: dwInfoStatus=102 dwErrorStatus=0\n\
+    \  Failed \"AIA\" Time: 0 (null)\n    Error retrieving URL: Not found (404). 0x80190194\
+    \ (-2145844844 HTTP_E_STATUS_NOT_FOUND)\nCertContext[0][2]: dwInfoStatus=10c dwErrorStatus=0\n\
+    The certificate is revoked. 0x80092010 (-2146885616 CRYPT_E_REVOKED)\nCertificate\
+    \ is REVOKED\nLeaf certificate is REVOKED (Reason=4)\nCertUtil: -verify command\
+    \ completed successfully.\n\n\n[lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)\n"
+- step: confirm-revoked-diff
+  host: manage1
+  command: "# (Run after Step 0 baseline; here, just re-run)\ncertutil -verify -urlfetch\
+    \ \"$Work\\functest.cer\" 2>&1 |\n    Out-String |\n    Tee-Object -FilePath \"\
+    $Work\\functest-verify-after.txt\" |\n    Select-String -Pattern 'CRYPT_E_REVOKED|REVOKED'\
+    \ |\n    Format-List\n# Expected (Server 2025 output):\n#   The certificate is\
+    \ revoked. 0x80092010 (-2146885616 CRYPT_E_REVOKED)\n#   Leaf certificate is REVOKED\
+    \ (Reason=4)"
+  rc: 0
+  expect:
+  - CRYPT_E_REVOKED
+  - is REVOKED
+  strict: false
+  captured: "\n\nIgnoreCase : True\nLineNumber : 1\nLine       : Issuer:\n       \
+    \          CN=YOURLAB-Issuing-CA\n                 DC=yourlab\n              \
+    \   DC=local\n               Name Hash(sha1): 727e4654b1cdccd70321bdf801ecb14d9a12f1bb\n\
+    \               Name Hash(md5): 6b65577540bfa7bbcb122e0eeca216f5\n           \
+    \  Subject:\n                 CN=functest1.yourlab.local\n                 O=YOURLAB\n\
+    \                 C=US\n               Name Hash(sha1): cd7a72f7d886a31e452e2bbcca946a9fd8b19f6a\n\
+    \               Name Hash(md5): 4e842b95efd83e51e7f649cb6728d977\n           \
+    \  Cert <SERIAL>\n             \n             dwFlags = CA_VERIFY_FLAGS_CONSOLE_TRACE\
+    \ (0x20000000)\n             dwFlags = CA_VERIFY_FLAGS_DUMP_CHAIN (0x40000000)\n\
+    \             ChainFlags = CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT (0x40000000)\n\
+    \             HCCE_LOCAL_MACHINE\n             CERT_CHAIN_POLICY_BASE\n      \
+    \       -------- CERT_CHAIN_CONTEXT --------\n             ChainContext.dwInfoStatus\
+    \ = CERT_TRUST_HAS_PREFERRED_ISSUER (0x100)\n             ChainContext.dwErrorStatus\
+    \ = CERT_TRUST_IS_REVOKED (0x4)\n             ChainContext.dwRevocationFreshnessTime:\
+    \ 5 Days, 5 Hours, 28 Minutes, 12 Seconds\n             \n             SimpleChain.dwInfoStatus\
+    \ = CERT_TRUST_HAS_PREFERRED_ISSUER (0x100)\n             SimpleChain.dwErrorStatus\
+    \ = CERT_TRUST_IS_REVOKED (0x4)\n             SimpleChain.dwRevocationFreshnessTime:\
+    \ 5 Days, 5 Hours, 28 Minutes, 12 Seconds\n             \n             CertContext[0][0]:\
+    \ dwInfoStatus=102 dwErrorStatus=4\n               Issuer: CN=YOURLAB-Issuing-CA,\
+    \ DC=yourlab, DC=local\n               NotBefore: 7/11/2026 9:21 PM\n        \
+    \       NotAfter: 7/10/2028 9:21 PM\n               Subject: CN=functest1.yourlab.local,\
+    \ O=YOURLAB, C=US\n               Serial: 3a000002582aff81df5485f5f4000000000258\n\
+    \               SubjectAltName: DNS Name=functest1.yourlab.local\n           \
+    \    Template: WebServer\n               Cert: b228384b8149bb11e96848a89c4f666342a62863\n\
+    \               Element.dwInfoStatus = CERT_TRUST_HAS_KEY_MATCH_ISSUER (0x2)\n\
+    \               Element.dwInfoStatus = CERT_TRUST_HAS_PREFERRED_ISSUER (0x100)\n\
+    \               Element.dwErrorStatus = CERT_TRUST_IS_REVOKED (0x4)\n        \
+    \       ----------------  Certificate AIA  ----------------\n               Failed\
+    \ \"AIA\" Time: 0 (null)\n                 Error retrieving URL: Not found (404).\
+    \ 0x80190194 (-2145844844 HTTP_E_STATUS_NOT_FOUND)\n                 http://pki.yourlab.local/aia/YOURLAB-Issuing-CA.crt\n\
+    \             \n               ----------------  Certificate CDP  ----------------\n\
+    \               Verified \"Base CRL (13)\" Time: 0 b3d224df929cc4c6bb867b73a17dcaa5c2bd1204\n\
+    \                 [0.0] http://pki.yourlab.local/crl/YOURLAB-Issuing-CA.crl\n\
+    \             \n               Verified \"Delta CRL (13)\" Time: 0 a5e170aa2726658b7806c7f5267dfb4c31db531e\n\
+    \                 [0.0.0] http://pki.yourlab.local/crl/YOURLAB-Issuing-CA+.crl\n\
+    \             \n               ----------------  Base CRL CDP  ----------------\n\
+    \               OK \"Delta CRL (13)\" Time: 0 a5e170aa2726658b7806c7f5267dfb4c31db531e\n\
+    \                 [0.0] http://pki.yourlab.local/crl/YOURLAB-Issuing-CA+.crl\n\
+    \             \n               ----------------  Certificate OCSP  ----------------\n\
+    \               No URLs \"None\" Time: 0 (null)\n               --------------------------------\n\
+    \                 CRL 13:\n                 Issuer: CN=YOURLAB-Issuing-CA, DC=yourlab,\
+    \ DC=local\n                 ThisUpdate: 7/11/2026 9:26 PM\n                 NextUpdate:\
+    \ 1/10/2027 9:46 AM\n                 CRL: b3d224df929cc4c6bb867b73a17dcaa5c2bd1204\n\
+    \                 Delta CRL 13:\n                 Issuer: CN=YOURLAB-Issuing-CA,\
+    \ DC=yourlab, DC=local\n                 ThisUpdate: 7/11/2026 9:26 PM\n     \
+    \            NextUpdate: 7/13/2026 9:46 AM\n                 CRL: a5e170aa2726658b7806c7f5267dfb4c31db531e\n\
+    \               Application[0] = 1.3.6.1.5.5.7.3.1 Server Authentication\n   \
+    \          \n             CertContext[0][1]: dwInfoStatus=102 dwErrorStatus=0\n\
+    \               Issuer: CN=YOURLAB-Root-CA, DC=yourlab, DC=local\n           \
+    \    NotBefore: 7/6/2026 7:14 PM\n               NotAfter: 7/6/2031 7:24 PM\n\
+    \               Subject: CN=YOURLAB-Issuing-CA, DC=yourlab, DC=local\n       \
+    \        Serial: 3b00000005354608f2b65739e9000000000005\n               Template:\
+    \ SubCA\n               Cert: b26f66a80865f234be58e09195d594542c90c8c8\n     \
+    \          Element.dwInfoStatus = CERT_TRUST_HAS_KEY_MATCH_ISSUER (0x2)\n    \
+    \           Element.dwInfoStatus = CERT_TRUST_HAS_PREFERRED_ISSUER (0x100)\n \
+    \              ----------------  Certificate AIA  ----------------\n         \
+    \      Failed \"AIA\" Time: 0 (null)\n                 Error retrieving URL: Not\
+    \ found (404). 0x80190194 (-2145844844 HTTP_E_STATUS_NOT_FOUND)\n            \
+    \     http://pki.yourlab.local/aia/YOURLAB-Root-CA.crt\n             \n      \
+    \         ----------------  Certificate CDP  ----------------\n              \
+    \ Verified \"Base CRL (02)\" Time: 0 35023fcb5c2f470147170ae5a0044a71df65dcfe\n\
+    \                 [0.0] http://pki.yourlab.local/crl/YOURLAB-Root-CA.crl\n   \
+    \          \n               ----------------  Base CRL CDP  ----------------\n\
+    \               No URLs \"None\" Time: 0 (null)\n               ----------------\
+    \  Certificate OCSP  ----------------\n               No URLs \"None\" Time: 0\
+    \ (null)\n               --------------------------------\n                 CRL\
+    \ 02:\n                 Issuer: CN=YOURLAB-Root-CA, DC=yourlab, DC=local\n   \
+    \              ThisUpdate: 7/6/2026 4:11 PM\n                 NextUpdate: 1/5/2027\
+    \ 4:31 AM\n                 CRL: 35023fcb5c2f470147170ae5a0044a71df65dcfe\n  \
+    \             Issuance[0] = 1.3.6.1.4.1.99999.1.1 \n             \n          \
+    \   CertContext[0][2]: dwInfoStatus=10c dwErrorStatus=0\n               Issuer:\
+    \ CN=YOURLAB-Root-CA, DC=yourlab, DC=local\n               NotBefore: 7/6/2026\
+    \ 4:10 PM\n               NotAfter: 7/6/2036 4:20 PM\n               Subject:\
+    \ CN=YOURLAB-Root-CA, DC=yourlab, DC=local\n               Serial: 4c38deb8a07b84b34b1ba06ec05e8440\n\
+    \               Cert: 228267c75a964a6ec736d09028f7a71c92623bfb\n             \
+    \  Element.dwInfoStatus = CERT_TRUST_HAS_NAME_MATCH_ISSUER (0x4)\n           \
+    \    Element.dwInfoStatus = CERT_TRUST_IS_SELF_SIGNED (0x8)\n               Element.dwInfoStatus\
+    \ = CERT_TRUST_HAS_PREFERRED_ISSUER (0x100)\n               ---------------- \
+    \ Certificate AIA  ----------------\n               No URLs \"None\" Time: 0 (null)\n\
+    \               ----------------  Certificate CDP  ----------------\n        \
+    \       No URLs \"None\" Time: 0 (null)\n               ----------------  Certificate\
+    \ OCSP  ----------------\n               No URLs \"None\" Time: 0 (null)\n   \
+    \            --------------------------------\n               Issuance[0] = 1.3.6.1.4.1.99999.1.1\
+    \ \n             \n             Exclude leaf cert:\n               Chain: 2fcd3bc52a31ac29573083a5fd2606ba3fb98918\n\
+    \             Full chain:\n               Chain: 5caf79b58c01200df9b1ade1f8b56957e1e627eb\n\
+    \               Issuer: CN=YOURLAB-Issuing-CA, DC=yourlab, DC=local\n        \
+    \       NotBefore: 7/11/2026 9:21 PM\n               NotAfter: 7/10/2028 9:21\
+    \ PM\n               Subject: CN=functest1.yourlab.local, O=YOURLAB, C=US\n  \
+    \             Serial: 3a000002582aff81df5485f5f4000000000258\n               SubjectAltName:\
+    \ DNS Name=functest1.yourlab.local\n               Template: WebServer\n     \
+    \          Cert: b228384b8149bb11e96848a89c4f666342a62863\n             The certificate\
+    \ is revoked. 0x80092010 (-2146885616 CRYPT_E_REVOKED)\n             ------------------------------------\n\
+    \             Certificate is REVOKED\n             Leaf certificate is REVOKED\
+    \ (Reason=4)\n             CertUtil: -verify command completed successfully.\n\
+    \             \nFilename   : InputStream\nPath       : InputStream\nPattern  \
+    \  : CRYPT_E_REVOKED|REVOKED\nContext    : \nMatches    : {0}\n\n\n\n[lab_profile]\
+    \ active: ad-cs-two-tier (5 VMs, source=lab_profile)\n"

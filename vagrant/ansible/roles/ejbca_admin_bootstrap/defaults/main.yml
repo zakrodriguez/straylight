@@ -1,0 +1,11 @@
+---
+ejbca_admin_username: lab-superadmin
+ejbca_admin_dn: "CN=lab-superadmin,O=YOURLAB"
+ejbca_admin_role: "Super Administrator Role"
+# Topology-aware: two-tier signs admin under Issuing CA; one-tier signs under Root CA.
+# `ejbca_two_tier` and `ejbca_root_ca_name` come from inventory/<profile>/group_vars/all.yml.
+ejbca_admin_ca: "{{ 'EJBCA-Issuing-CA' if ejbca_two_tier | default(false) else (ejbca_root_ca_name | default('EJBCA-Root-CA')) }}"
+ejbca_admin_secrets_dir: /opt/ejbca/data/secrets
+ejbca_admin_p12_path: "{{ ejbca_admin_secrets_dir }}/superadmin.p12"
+ejbca_admin_pwd_path: "{{ ejbca_admin_secrets_dir }}/superadmin.pwd"
+ejbca_admin_password: "{{ lookup('password', '/dev/null length=20 chars=ascii_letters,digits') }}"

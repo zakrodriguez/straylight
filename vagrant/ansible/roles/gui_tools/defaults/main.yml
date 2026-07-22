@@ -1,0 +1,5 @@
+---
+# gui_tools role defaults
+# Set lab_desktop_enabled=false (or LAB_DESKTOP_ENABLED=false env var) to skip
+# this role for faster cold builds. Default true preserves UX for demos.
+lab_desktop_enabled: true

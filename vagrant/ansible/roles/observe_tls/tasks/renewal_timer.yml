@@ -1,0 +1,42 @@
+---
+# Install renewal hook script and systemd timer.
+# Timer is enabled and started; first daily fire happens at the next
+# midnight + RandomizedDelaySec offset. Persistent=true means a missed
+# window (VM was off) is caught up at next boot.
+
+- name: Deploy /usr/local/bin/acme-renew.sh
+  ansible.builtin.template:
+    src: acme-renew.sh.j2
+    dest: /usr/local/bin/acme-renew.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy acme-renew.service
+  ansible.builtin.template:
+    src: acme-renew.service.j2
+    dest: /etc/systemd/system/acme-renew.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: acme_renew_service
+
+- name: Deploy acme-renew.timer
+  ansible.builtin.template:
+    src: acme-renew.timer.j2
+    dest: /etc/systemd/system/acme-renew.timer
+    owner: root
+    group: root
+    mode: "0644"
+  register: acme_renew_timer
+
+- name: Reload systemd if unit files changed
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: acme_renew_service.changed or acme_renew_timer.changed
+
+- name: Enable and start acme-renew.timer
+  ansible.builtin.systemd:
+    name: acme-renew.timer
+    enabled: true
+    state: started

@@ -1,0 +1,54 @@
+---
+# CLIENT1 - Windows 11 Test Client
+# Joins domain, configures autoenrollment
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Include common role
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        dns_servers:
+          - "{{ dc_ip }}"
+
+    - name: Include domain_join role
+      ansible.builtin.include_role:
+        name: domain_join
+
+    - name: Include client role
+      ansible.builtin.include_role:
+        name: client
+
+    - name: Include machine_cert role
+      ansible.builtin.include_role:
+        name: machine_cert
+
+    - name: Include sysinternals role
+      ansible.builtin.include_role:
+        name: sysinternals
+
+    - name: Include desktop_customize role
+      ansible.builtin.include_role:
+        name: desktop_customize
+
+    - name: Include bginfo role
+      ansible.builtin.include_role:
+        name: bginfo
+      vars:
+        vm_role: client
+
+    - name: Include windows_logging role
+      ansible.builtin.include_role:
+        name: windows_logging
+
+    - name: Include sysmon role
+      ansible.builtin.include_role:
+        name: sysmon
+
+    - name: Include winlogbeat role
+      ansible.builtin.include_role:
+        name: winlogbeat

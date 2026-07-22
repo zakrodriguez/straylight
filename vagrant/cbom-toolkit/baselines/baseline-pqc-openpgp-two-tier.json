@@ -1,0 +1,137 @@
+{
+  "$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:2f929757-e971-45f6-9664-a3a0ea42f00c",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-05-11T19:08:22.614147+00:00",
+    "component": {
+      "type": "application",
+      "name": "pqc-openpgp-probe",
+      "version": "1.0.0"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "e0836ea5-9829-5b7c-aba5-cd823d291143",
+      "type": "cryptographic-asset",
+      "name": "ed25519 (pub, sign,certify,encrypt-cert,sign-cert,certify-cert) \u2014 Straylight PQC Demo <pqc@yourlab.local>",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "observe1/openpgp:C7C6E5A499AA32EF"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "parameterSetIdentifier": "OpenPGP-v4",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "e5d4190a-6d9e-53d8-aa17-6bd6df2557ce",
+      "type": "cryptographic-asset",
+      "name": "[PQC-KYBER] ky768_bp256 (sub, encrypt)",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "observe1/openpgp:CD90A0CEA3576D39"
+          },
+          {
+            "location": "stepca1/openpgp:852E806EC8B601E9"
+          },
+          {
+            "location": "ejbca1/openpgp:C53CBD136B36A60B"
+          },
+          {
+            "location": "hydra1/openpgp:D1C611CE6D1FD48C"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "key-agree",
+          "parameterSetIdentifier": "OpenPGP-v4",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "94699814-f2b3-57ab-aa40-7df48e3d7202",
+      "type": "cryptographic-asset",
+      "name": "ed25519 (pub, sign,certify,encrypt-cert,sign-cert,certify-cert) \u2014 Straylight PQC Demo (stepca1) <pqc@yourlab.local>",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "stepca1/openpgp:2CEAA237DAA54A96"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "parameterSetIdentifier": "OpenPGP-v4",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "cb8b0377-79c2-5930-ad7a-4a1735167553",
+      "type": "cryptographic-asset",
+      "name": "ed25519 (pub, sign,certify,encrypt-cert,sign-cert,certify-cert) \u2014 Straylight PQC Demo (ejbca1) <pqc@yourlab.local>",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/openpgp:F42C96670A717FF0"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "parameterSetIdentifier": "OpenPGP-v4",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "8708ad67-160f-5908-87f6-d5bce52c2230",
+      "type": "cryptographic-asset",
+      "name": "ed25519 (pub, sign,certify,encrypt-cert,sign-cert,certify-cert) \u2014 Straylight PQC Demo (hydra1) <pqc@yourlab.local>",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "hydra1/openpgp:574F2F61C1A1C0C8"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "parameterSetIdentifier": "OpenPGP-v4",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    }
+  ],
+  "dependencies": []
+}

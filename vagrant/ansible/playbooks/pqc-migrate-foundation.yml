@@ -1,0 +1,86 @@
+---
+# pqc-migrate-foundation.yml — Phase 1/5 of the PQC migration orchestrator.
+# Wraps pqc-ejbca.yml (which creates EJBCA's PQC + chimera CAs) and
+# verifies the three CA certs are present and ML-DSA-65 signed.
+#
+# Standalone usage:
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-migrate-foundation.yml
+#
+# Verification probes (run on ejbca1):
+#   - ejbca.sh ca getcacert returns each CA's PEM
+#   - openssl x509 -text shows Public Key Algorithm: ML-DSA-65
+
+- name: Phase 1/5 banner
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "═══ Phase 1/5: Foundation (EJBCA PQC + chimera CAs) ═══"
+
+- import_playbook: pqc-ejbca.yml
+
+- name: Phase 1 verification — EJBCA PQC + chimera CAs exist + ML-DSA-65
+  hosts: ejbca1
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Foundation — fetch each CA cert PEM and assert ML-DSA-65 (where applicable)
+      ansible.builtin.shell: |
+        set -e
+        ca="{{ item }}"
+        cert_path="/tmp/$ca.pem"
+        # ejbca.sh ca getcacert writes to a file (-f flag); no stdout option.
+        # Stage in the container, cat back, then clean up.
+        if ! docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca getcacert --caname "$ca" -f "$cert_path" >/dev/null 2>&1; then
+          echo "FAIL: ejbca.sh ca getcacert --caname $ca failed"
+          exit 1
+        fi
+        out=$(docker exec ejbca-ce cat "$cert_path")
+        docker exec ejbca-ce rm -f "$cert_path"
+        # System openssl on ejbca1 doesnt recognize ML-DSA-65 by friendly
+        # name yet; it prints the OID 2.16.840.1.101.3.4.3.18 (FIPS 204).
+        #
+        # PQC-Root and PQC-Issuing must have ML-DSA-65 as their primary
+        # public key (pure-PQC CAs).
+        #
+        # Chimera-Root is RSA-primary by design — the ML-DSA-65 alt-sig
+        # only manifests when the CA SIGNS something (cross-certs, issued
+        # leaves). The self-signed root cert exported by getcacert wont
+        # carry the alt-sig. So for chimera we just verify the cert exists
+        # and is a valid CA (Certificate Sign in KeyUsage). Phase 2 (TLS)
+        # verifies the alt-sig OID is actually applied to issued leaves.
+        text=$(echo "$out" | openssl x509 -noout -text 2>/dev/null)
+        primary=$(echo "$text" | grep -E "Public Key Algorithm" | head -1 | xargs)
+        echo "  $ca primary: $primary"
+        case "$ca" in
+          *Chimera*)
+            if ! echo "$text" | grep -q "Certificate Sign"; then
+              echo "FAIL: $ca cert is not a CA (no Certificate Sign KeyUsage)"
+              exit 1
+            fi
+            echo "  $ca: CA cert exists (chimera alt-sig validates on issued certs in Phase 2)"
+            ;;
+          *)
+            if ! echo "$primary" | grep -qE "ML-DSA-65|2\.16\.840\.1\.101\.3\.4\.3\.18"; then
+              echo "FAIL: $ca primary key is $primary, expected ML-DSA-65 (OID 2.16.840.1.101.3.4.3.18)"
+              exit 1
+            fi
+            ;;
+        esac
+      register: cert_check
+      changed_when: false
+      loop:
+        - EJBCA-PQC-Root-CA
+        - EJBCA-PQC-Issuing-CA
+        - EJBCA-Chimera-Root-CA
+
+    - name: Foundation — print results
+      ansible.builtin.debug:
+        msg: "{{ cert_check.results | map(attribute='stdout') | list }}"
+
+- name: Phase 1 summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "Phase 1/5 (Foundation) complete"

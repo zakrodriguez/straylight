@@ -1,0 +1,52 @@
+---
+# Common Linux role: DNS configuration, IP verification, timezone
+# Linux equivalent of the Windows 'common' role
+
+- name: Disable systemd-resolved
+  ansible.builtin.systemd:
+    name: systemd-resolved
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Remove resolv.conf symlink
+  ansible.builtin.file:
+    path: /etc/resolv.conf
+    state: absent
+
+- name: Deploy resolv.conf with lab DNS
+  ansible.builtin.template:
+    src: resolv.conf.j2
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Verify host-only IP is configured
+  ansible.builtin.shell: ip addr show | grep -q '{{ ip_address }}'
+  changed_when: false
+
+- name: Set timezone
+  ansible.builtin.command:
+    cmd: "timedatectl set-timezone {{ lab_timezone_linux }}"
+  changed_when: false
+
+# Publish lab_static_hosts as a host fact so it's visible to subsequent
+# roles in the same play (include_role defaults are private since Ansible
+# 2.10 unless public: true is set on every include_role call).
+- name: Publish lab_static_hosts as host fact (for downstream roles)
+  ansible.builtin.set_fact:
+    lab_static_hosts: "{{ lab_static_hosts }}"
+
+# Static /etc/hosts fallback when no dc1 in the active profile (no AD DNS).
+# See defaults/main.yml for the lab_static_hosts map and the rationale.
+- name: Add static /etc/hosts entries for Linux-only profiles (no AD DNS)
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED LAB STATIC HOSTS"
+    block: |
+      {% for h in lab_static_hosts %}
+      {{ h.ip }} {% for n in h.names %}{{ n }}.{{ lab_domain }} {{ n }} {% endfor %}
+
+      {% endfor %}
+  when: "'dc1' not in groups['all']"

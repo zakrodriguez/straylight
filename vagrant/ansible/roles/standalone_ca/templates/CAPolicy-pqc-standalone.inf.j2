@@ -1,0 +1,29 @@
+[Version]
+Signature="$Windows NT$"
+
+[PolicyStatementExtension]
+Policies=InternalPolicy
+
+[InternalPolicy]
+OID=1.3.6.1.4.1.99999.1.1
+Notice="This PQC CA is for internal lab use only"
+
+[Certsrv_Server]
+RenewalKeyLength={{ ca_key_length }}
+RenewalValidityPeriod={{ ca_validity_period }}
+RenewalValidityPeriodUnits={{ ca_validity_period_units }}
+CRLPeriod=Weeks
+CRLPeriodUnits=26
+CRLDeltaPeriod=Days
+CRLDeltaPeriodUnits=0
+LoadDefaultTemplates=0
+# AlternateSignatureAlgorithm has no effect for ML-DSA (it controls RSA PSS vs
+# PKCS#1 padding). Left at 0 so the setting is explicit and never triggers an
+# RSA-PSS code path on a key that isn't RSA.
+AlternateSignatureAlgorithm=0
+
+[CRLDistributionPoint]
+Empty=True
+
+[AuthorityInformationAccess]
+Empty=True

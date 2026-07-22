@@ -1,0 +1,100 @@
+---
+# Enroll an ML-DSA-65 Server-Auth machine cert from the configured PQC CA.
+#
+# Server 2025's GPO autoenrollment engine does not process ML-DSA templates
+# yet (Win11 24H2/25H2 + KB5067036 does). On Server 2025, certreq with an
+# explicit ML-DSA:65 request DOES work — provided KB5087539 (ML-DSA CNG
+# primitives) is installed first. The caller is responsible for installing
+# KB5087539 before including this role (windows_kb_install role).
+#
+# All work runs under a SYSTEM scheduled task because certreq under WinRM
+# Basic auth gets a network-logon token that the CA refuses — the
+# SYSTEM/Batch-logon swap is the canonical straylight double-hop bypass
+# (same pattern as cert_templates, machine_cert, etc.).
+
+- name: Validate required role vars are set
+  ansible.builtin.assert:
+    that:
+      - pqc_ca_config is defined
+      - pqc_ca_config | length > 0
+      - pqc_template_name is defined
+      - pqc_template_name | length > 0
+    fail_msg: >-
+      pqc_machine_cert requires pqc_ca_config (e.g.
+      "ISSUECAPQC.yourlab.local\\YOURLAB-PQC-Issuing-CA") and
+      pqc_template_name (e.g. "Straylight-PQC-Machine-MLDSA65-v1") to be set.
+
+- name: Deploy the ML-DSA leaf certreq INF
+  ansible.windows.win_template:
+    src: pqc-leaf.inf.j2
+    dest: C:\tmp\pqc-leaf.inf
+
+- name: Enroll the ML-DSA-65 leaf via certreq (SYSTEM context)
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $statusFile = 'C:\tmp\pqc-leaf-status.txt'
+      $logFile    = 'C:\tmp\pqc-leaf-enroll.log'
+      $scriptFile = 'C:\tmp\pqc-leaf-enroll.ps1'
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+      Remove-Item $statusFile -ErrorAction SilentlyContinue
+
+      $wrapper = @"
+      `$mldsa65Oid    = '{{ pqc_mldsa65_oid }}'
+      `$serverAuthOid = '{{ pqc_server_auth_oid }}'
+      # CRITICAL: require Server-Auth EKU on the existence check. A PQC sub-CA
+      # cert in this same store has the same key OID but no Server-Auth EKU;
+      # checking key OID alone would false-positive and silently skip
+      # enrollment.
+      `$have = Get-ChildItem Cert:\LocalMachine\My -EA SilentlyContinue | Where-Object {
+          `$_.PublicKey.Oid.Value -eq `$mldsa65Oid -and `$_.NotAfter -gt (Get-Date) -and
+          (`$_.EnhancedKeyUsageList.ObjectId -contains `$serverAuthOid) } | Select-Object -First 1
+      if (`$have) { 'SUCCESS' | Out-File '$statusFile'; return }
+      `$caConfig = '{{ pqc_ca_config }}'
+      `$out  = (& certreq -f -q -new C:\tmp\pqc-leaf.inf C:\tmp\pqc-leaf.req 2>&1 | Out-String)
+      `$out += (& certreq -f -q -submit -config `$caConfig C:\tmp\pqc-leaf.req C:\tmp\pqc-leaf.cer 2>&1 | Out-String)
+      `$out += (& certreq -f -q -accept -machine C:\tmp\pqc-leaf.cer 2>&1 | Out-String)
+      "config=`$caConfig`n`$out" | Out-File '$logFile'
+      `$have = Get-ChildItem Cert:\LocalMachine\My -EA SilentlyContinue | Where-Object {
+          `$_.PublicKey.Oid.Value -eq `$mldsa65Oid -and `$_.NotAfter -gt (Get-Date) -and
+          (`$_.EnhancedKeyUsageList.ObjectId -contains `$serverAuthOid) } | Select-Object -First 1
+      if (`$have) { 'SUCCESS' | Out-File '$statusFile' } else { 'FAILED' | Out-File '$statusFile' }
+      "@
+      $wrapper | Out-File $scriptFile -Encoding ASCII -Force
+
+      $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-ExecutionPolicy Bypass -File $scriptFile"
+      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+      Register-ScheduledTask -TaskName 'EnrollPQCLeaf' -Action $action -Principal $principal -Force | Out-Null
+      Start-ScheduledTask -TaskName 'EnrollPQCLeaf'
+      $t = 0
+      while ($t -lt 180) { Start-Sleep -Seconds 5; $t += 5; if ((Get-ScheduledTask -TaskName 'EnrollPQCLeaf').State -eq 'Ready') { break } }
+      Unregister-ScheduledTask -TaskName 'EnrollPQCLeaf' -Confirm:$false -ErrorAction SilentlyContinue
+
+      $status = Get-Content $statusFile -ErrorAction SilentlyContinue
+      $log = Get-Content $logFile -ErrorAction SilentlyContinue
+      if ($log) { $Ansible.Result = ($log -join "`n") }
+      Write-PSFMessage -Level Host -Message "certreq ML-DSA-65 leaf enrollment: $status" -Tag 'pqc-machine-cert'
+      Remove-Item $scriptFile, C:\tmp\pqc-leaf.req, C:\tmp\pqc-leaf.cer -Force -ErrorAction SilentlyContinue
+      if ($status -ne 'SUCCESS') {
+          Wait-PSFMessage
+          throw "certreq ML-DSA-65 leaf enrollment failed. Log: $($log -join ' | ')"
+      }
+      Wait-PSFMessage
+
+- name: Verify the ML-DSA-65 leaf certificate is present
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $serverAuthOid = '{{ pqc_server_auth_oid }}'
+      $mldsa65Oid    = '{{ pqc_mldsa65_oid }}'
+      $cert = Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+          Where-Object {
+              $_.EnhancedKeyUsageList.ObjectId -contains $serverAuthOid -and
+              $_.PublicKey.Oid.Value -eq $mldsa65Oid -and
+              $_.NotAfter -gt (Get-Date)
+          } | Sort-Object NotAfter -Descending | Select-Object -First 1
+      if (-not $cert) { Wait-PSFMessage; throw "No ML-DSA-65 Server-Auth leaf in LocalMachine\My after certreq enrollment" }
+      Write-PSFMessage -Level Host -Message "ML-DSA-65 leaf verified: Subject=$($cert.Subject), PublicKey=$($cert.PublicKey.Oid.Value), Sig=$($cert.SignatureAlgorithm.FriendlyName)" -Tag 'pqc-machine-cert'
+      $Ansible.Result = @{ Subject = $cert.Subject; PublicKeyOid = $cert.PublicKey.Oid.Value; Thumbprint = $cert.Thumbprint }
+      $Ansible.Changed = $false
+      Wait-PSFMessage

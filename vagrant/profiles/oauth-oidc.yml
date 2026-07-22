@@ -1,0 +1,11 @@
+name: oauth-oidc
+description: |
+  Ory Hydra OAuth/OIDC lab. stepca1 provides the TLS issuance backing
+  hydra1's HTTPS endpoints. observe1 collects logs from both. For
+  OAuth/OIDC flow demos, JWT signing experiments, or token-issuance
+  inspection.
+
+components:
+  - hydra1
+  - stepca1
+  - observe1

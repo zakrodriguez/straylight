@@ -1,0 +1,15 @@
+{
+  "machine-1w-rsa2048":   "Straylight-Machine-1W-RSA2048-SHA256-v1",
+  "machine-1w-rsa4096":   "Straylight-Machine-1W-RSA4096-SHA256-v1",
+  "machine-1w-ecdh384":   "Straylight-Machine-1W-ECDHP384-SHA384-v1",
+  "machine-1m-rsa2048":   "Straylight-Machine-1M-RSA2048-SHA256-v1",
+  "machine-1m-rsa4096":   "Straylight-Machine-1M-RSA4096-SHA256-v1",
+  "machine-1m-ecdh384":   "Straylight-Machine-1M-ECDHP384-SHA384-v1",
+  "machine-1y-rsa2048":   "Straylight-Machine-1Y-RSA2048-SHA256-v1",
+  "machine-1y-rsa4096":   "Straylight-Machine-1Y-RSA4096-SHA256-v1",
+  "machine-1y-ecdh384":   "Straylight-Machine-1Y-ECDHP384-SHA384-v1",
+  "server-admin":         "Straylight-ServerAdmin-8H-RSA2048-SHA256-v1",
+  "domain-admin":         "Straylight-DomainAdmin-8H-RSA4096-SHA256-v1",
+  "enterprise-admin":     "Straylight-EnterpriseAdmin-8H-ECDHP384-SHA384-v1",
+  "fiddler":              "Straylight-Fiddler-1Y-RSA2048-SHA256-v1"
+}

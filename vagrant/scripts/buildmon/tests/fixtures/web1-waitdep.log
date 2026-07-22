@@ -1,0 +1,3 @@
+TASK [machine_cert : Wait for Root CA cert in trusted store] *******************
+FAILED - RETRYING: Wait for Root CA cert in trusted store (30 retries left).
+FAILED - RETRYING: Wait for Root CA cert in trusted store (29 retries left).

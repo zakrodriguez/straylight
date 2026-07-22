@@ -1,0 +1,11 @@
+---
+# CDP/AIA namespace subdir — PQC issuing CA sets 'pqc' so the republish
+# copies into \crl\pqc; classical leaves it empty (share-root \crl).
+publish_subdir: ''
+
+# Daily republish time (24h HH:mm, local). Far enough off provisioning hours.
+republish_time: '02:00'
+
+# Scheduled-task name. PQC issuing CA overrides so the two issuing CAs on the
+# same domain don't share a task identity in reports.
+republish_task_name: straylight-crl-republish

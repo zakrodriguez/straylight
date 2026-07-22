@@ -1,0 +1,241 @@
+---
+# ejbca_pqc_enroll role: chimera enrollment flow
+#
+# Issues an RSA-2048 leaf cert from EJBCA-Chimera-Root-CA using ENDUSER-Chimera
+# cert profile + EE-Chimera end-entity profile. The leaf carries the issuer's
+# alternative ML-DSA-65 signature in X.509v3 extensions:
+#   2.5.29.73  altSignatureAlgorithm
+#   2.5.29.74  altSignatureValue
+#
+# Required vars:
+#   ejbca_token_password  — EJBCA end-entity password (default: foo123)
+#   lab_domain            — DNS domain (e.g. yourlab.local)
+#
+# Delegate target: ejbca1 (must be in [ejbca] inventory group)
+
+- name: Set per-host chimera enrollment variables
+  ansible.builtin.set_fact:
+    chimera_cert_cn: "{{ inventory_hostname }}.{{ lab_domain }}"
+    chimera_cert_dir: /opt/pqc-certs
+    chimera_ejbca_export_dir: /opt/ejbca/data/export
+    chimera_username: "{{ inventory_hostname }}-chimera"
+    chimera_password: "{{ ejbca_token_password | default('foo123') }}"
+    chimera_cert_path: "/opt/pqc-certs/{{ inventory_hostname }}.chimera.crt"
+
+# =========================================================================
+# Idempotency gate: skip re-issuance if a valid cert exists with >30d remaining.
+#
+# Uses `openssl x509 -checkend 2592000` (2592000 = 30*24*3600 seconds).
+# rc=0 → cert is valid for >=30 more days  → skip enrollment
+# rc=1 → cert missing, expired, or <30d remaining → proceed
+# =========================================================================
+
+- name: Check existing chimera cert on target
+  ansible.builtin.stat:
+    path: "{{ chimera_cert_path }}"
+  register: existing_chimera_cert
+
+- name: Check chimera cert expiry (within 30 days = needs reissue)
+  ansible.builtin.command:
+    cmd: openssl x509 -in {{ chimera_cert_path }} -noout -checkend 2592000
+  register: chimera_checkend
+  when: existing_chimera_cert.stat.exists
+  changed_when: false
+  failed_when: false
+
+# chimera_reissue is true when:
+#   - cert file is missing, OR
+#   - openssl -checkend returned rc=1 (expires within 30d or is invalid)
+- name: Decide whether re-issuance is needed
+  ansible.builtin.set_fact:
+    chimera_reissue: >-
+      {{ (not existing_chimera_cert.stat.exists)
+         or ((chimera_checkend.rc | default(1)) != 0) }}
+
+- name: Skip enrollment when fresh cert already present
+  ansible.builtin.debug:
+    msg: "Chimera cert at {{ chimera_cert_path }} is valid for >30d, skipping enrollment"
+  when: not chimera_reissue
+
+# =========================================================================
+# Enrollment block — runs only when chimera_reissue is true
+# =========================================================================
+
+- name: Run chimera enrollment when needed
+  when: chimera_reissue
+  block:
+
+    # -----------------------------------------------------------------------
+    # Target VM — create certificate landing directory
+    # -----------------------------------------------------------------------
+
+    - name: Create PQC certificate directory on target VM
+      ansible.builtin.file:
+        path: "{{ chimera_cert_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # -----------------------------------------------------------------------
+    # EJBCA — add end-entity (delegate_to: ejbca1)
+    # -----------------------------------------------------------------------
+
+    - name: Add chimera end-entity on EJBCA for {{ inventory_hostname }}
+      ansible.builtin.command:
+        cmd: >-
+          docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra addendentity
+          --username "{{ chimera_username }}"
+          --dn "CN={{ chimera_cert_cn }}"
+          --caname EJBCA-Chimera-Root-CA
+          --certprofile ENDUSER-Chimera
+          --eeprofile EE-Chimera
+          --type 1
+          --token P12
+          --password "{{ chimera_password }}"
+      register: ejbca_addee
+      failed_when:
+        - ejbca_addee.rc != 0
+        - "'already exists' not in ejbca_addee.stderr"
+        - "'already exists' not in ejbca_addee.stdout"
+      changed_when: ejbca_addee.rc == 0
+      delegate_to: ejbca1
+
+    - name: Set cleartext password for {{ inventory_hostname }}
+      ansible.builtin.command:
+        cmd: >-
+          docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra setclearpwd
+          --username "{{ chimera_username }}"
+          --password "{{ chimera_password }}"
+      changed_when: true
+      delegate_to: ejbca1
+
+    - name: Set end-entity status to NEW for {{ inventory_hostname }}
+      ansible.builtin.command:
+        cmd: >-
+          docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra setendentitystatus
+          --username "{{ chimera_username }}"
+          -S 10
+      changed_when: true
+      delegate_to: ejbca1
+
+    # -----------------------------------------------------------------------
+    # EJBCA — generate RSA-2048 CSR + key pair via gencsr
+    # -----------------------------------------------------------------------
+
+    - name: Remove stale per-host export dir in container (avoids root-owned privkey clash)
+      ansible.builtin.command:
+        cmd: docker exec ejbca-ce rm -rf /mnt/export/{{ chimera_username }}
+      changed_when: true
+      delegate_to: ejbca1
+
+    - name: Create per-host export directory in EJBCA container
+      ansible.builtin.command:
+        cmd: docker exec ejbca-ce mkdir -p /mnt/export/{{ chimera_username }}
+      changed_when: true
+      delegate_to: ejbca1
+
+    - name: Generate RSA-2048 + ML-DSA-65 hybrid CSR for {{ inventory_hostname }}
+      # --altkeyalg/--altsigalg generate a secondary ML-DSA-65 key pair whose
+      # public key EJBCA embeds in the CSR. The Chimera CA then signs the leaf
+      # twice and emits altSignatureAlgorithm (2.5.29.73) + altSignatureValue
+      # (2.5.29.74) extensions on the issued cert.
+      ansible.builtin.command:
+        cmd: >-
+          docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh gencsr
+          --keyalg RSA
+          --keyspec 2048
+          --sigalg SHA256WithRSA
+          --altkeyalg ML-DSA-65
+          --altsigalg ML-DSA-65
+          --subjectdn "CN={{ chimera_cert_cn }}"
+          --destination /mnt/export/{{ chimera_username }}
+      changed_when: true
+      delegate_to: ejbca1
+
+    # -----------------------------------------------------------------------
+    # EJBCA — issue chimera cert from Chimera Root CA using the CSR
+    # -----------------------------------------------------------------------
+
+    - name: Issue chimera certificate for {{ inventory_hostname }}
+      ansible.builtin.command:
+        cmd: >-
+          docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh createcert
+          --username "{{ chimera_username }}"
+          --password "{{ chimera_password }}"
+          -c /mnt/export/{{ chimera_username }}/certificateSigningRequest.csr
+          -f /mnt/export/{{ chimera_username }}/cert.pem
+      changed_when: true
+      delegate_to: ejbca1
+
+    # -----------------------------------------------------------------------
+    # EJBCA — copy artifacts out of container to bind-mounted export dir
+    # -----------------------------------------------------------------------
+
+    - name: Copy chimera artifacts out of EJBCA container to host export dir
+      ansible.builtin.command:
+        cmd: >-
+          docker cp ejbca-ce:/mnt/export/{{ chimera_username }}/{{ item }}
+          {{ chimera_ejbca_export_dir }}/{{ chimera_username }}/{{ item }}
+      loop:
+        - cert.pem
+        - privkey.pem
+      changed_when: true
+      delegate_to: ejbca1
+
+    # -----------------------------------------------------------------------
+    # Controller — stage files from ejbca1
+    # -----------------------------------------------------------------------
+
+    - name: Ensure local chimera staging directory exists on controller
+      ansible.builtin.file:
+        path: /tmp/chimera-stage/{{ chimera_username }}
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+
+    - name: Fetch chimera cert + key from ejbca1
+      ansible.builtin.fetch:
+        src: "{{ chimera_ejbca_export_dir }}/{{ chimera_username }}/{{ item.src }}"
+        dest: "/tmp/chimera-stage/{{ chimera_username }}/{{ item.dest }}"
+        flat: true
+      loop:
+        - { src: cert.pem,    dest: cert.pem }
+        - { src: privkey.pem, dest: privkey.pem }
+      delegate_to: ejbca1
+
+    - name: Fetch Chimera Root CA cert as chain
+      ansible.builtin.fetch:
+        src: "{{ chimera_ejbca_export_dir }}/ejbca-chimera-root-ca.pem"
+        dest: "/tmp/chimera-stage/{{ chimera_username }}/chain.pem"
+        flat: true
+      delegate_to: ejbca1
+
+    # -----------------------------------------------------------------------
+    # Target VM — deploy cert, key, and CA chain
+    # -----------------------------------------------------------------------
+
+    - name: Deploy chimera cert to target VM
+      ansible.builtin.copy:
+        src: /tmp/chimera-stage/{{ chimera_username }}/cert.pem
+        dest: "{{ chimera_cert_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Deploy chimera private key to target VM
+      ansible.builtin.copy:
+        src: /tmp/chimera-stage/{{ chimera_username }}/privkey.pem
+        dest: "/opt/pqc-certs/{{ inventory_hostname }}.chimera.key"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Deploy chimera CA chain to target VM
+      ansible.builtin.copy:
+        src: /tmp/chimera-stage/{{ chimera_username }}/chain.pem
+        dest: "/opt/pqc-certs/{{ inventory_hostname }}.chimera.chain.pem"
+        owner: root
+        group: root
+        mode: "0644"

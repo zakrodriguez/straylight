@@ -1,0 +1,6 @@
+---
+- name: restart openssl_pqc_demo
+  ansible.builtin.systemd:
+    name: "{{ openssl_pqc_unit_name }}"
+    state: restarted
+    daemon_reload: true

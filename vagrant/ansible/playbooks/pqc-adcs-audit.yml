@@ -1,0 +1,10 @@
+---
+# pqc-adcs-audit.yml — Audit Windows Server 2025 CNG PQC primitives and document the AD CS gap
+# Runs on CA1 (adcs host group). Purely diagnostic — no CA changes.
+# Output: C:\tmp\pqc-audit\pqc-audit-report.txt (fetched to cbom-output/pqc-audit-ca1.txt)
+- hosts: adcs
+  gather_facts: false
+  tasks:
+    - name: Include adcs_pqc_audit role
+      ansible.builtin.include_role:
+        name: adcs_pqc_audit

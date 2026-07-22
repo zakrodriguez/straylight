@@ -1,0 +1,21 @@
+---
+# Parameters for ejbca_ad_trust — defaults publish the regular EJBCA Root CA
+# (the existing behavior). Override these to publish a different EJBCA-issued
+# root, e.g. EJBCA-Chimera-Root-CA. Caller MUST also pass `ejbca_organization`
+# and `ejbca_ip` (those still come from group_vars / extra_vars).
+
+# Which EJBCA-side CA name to publish — used to construct the public-web
+# download URL. Default matches the existing ejbca_root_ca_name pipeline var.
+ejbca_ad_trust_ca_name: "{{ ejbca_root_ca_name }}"
+
+# Slug used for the staged cert filename on dc1 (avoids cross-CA file clash if
+# this role gets called twice in one run for two different CAs).
+ejbca_ad_trust_slug: "ejbca-root-ca"
+
+# Scheduled task name (avoid collision when called multiple times in one run).
+ejbca_ad_trust_task_name: "PublishEJBCACert"
+
+# Also publish to NTAuth store? True for CAs that issue authentication certs
+# (kerberos cert auth, smartcard). False for transitional/hybrid roots like
+# Chimera — those issue server TLS certs only, not user-auth certs.
+ejbca_ad_trust_publish_ntauth: true

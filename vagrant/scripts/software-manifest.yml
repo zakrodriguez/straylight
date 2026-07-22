@@ -1,0 +1,154 @@
+# Software manifest — single source of truth for cached packages
+# Used by scripts/cache-software.sh to download, verify, and generate SBOM.
+#
+# Fields:
+#   name             — human-readable identifier
+#   version          — pinned version string
+#   filename         — expected filename in resources/software/
+#   url              — download URL
+#   sha256           — checksum (populated by cache-software.sh after first download)
+#   follow_redirects — optional, for API-style URLs that redirect (curl -L)
+#
+windows:
+  - name: powershell-7
+    version: "7.4.7"
+    filename: "PowerShell-7.4.7-win-x64.msi"
+    url: "https://github.com/PowerShell/PowerShell/releases/download/v7.4.7/PowerShell-7.4.7-win-x64.msi"
+    sha256: "217b5575398d5e4a0ac67aff7b468c696a66c3e209685cf338032fc0a5f032ec"
+  - name: filebeat-windows
+    version: "8.17.0"
+    filename: "filebeat-8.17.0-windows-x86_64.zip"
+    url: "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.17.0-windows-x86_64.zip"
+    sha256: "938229e667a417695758460b1927e74fdae408ebe47c825f7349a6f1639b594e"
+  - name: winlogbeat
+    version: "8.17.0"
+    filename: "winlogbeat-8.17.0-windows-x86_64.zip"
+    url: "https://artifacts.elastic.co/downloads/beats/winlogbeat/winlogbeat-8.17.0-windows-x86_64.zip"
+    sha256: "60a47c74366b8969f114dcd93177873ef6cac71b5826af00175ca25ce9427033"
+  - name: temurin-jdk
+    version: "17"
+    filename: "temurin-jdk-17.msi"
+    url: "https://api.adoptium.net/v3/installer/latest/17/ga/windows/x64/jdk/hotspot/normal/eclipse"
+    follow_redirects: true
+    sha256: "bd169b6b8439e1d715eff789e355029e222ce6152994cefc3e666783ade8ff44"
+  - name: tomcat
+    version: "10.1.34"
+    filename: "apache-tomcat-10.1.34-windows-x64.zip"
+    url: "https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.34/bin/apache-tomcat-10.1.34-windows-x64.zip"
+    sha256: "5e4251b493febd92ac9333b4c1893d9a8b2193c5f8d49a5571cf8e14a3c4189a"
+  - name: sysinternals-suite
+    version: "2026-03"
+    filename: "SysinternalsSuite.zip"
+    url: "https://download.sysinternals.com/files/SysinternalsSuite.zip"
+    sha256: "5b0ef1748598cea56c776957fa2cce3b4604a8e5416732a60676d8449e56c23e"
+  - name: sysinternals-pstools
+    version: "2026-03"
+    filename: "PSTools.zip"
+    url: "https://download.sysinternals.com/files/PSTools.zip"
+    sha256: "a9ca77dfe03ce15004157727bb43ba66f00ceb215362c9b3d199f000edaa8d61"
+  - name: nettools
+    version: "5.0.170"
+    filename: "NetTools.zip"
+    url: "https://nettools.net/?sdm_process_download=1&download_id=4726"
+    follow_redirects: true
+    sha256: "d4a9e09a9d205f6f60716183d16e4071dc5e7c81f6764127ff10ccef10e26a1b"
+linux:
+  - name: yubihsm2-sdk
+    version: "2026-01"
+    filename: "yubihsm2-sdk-2026-01-ubuntu2204-amd64.tar.gz"
+    url: "https://developers.yubico.com/YubiHSM2/Releases/yubihsm2-sdk-2026-01-ubuntu2204-amd64.tar.gz"
+    sha256: "4b2b8d15c818bfa72479d09680fd13473de92390aaa8755b5fc448673aad9702"
+  - name: filebeat-linux
+    version: "8.17.0"
+    filename: "filebeat-8.17.0-linux-x86_64.tar.gz"
+    url: "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.17.0-linux-x86_64.tar.gz"
+    sha256: "5fe052153d9b22ae3aee97140ad2525676db077e07cdc49d4dcd01cf535e97a8"
+  - name: step-cli
+    version: "0.28.3"
+    filename: "step-cli_0.28.3_amd64.deb"
+    url: "https://github.com/smallstep/cli/releases/download/v0.28.3/step-cli_0.28.3-1_amd64.deb"
+    sha256: "fa3511aeafd91569ec2bc3244d21cacf3b5b83e7d8eaa78e0e3b4d87ebd5189f"
+  - name: go
+    version: "1.25.6"
+    filename: "go1.25.6.linux-amd64.tar.gz"
+    url: "https://go.dev/dl/go1.25.6.linux-amd64.tar.gz"
+    sha256: "f022b6aad78e362bcba9b0b94d09ad58c5a70c6ba3b7582905fababf5fe0181a"
+  - name: openssh-pqc-src
+    version: "10.0p2"
+    filename: "openssh-10.0p2.tar.gz"
+    url: "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.0p2.tar.gz"
+    sha256: "021a2e709a0edf4250b1256bd5a9e500411a90dddabea830ed59cef90eb9d85c"
+  # GnuPG 2.5+ dependency chain (PQC primitives in libgcrypt 1.11+).
+  # Cached together under resources/software/gnupg-cache/ to avoid clutter.
+  - name: gnupg-libgpg-error
+    version: "1.56"
+    filename: "gnupg-cache/libgpg-error-1.56.tar.bz2"
+    url: "https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.56.tar.bz2"
+    sha256: "82c3d2deb4ad96ad3925d6f9f124fe7205716055ab50e291116ef27975d169c0"
+  - name: gnupg-libgcrypt
+    version: "1.11.2"
+    filename: "gnupg-cache/libgcrypt-1.11.2.tar.bz2"
+    url: "https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.2.tar.bz2"
+    sha256: "6ba59dd192270e8c1d22ddb41a07d95dcdbc1f0fb02d03c4b54b235814330aac"
+  - name: gnupg-libassuan
+    version: "3.0.2"
+    filename: "gnupg-cache/libassuan-3.0.2.tar.bz2"
+    url: "https://www.gnupg.org/ftp/gcrypt/libassuan/libassuan-3.0.2.tar.bz2"
+    sha256: "d2931cdad266e633510f9970e1a2f346055e351bb19f9b78912475b8074c36f6"
+  - name: gnupg-libksba
+    version: "1.6.7"
+    filename: "gnupg-cache/libksba-1.6.7.tar.bz2"
+    url: "https://www.gnupg.org/ftp/gcrypt/libksba/libksba-1.6.7.tar.bz2"
+    sha256: "cf72510b8ebb4eb6693eef765749d83677a03c79291a311040a5bfd79baab763"
+  - name: gnupg-npth
+    version: "1.8"
+    filename: "gnupg-cache/npth-1.8.tar.bz2"
+    url: "https://www.gnupg.org/ftp/gcrypt/npth/npth-1.8.tar.bz2"
+    sha256: "8bd24b4f23a3065d6e5b26e98aba9ce783ea4fd781069c1b35d149694e90ca3e"
+  - name: gnupg-pinentry
+    version: "1.3.2"
+    filename: "gnupg-cache/pinentry-1.3.2.tar.bz2"
+    url: "https://www.gnupg.org/ftp/gcrypt/pinentry/pinentry-1.3.2.tar.bz2"
+    sha256: "8e986ed88561b4da6e9efe0c54fa4ca8923035c99264df0b0464497c5fb94e9e"
+  - name: gnupg
+    version: "2.5.13"
+    filename: "gnupg-cache/gnupg-2.5.13.tar.bz2"
+    url: "https://www.gnupg.org/ftp/gcrypt/gnupg/gnupg-2.5.13.tar.bz2"
+    sha256: "31a92aa03525d66a5834fe8ae4aad05a9ba93e99235189f4f64e78ae32f13093"
+choco:
+  - name: openssl.light
+    version: "3.4.1"
+  - name: everything
+    version: "1.4.1.1026"
+  - name: ditto
+    version: "3.24.246.0"
+  - name: windirstat
+    version: "1.1.2.80"
+  - name: nmap
+    version: "7.95"
+  - name: wireshark
+    version: "4.4.3"
+  - name: ghidra
+    version: "12.0.2"
+  - name: apimonitor
+    version: "2.13.0.20210213"
+  - name: dependencies
+    version: "1.11.1"
+  - name: logparser
+    version: "2.2.10"
+  - name: wmiexplorer
+    version: "2.0.0.2"
+  - name: systeminformer
+    version: "3.2.25011"
+  - name: bind-toolsonly
+    version: "9.16.48"
+  - name: windbg
+    version: "8.59.20160823"
+  - name: windows-performance-toolkit
+    version: "8.1"
+  - name: fiddler
+    version: "5.0.20244.10711"
+  - name: googlechrome
+    version: "134.0.6998.89"
+  - name: firefox
+    version: "136.0.2"

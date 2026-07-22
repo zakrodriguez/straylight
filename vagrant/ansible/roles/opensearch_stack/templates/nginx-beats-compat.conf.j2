@@ -1,0 +1,37 @@
+# Nginx reverse proxy for Beats 8.x -> OpenSearch compatibility.
+# Intercepts Elasticsearch-specific API calls that OpenSearch does not handle
+# and returns fake responses so Beats agents can connect and ship events.
+
+server {
+    listen 9201;
+    client_max_body_size 50m;
+
+    # Fake /_license endpoint -- Beats 8.x checks this on connect
+    location = /_license {
+        default_type application/json;
+        return 200 '{"license":{"status":"active","uid":"00000000-0000-0000-0000-000000000000","type":"oss","expiry_date_in_millis":0}}';
+    }
+
+    # Fake /_xpack endpoint -- Beats 8.x may also probe this
+    location = /_xpack {
+        default_type application/json;
+        return 200 '{"build":{},"features":{},"tagline":"You know, for X-Pack"}';
+    }
+
+    # Fake /_ingest/pipeline/* -- Beats 8.x uploads ingest pipelines on connect
+    # OpenSearch rejects some Elasticsearch-specific pipeline processors (e.g.
+    # set with copy_from). Return acknowledged:true to satisfy the Beats client.
+    location /_ingest/pipeline {
+        default_type application/json;
+        return 200 '{"acknowledged":true}';
+    }
+
+    # Everything else -> OpenSearch
+    location / {
+        proxy_pass http://opensearch:9200;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+}

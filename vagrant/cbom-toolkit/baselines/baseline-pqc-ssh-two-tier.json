@@ -1,0 +1,111 @@
+{
+  "$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:5290ea3d-99de-4c16-b334-d9915e2599ae",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-05-11T18:34:34.789179+00:00",
+    "component": {
+      "type": "application",
+      "name": "pqc-ssh-probe",
+      "version": "1.0.0"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "6def3667-3bb5-5e62-b574-e57e84c48788",
+      "type": "cryptographic-asset",
+      "name": "[PQC-STANDARD] mlkem768x25519-sha256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:2222"
+          },
+          {
+            "location": "192.168.56.51/192.168.56.51:2222"
+          },
+          {
+            "location": "192.168.56.52/192.168.56.52:2222"
+          },
+          {
+            "location": "192.168.56.53/192.168.56.53:2222"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "key-agree",
+          "cryptoFunctions": [
+            "encapsulate"
+          ],
+          "parameterSetIdentifier": "SSH-Transport"
+        }
+      }
+    },
+    {
+      "bom-ref": "bf7d6ba4-dfc5-5a95-b420-a2517fc53334",
+      "type": "cryptographic-asset",
+      "name": "[PQC-LEGACY] sntrup761x25519-sha512@openssh.com",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:2222"
+          },
+          {
+            "location": "192.168.56.51/192.168.56.51:2222"
+          },
+          {
+            "location": "192.168.56.52/192.168.56.52:2222"
+          },
+          {
+            "location": "192.168.56.53/192.168.56.53:2222"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "key-agree",
+          "cryptoFunctions": [
+            "encapsulate"
+          ],
+          "parameterSetIdentifier": "SSH-Transport"
+        }
+      }
+    },
+    {
+      "bom-ref": "215eb67a-d3c9-58b0-b011-77ba6150be9f",
+      "type": "cryptographic-asset",
+      "name": "curve25519-sha256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:2222"
+          },
+          {
+            "location": "192.168.56.51/192.168.56.51:2222"
+          },
+          {
+            "location": "192.168.56.52/192.168.56.52:2222"
+          },
+          {
+            "location": "192.168.56.53/192.168.56.53:2222"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "key-agree",
+          "cryptoFunctions": [
+            "encapsulate"
+          ],
+          "parameterSetIdentifier": "SSH-Transport"
+        }
+      }
+    }
+  ],
+  "dependencies": []
+}

@@ -1,0 +1,15 @@
+name: pqc-linux
+description: |
+  PQC migration demo without Windows or AD CS. Six Linux VMs covering
+  EJBCA (PQC + chimera CAs), step-ca, OAuth/OIDC, OpenSearch
+  observability + dashboards, scanner host, and ACME client demo. The
+  driver of the composable-lab refactor — most of the lab's PQC work
+  doesn't need Windows at all. ~19 GB RAM total.
+
+components:
+  - observe1
+  - ejbca1
+  - stepca1
+  - hydra1
+  - scanner1
+  - acme1

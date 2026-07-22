@@ -1,0 +1,58 @@
+networks:
+  ejbca-network:
+
+services:
+  database:
+    image: mariadb:11
+    container_name: ejbca-db
+    networks:
+      - ejbca-network
+    environment:
+      MYSQL_ROOT_PASSWORD: "{{ ejbca_db_password }}"
+      MYSQL_DATABASE: ejbca
+      MYSQL_USER: ejbca
+      MYSQL_PASSWORD: "{{ ejbca_db_password }}"
+    volumes:
+      - /opt/ejbca/data/mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  ejbca:
+    image: keyfactor/ejbca-ce:{{ ejbca_image_tag }}
+    container_name: ejbca-ce
+    hostname: ejbca1.{{ lab_domain }}
+    networks:
+      - ejbca-network
+{% if yubihsm_mode is defined %}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+{% endif %}
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    environment:
+      TLS_SETUP_ENABLED: "later"
+      INITIAL_ADMIN: ";PublicAccessAuthenticationToken:TRANSPORT_ANY;"
+      DATABASE_JDBC_URL: "jdbc:mariadb://database:3306/ejbca?characterEncoding=UTF-8"
+      DATABASE_USER: ejbca
+      DATABASE_PASSWORD: "{{ ejbca_db_password }}"
+      LOG_LEVEL_APP: "INFO"
+      LOG_LEVEL_SERVER: "INFO"
+{% if yubihsm_mode is defined %}
+      YUBIHSM_PKCS11_CONF: "/etc/yubihsm_pkcs11.conf"
+{% endif %}
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - /opt/ejbca/data/export:/mnt/export
+{% if yubihsm_mode is defined %}
+      - {{ yubihsm_pkcs11_so | default('/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so') }}:/usr/lib/yubihsm_pkcs11.so:ro
+      - /etc/yubihsm_pkcs11_docker.conf:/etc/yubihsm_pkcs11.conf:ro
+{% endif %}
+    restart: unless-stopped

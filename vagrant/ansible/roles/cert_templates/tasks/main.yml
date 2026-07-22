@@ -1,0 +1,443 @@
+---
+# Certificate Templates role: publish standard templates, create custom templates,
+# and configure autoenroll permissions.
+
+- name: Install RSAT-AD-PowerShell (required by ADCSTemplate module)
+  ansible.windows.win_feature:
+    name: RSAT-AD-PowerShell
+    state: present
+  when: software_source is defined
+
+- name: Publish templates and configure autoenrollment via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      $taskUser = "{{ lab_netbios }}\Administrator"
+
+      $scriptFile = "C:\tmp\publish-templates.ps1"
+      $logFile = "C:\tmp\publish-templates.log"
+      $statusFile = "C:\tmp\publish-templates-status.txt"
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+
+      $wrapper = @"
+      {{ psf_init }}
+      `$netbiosName = '{{ lab_netbios }}'
+      # Explicit PSCredential, mirroring the subordinate_ca install fix.
+      # Without it, cert_templates publish can fail on issueca with
+      # "Either the target name is incorrect or the server has rejected the
+      # client credentials" — a Kerberos SPN / Batch-logon-token rejection in
+      # the same shape as the ERROR_LOGON_FAILURE seen during subordinate_ca
+      # install. The scheduled task runs with `lab_netbios\Administrator`
+      # via /ru /rp, but the implicit token can drop privileges, so Get-ADObject /
+      # Set-ADObject calls fall back to a Kerberos handshake that fails. Passing
+      # `-Credential `$adCred` forces NTLM with the full Administrator identity.
+      `$adCred = New-Object System.Management.Automation.PSCredential(
+          "`$netbiosName\Administrator",
+          (ConvertTo-SecureString '{{ admin_password }}' -AsPlainText -Force))
+
+      # Helper: retry Get-ADObject across AD replication lag.
+      # The wrapper writes templates via ADSI (which may target one DC) then reads
+      # them back via Get-ADObject (PowerShell AD module — may target a different
+      # DC), so a fresh-forest replication delay surfaces as "Directory object not
+      # found" intermittently. 15 × 4s = 60s window covers typical inter-DC lag.
+      function Get-ADObjectWaitForReplication {
+          param(`$Identity, `$Properties, `$Credential, [int]`$MaxAttempts = 15, [int]`$DelaySeconds = 4)
+          `$attempt = 0
+          while (`$attempt -lt `$MaxAttempts) {
+              try {
+                  return Get-ADObject -Identity `$Identity -Properties `$Properties -Credential `$Credential -ErrorAction Stop
+              } catch {
+                  if (`$_.Exception.Message -match 'Directory object not found|Cannot find object') {
+                      Start-Sleep -Seconds `$DelaySeconds
+                      `$attempt++
+                  } else {
+                      throw   # not a replication issue, fail fast
+                  }
+              }
+          }
+          throw "AD object still not found after `$(`$MaxAttempts * `$DelaySeconds)s of replication wait: `$Identity"
+      }
+      try {
+          Write-PSFMessage -Level Host -Message 'Starting certificate template configuration' -Tag 'cert-templates'
+          `$results = [System.Collections.Generic.List[string]]::new()
+          `$rootDSE = [ADSI]'LDAP://RootDSE'
+          `$configNC = `$rootDSE.configurationNamingContext.Value
+          `$templateBase = "CN=Certificate Templates,CN=Public Key Services,CN=Services,`$configNC"
+          `$autoenrollGuid = [Guid]'a05b8cc2-17bc-4802-a710-e7c15ab866a2'
+
+          # ---------------------------------------------------------------
+          # 1. Create stray-machine template (duplicate of Workstation with
+          #    Server Auth EKU added) if it doesn't already exist.
+          # ---------------------------------------------------------------
+          `$customName = 'stray-machine'
+          `$customDN = "CN=`$customName,`$templateBase"
+          `$customObj = [ADSI]"LDAP://`$customDN"
+
+          if (-not `$customObj.distinguishedName) {
+              `$srcDN = "CN=Workstation,`$templateBase"
+              `$src = [ADSI]"LDAP://`$srcDN"
+              `$container = [ADSI]"LDAP://`$templateBase"
+
+              `$new = `$container.Create('pKICertificateTemplate', "CN=`$customName")
+              `$new.Put('displayName', 'Stray Machine Authentication')
+
+              # Copy key attributes from Workstation template
+              `$copyAttrs = @(
+                  'flags',
+                  'revision',
+                  'pKIDefaultKeySpec',
+                  'pKIMaxIssuingDepth',
+                  'pKICriticalExtensions',
+                  'pKIDefaultCSPs',
+                  'pKIKeyUsage',
+                  'msPKI-Certificate-Application-Policy',
+                  'msPKI-Certificate-Name-Flag',
+                  'msPKI-Enrollment-Flag',
+                  'msPKI-Minimal-Key-Size',
+                  'msPKI-Private-Key-Flag',
+                  'msPKI-RA-Signature',
+                  'msPKI-Template-Schema-Version'
+              )
+              foreach (`$attr in `$copyAttrs) {
+                  `$val = `$src.Properties[`$attr].Value
+                  if (`$null -ne `$val) {
+                      `$new.Put(`$attr, `$val)
+                  }
+              }
+
+              # Set EKU: Client Auth + Server Auth
+              `$new.Put('pKIExtendedKeyUsage', @('1.3.6.1.5.5.7.3.2', '1.3.6.1.5.5.7.3.1'))
+              `$new.Put('msPKI-Certificate-Application-Policy', @('1.3.6.1.5.5.7.3.2', '1.3.6.1.5.5.7.3.1'))
+
+              # Generate a unique OID for this template
+              `$oidContainer = "CN=OID,CN=Public Key Services,CN=Services,`$configNC"
+              `$oidBase = '1.3.6.1.4.1.311.21.8'
+              `$randomOid = "`$oidBase.$(Get-Random -Minimum 100000 -Maximum 999999).$(Get-Random -Minimum 1 -Maximum 99)"
+              `$new.Put('msPKI-Cert-Template-OID', `$randomOid)
+
+              # Version and expiry
+              `$new.Put('msPKI-Template-Minor-Revision', 1)
+              `$new.Put('pKIExpirationPeriod', `$src.Properties['pKIExpirationPeriod'].Value)
+              `$new.Put('pKIOverlapPeriod', `$src.Properties['pKIOverlapPeriod'].Value)
+              `$new.SetInfo()
+
+              # Copy the security descriptor from Workstation
+              `$srcAcl = `$src.ObjectSecurity
+              `$new.ObjectSecurity.SetSecurityDescriptorBinaryForm(`$srcAcl.GetSecurityDescriptorBinaryForm())
+              `$new.CommitChanges()
+
+              `$results.Add("Created template: `$customName")
+          } else {
+              `$results.Add("Template already exists: `$customName")
+          }
+
+          # ---------------------------------------------------------------
+          # 1.5. Import Straylight JSON templates via ADCSTemplate module.
+          #      Requires software cache (C:\Software) to be mounted.
+          # ---------------------------------------------------------------
+      {% if software_source is defined %}
+          Import-Module 'C:\Software\ADCSTemplate\ADCSTemplate.psm1'
+
+          `$jsonTemplates = @(
+              @{ DisplayName = 'Straylight-Machine-1M-RSA2048-SHA256-v1';   File = 'C:\Software\Straylight-Machine-1M-RSA2048-SHA256-v1.json' },
+              @{ DisplayName = 'Straylight-Machine-1M-RSA4096-SHA256-v1';   File = 'C:\Software\Straylight-Machine-1M-RSA4096-SHA256-v1.json' },
+              @{ DisplayName = 'Straylight-Machine-1M-ECDHP384-SHA384-v1';  File = 'C:\Software\Straylight-Machine-1M-ECDHP384-SHA384-v1.json' },
+              @{ DisplayName = 'Straylight-Machine-1Y-RSA2048-SHA256-v1';   File = 'C:\Software\Straylight-Machine-1Y-RSA2048-SHA256-v1.json' },
+              @{ DisplayName = 'Straylight-ServerAdmin-8H-RSA2048-SHA256-v1';        File = 'C:\Software\Straylight-ServerAdmin-8H-RSA2048-SHA256-v1.json' },
+              @{ DisplayName = 'Straylight-DomainAdmin-8H-RSA4096-SHA256-v1';        File = 'C:\Software\Straylight-DomainAdmin-8H-RSA4096-SHA256-v1.json' },
+              @{ DisplayName = 'Straylight-EnterpriseAdmin-8H-ECDHP384-SHA384-v1';   File = 'C:\Software\Straylight-EnterpriseAdmin-8H-ECDHP384-SHA384-v1.json' },
+              @{ DisplayName = 'Straylight-Fiddler-1Y-RSA2048-SHA256-v1';   File = 'C:\Software\Straylight-Fiddler-1Y-RSA2048-SHA256-v1.json' }
+          )
+
+          foreach (`$t in `$jsonTemplates) {
+              `$existing = Get-ADCSTemplate -DisplayName `$t.DisplayName -ErrorAction SilentlyContinue
+              `$jsonContent = Get-Content `$t.File -Raw
+              if (-not `$existing) {
+                  New-ADCSTemplate -DisplayName `$t.DisplayName -JSON `$jsonContent -Publish
+                  `$results.Add("Imported: `$(`$t.DisplayName)")
+              } else {
+                  # Drift detection: re-import when JSON's msPKI-Template-Minor-Revision
+                  # exceeds the value currently in AD. Bumps to the minor-revision field
+                  # in the JSON are the canonical signal that a template definition was
+                  # edited and autoenrollment clients should re-enroll on next pulse.
+                  `$jsonObj = `$jsonContent | ConvertFrom-Json
+                  `$jsonMinorRev = [int]`$jsonObj.'msPKI-Template-Minor-Revision'
+                  `$adMinorRev   = [int](`$existing.'msPKI-Template-Minor-Revision' | Select-Object -First 1)
+                  if (`$jsonMinorRev -gt `$adMinorRev) {
+                      try {
+                          Remove-ADCSTemplate -DisplayName `$t.DisplayName -Confirm:`$false -ErrorAction Stop
+                          New-ADCSTemplate -DisplayName `$t.DisplayName -JSON `$jsonContent -Publish
+                          `$results.Add("Updated: `$(`$t.DisplayName) (minor-rev `$adMinorRev -> `$jsonMinorRev)")
+                      } catch {
+                          `$results.Add("Update failed: `$(`$t.DisplayName) (`$(`$_.Exception.Message))")
+                      }
+                  } else {
+                      `$results.Add("Already current: `$(`$t.DisplayName) (minor-rev `$adMinorRev)")
+                  }
+              }
+          }
+      {% endif %}
+
+          # ---------------------------------------------------------------
+          # 2. Publish standard templates + stray-machine + Straylight-*
+          #    on the local CA.
+          #
+          # Why all the Straylight-* templates are listed here even though
+          # `New-ADCSTemplate -Publish` ran in step 1.5:
+          # The `-Publish` flag only fires when the template is NEW. On a
+          # re-provisioned CA, the AD template already exists (from a
+          # prior provisioning attempt) -> step 1.5 hits the "Already
+          # exists" branch and skips Publish -> the new CA never gets
+          # the template in its local certificateTemplates issuance list
+          # -> autoenrollment from Domain Computers fails because the
+          # template is grant-ACLed but not issuable. Add-CATemplate is
+          # idempotent and always re-binds, so listing here covers re-
+          # provision cases regardless of AD state.
+          # ---------------------------------------------------------------
+          `$templates = @(
+              'Machine',
+              'User',
+              'WebServer',
+              'DomainControllerAuthentication',
+              'KerberosAuthentication',
+              'Workstation',
+              'stray-machine',
+              'Straylight-Machine-1M-RSA2048-SHA256-v1',
+              'Straylight-Machine-1M-RSA4096-SHA256-v1',
+              'Straylight-Machine-1M-ECDHP384-SHA384-v1',
+              'Straylight-Machine-1Y-RSA2048-SHA256-v1',
+              'Straylight-ServerAdmin-8H-RSA2048-SHA256-v1',
+              'Straylight-DomainAdmin-8H-RSA4096-SHA256-v1',
+              'Straylight-EnterpriseAdmin-8H-ECDHP384-SHA384-v1',
+              'Straylight-Fiddler-1Y-RSA2048-SHA256-v1'
+          )
+
+          foreach (`$template in `$templates) {
+              try {
+                  Add-CATemplate -Name `$template -Force -ErrorAction Stop
+                  `$results.Add("Published: `$template")
+              } catch {
+                  `$results.Add("Skipped: `$template (`$(`$_.Exception.Message))")
+              }
+          }
+
+          # ---------------------------------------------------------------
+          # 3. Grant Enroll + Autoenroll permissions on templates.
+          #    Both are required — Autoenroll alone won't issue certs
+          #    unless the principal also has Enroll permission.
+          #
+          #    IMPORTANT: Uses Set-ADObject instead of ADSI CommitChanges().
+          #    JSON-imported templates (New-ADCSTemplate) have security
+          #    descriptors that cause ADSI CommitChanges() to fail with
+          #    "A constraint violation occurred" — silently losing ACEs.
+          #    See docs/adsi-constraint-violation.md for full details.
+          # ---------------------------------------------------------------
+          Import-Module ActiveDirectory
+          `$enrollGuid = [Guid]'0e10c968-78fb-11d2-90d4-00c04f79dc55'
+          `$autoenrollMap = @{
+              'User'                                       = 'Domain Users'
+              'Straylight-Machine-1Y-RSA2048-SHA256-v1'    = 'Domain Computers'
+          }
+
+          # Pre-compute SID translations (avoids repeated LSA lookups)
+          `$sidCache = @{}
+          foreach (`$grp in `$autoenrollMap.Values | Select-Object -Unique) {
+              `$acct = New-Object System.Security.Principal.NTAccount(`$netbiosName, `$grp)
+              `$sidCache[`$grp] = `$acct.Translate([System.Security.Principal.SecurityIdentifier])
+          }
+
+          foreach (`$tplName in `$autoenrollMap.Keys) {
+              `$groupName = `$autoenrollMap[`$tplName]
+              try {
+                  `$tplDN = "CN=`$tplName,`$templateBase"
+                  `$tplAD = Get-ADObjectWaitForReplication -Identity `$tplDN -Properties nTSecurityDescriptor -Credential `$adCred
+                  `$sd = `$tplAD.nTSecurityDescriptor
+
+                  `$groupSID = `$sidCache[`$groupName]
+                  `$existingRules = `$sd.GetAccessRules(`$true, `$false, [System.Security.Principal.SecurityIdentifier])
+
+                  `$aceAdded = `$false
+
+                  # Grant Enroll permission
+                  `$existingEnroll = `$existingRules | Where-Object {
+                      `$_.IdentityReference -eq `$groupSID -and
+                      `$_.ObjectType -eq `$enrollGuid -and
+                      `$_.AccessControlType -eq 'Allow'
+                  }
+                  if (-not `$existingEnroll) {
+                      `$enrollAce = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                          `$groupSID,
+                          [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight,
+                          [System.Security.AccessControl.AccessControlType]::Allow,
+                          `$enrollGuid
+                      )
+                      `$sd.AddAccessRule(`$enrollAce)
+                      `$aceAdded = `$true
+                      `$results.Add("Enroll: `$groupName -> `$tplName")
+                  } else {
+                      `$results.Add("Enroll already set: `$groupName -> `$tplName")
+                  }
+
+                  # Grant Autoenroll permission
+                  `$existingAutoenroll = `$existingRules | Where-Object {
+                      `$_.IdentityReference -eq `$groupSID -and
+                      `$_.ObjectType -eq `$autoenrollGuid -and
+                      `$_.AccessControlType -eq 'Allow'
+                  }
+                  if (-not `$existingAutoenroll) {
+                      `$autoenrollAce = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                          `$groupSID,
+                          [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight,
+                          [System.Security.AccessControl.AccessControlType]::Allow,
+                          `$autoenrollGuid
+                      )
+                      `$sd.AddAccessRule(`$autoenrollAce)
+                      `$aceAdded = `$true
+                      `$results.Add("Autoenroll: `$groupName -> `$tplName")
+                  } else {
+                      `$results.Add("Autoenroll already set: `$groupName -> `$tplName")
+                  }
+
+                  if (`$aceAdded) {
+                      Set-ADObject -Identity `$tplDN -Replace @{nTSecurityDescriptor = `$sd} -Credential `$adCred -ErrorAction Stop
+                  }
+              } catch {
+                  `$results.Add("Enroll/Autoenroll FAILED: `$tplName (`$(`$_.Exception.Message))")
+                  throw
+              }
+          }
+
+          # ---------------------------------------------------------------
+          # 3b. Grant Enroll-only permissions on admin templates.
+          #     No Autoenroll — admins must request manually.
+          #     CA manager approval is enforced by CT_FLAG_PEND_ALL_REQUESTS
+          #     in the template's msPKI-Enrollment-Flag.
+          # ---------------------------------------------------------------
+          `$enrollOnlyMap = @{
+              'Straylight-ServerAdmin-8H-RSA2048-SHA256-v1'        = 'PKI-ServerAdmins'
+              'Straylight-DomainAdmin-8H-RSA4096-SHA256-v1'        = 'PKI-DomainAdmins'
+              'Straylight-EnterpriseAdmin-8H-ECDHP384-SHA384-v1'   = 'PKI-EnterpriseAdmins'
+              'Straylight-Fiddler-1Y-RSA2048-SHA256-v1'            = 'Domain Computers'
+          }
+
+          foreach (`$grp in `$enrollOnlyMap.Values | Select-Object -Unique) {
+              if (-not `$sidCache.ContainsKey(`$grp)) {
+                  `$acct = New-Object System.Security.Principal.NTAccount(`$netbiosName, `$grp)
+                  `$sidCache[`$grp] = `$acct.Translate([System.Security.Principal.SecurityIdentifier])
+              }
+          }
+
+          foreach (`$tplName in `$enrollOnlyMap.Keys) {
+              `$groupName = `$enrollOnlyMap[`$tplName]
+              try {
+                  `$tplDN = "CN=`$tplName,`$templateBase"
+                  `$tplAD = Get-ADObjectWaitForReplication -Identity `$tplDN -Properties nTSecurityDescriptor -Credential `$adCred
+                  `$sd = `$tplAD.nTSecurityDescriptor
+                  `$existingRules = `$sd.GetAccessRules(`$true, `$false, [System.Security.Principal.SecurityIdentifier])
+
+                  `$groupSID = `$sidCache[`$groupName]
+                  `$existingEnroll = `$existingRules | Where-Object {
+                      `$_.IdentityReference -eq `$groupSID -and
+                      `$_.ObjectType -eq `$enrollGuid -and
+                      `$_.AccessControlType -eq 'Allow'
+                  }
+                  if (-not `$existingEnroll) {
+                      `$enrollAce = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                          `$groupSID,
+                          [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight,
+                          [System.Security.AccessControl.AccessControlType]::Allow,
+                          `$enrollGuid
+                      )
+                      `$sd.AddAccessRule(`$enrollAce)
+                      Set-ADObject -Identity `$tplDN -Replace @{nTSecurityDescriptor = `$sd} -Credential `$adCred -ErrorAction Stop
+                      `$results.Add("Enroll-only: `$groupName -> `$tplName")
+                  } else {
+                      `$results.Add("Enroll-only already set: `$groupName -> `$tplName")
+                  }
+              } catch {
+                  `$results.Add("Enroll-only FAILED: `$tplName (`$(`$_.Exception.Message))")
+                  throw
+              }
+          }
+
+          `$results -join "`n" | Out-File $logFile
+          Write-PSFMessage -Level Host -Message 'Certificate template configuration succeeded' -Tag 'cert-templates'
+          'SUCCESS' | Out-File $statusFile
+      } catch {
+          Write-PSFMessage -Level Error -Message 'Certificate template configuration failed' -ErrorRecord `$_ -Tag 'cert-templates'
+          `$_.Exception.Message | Out-File $logFile -Append
+          'FAILED' | Out-File $statusFile
+      }
+      Wait-PSFMessage
+      "@
+      $wrapper | Out-File -FilePath $scriptFile -Encoding ASCII -Force
+      Remove-Item $statusFile -ErrorAction SilentlyContinue
+
+      schtasks /create /tn "PublishTemplates" `
+          /tr "powershell.exe -ExecutionPolicy Bypass -File $scriptFile" `
+          /sc once /st 00:00 /ru $taskUser /rp '{{ admin_password }}' /rl highest /f 2>&1 | Out-Null
+      schtasks /run /tn "PublishTemplates" | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "schtasks /run PublishTemplates failed (exit $LASTEXITCODE)" }
+
+      # Wait ceiling bumped 120s -> 600s: JSON imports + 8 templates x up to
+      # 60s AD-replication retry per ACL apply (Get-ADObjectWaitForReplication)
+      # can cumulatively exceed 2 min on a cold forest. Matches the timeout-diag
+      # pattern used by subordinate_ca so a wait-exhaustion is distinguishable
+      # from an actual template publishing error.
+      $maxWait = 600
+      $waited = 0
+      $timedOut = $true
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 5
+          $waited += 5
+          $taskInfo = schtasks /query /tn "PublishTemplates" /fo csv /nh 2>$null
+          if ($taskInfo -match "Ready") { $timedOut = $false; break }
+      }
+
+      # If we timed out, capture the task's last-known state BEFORE deleting it.
+      $timeoutDiag = ''
+      if ($timedOut) {
+          $timeoutDiag = "schtasks-wait timed out after ${maxWait}s. Task state at timeout: " +
+                        ((schtasks /query /tn "PublishTemplates" /v /fo list 2>&1 | Out-String) -replace "`r?`n", " | ")
+      }
+
+      schtasks /delete /tn "PublishTemplates" /f 2>$null
+
+      $log = Get-Content $logFile -ErrorAction SilentlyContinue
+      if ($log) { $Ansible.Result = $log -join "`n" }
+      $status = Get-Content $statusFile -ErrorAction SilentlyContinue
+
+      if ($status -ne "SUCCESS") {
+          # Preserve failure evidence for post-mortem: template-publish failures
+          # are rare cold-build races, and the success-path cleanup below would
+          # otherwise delete the only record of what the scheduled task did.
+          Copy-Item $logFile 'C:\tmp\publish-templates-FAILED.log' -Force -ErrorAction SilentlyContinue
+          Copy-Item $statusFile 'C:\tmp\publish-templates-FAILED-status.txt' -Force -ErrorAction SilentlyContinue
+          $msg = "Template publishing failed. Log: $($log -join '; ')"
+          if ($timeoutDiag) { $msg += " ; $timeoutDiag" }
+          throw $msg
+      }
+
+      # Clean up temp files (success path only)
+      Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue
+      Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+      Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
+  # no_log: true — the rendered script contains `{{ admin_password }}` via
+  # `schtasks /create ... /rp '<password>'`, so Ansible output would otherwise
+  # leak the Domain Administrator credential. SYSTEM context can't be used
+  # because `New-ADCSTemplate` (ADCSTemplate module) calls AD without an
+  # explicit -Credential and would fail with the same Batch-logon-token
+  # privilege-drop seen during subordinate_ca install. Wrapper writes a
+  # status + log file locally for post-run diagnosis; `$Ansible.Result` is
+  # also censored by no_log, so failure messages now embed the wrapper's
+  # captured log + timeout-diag inline in the thrown exception message.
+  no_log: true
+  # Ansible-level retry: on a cold build issueca's WMI/scheduled-task subsystem
+  # can briefly stall under parallel-provision load, timing out the 600s
+  # schtasks-wait and throwing. The publish is idempotent (New-ADCSTemplate
+  # checks for existing templates), so retry a transient stall rather than
+  # hard-failing the whole CA. (A fully hung/unreachable VM is VBox-level and
+  # not recoverable here — this only rescues recoverable in-guest stalls.)
+  register: cert_templates_publish
+  until: cert_templates_publish is succeeded
+  retries: 3
+  delay: 30

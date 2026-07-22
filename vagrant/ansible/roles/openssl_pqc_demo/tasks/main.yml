@@ -1,0 +1,175 @@
+---
+# openssl_pqc_demo role — minimal TLS listener using openssl s_server on a
+# caller-supplied PQC cert. Used to put a pure-PQC leaf on the wire on a port
+# where stock OpenSSL clients fail to handshake (the point of the demo).
+#
+# CERT CONTRACT (shared with nginx_pqc_demo — see roles/README.md "PQC demo
+# cert contract"):
+#   openssl_pqc_cert_path  — full path to PEM leaf cert on target VM (required)
+#   openssl_pqc_key_path   — full path to PEM leaf key on target VM  (required)
+# This role ADDITIONALLY needs the issuing + root CA PEMs to build the verify
+# chain; by contract they live alongside the leaf (see defaults/main.yml for
+# the openssl_pqc_{issuing,root}_ca_path / chain_path vars).
+#
+# Other required vars:
+#   openssl_pqc_port       — listen port (e.g. 8444)
+#   openssl_pqc_unit_name  — systemd unit name (e.g. openssl-pqc-pure)
+#
+# Depends on openssl_35 role having run on the target.
+
+- name: Validate required cert/key paths + listener vars are provided
+  ansible.builtin.assert:
+    that:
+      - openssl_pqc_cert_path is defined
+      - openssl_pqc_key_path is defined
+      - openssl_pqc_port is defined
+      - openssl_pqc_unit_name is defined
+    fail_msg: >-
+      openssl_pqc_demo requires openssl_pqc_cert_path, openssl_pqc_key_path,
+      openssl_pqc_port and openssl_pqc_unit_name to be set by the caller
+      (no defaults; see role's defaults/main.yml for the cert contract).
+
+- name: Verify openssl35 binary exists
+  ansible.builtin.stat:
+    path: /opt/openssl-3.5/bin/openssl
+  register: openssl35_bin
+
+- name: Fail if openssl_35 role not applied
+  ansible.builtin.fail:
+    msg: "openssl_35 role must run on this host first (no /opt/openssl-3.5/bin/openssl)"
+  when: not openssl35_bin.stat.exists
+
+- name: Stat the issuing + root CA PEMs the verify chain is built from
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: openssl_pqc_ca_stat
+  loop:
+    - "{{ openssl_pqc_issuing_ca_path }}"
+    - "{{ openssl_pqc_root_ca_path }}"
+
+- name: Assert the CA PEMs exist (cert contract — caller stages them by the leaf)
+  ansible.builtin.assert:
+    that:
+      - openssl_pqc_ca_stat.results | map(attribute='stat.exists') | select('equalto', false) | list | length == 0
+    fail_msg: >-
+      openssl_pqc_demo expects the issuing + root CA PEMs alongside the leaf
+      cert ({{ openssl_pqc_issuing_ca_path }} and {{ openssl_pqc_root_ca_path }}).
+      Stage them (or override openssl_pqc_issuing_ca_path/openssl_pqc_root_ca_path)
+      before running this role.
+
+- name: Build CA chain bundle (root + issuing) for s_server -CAfile + clients
+  ansible.builtin.shell:
+    cmd: |
+      cat {{ openssl_pqc_issuing_ca_path }} \
+          {{ openssl_pqc_root_ca_path }} \
+          > {{ openssl_pqc_chain_path }}
+      chmod 0644 {{ openssl_pqc_chain_path }}
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Render systemd unit
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ openssl_pqc_unit_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=openssl s_server pure-PQC TLS listener ({{ openssl_pqc_unit_name }})
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/opt/openssl-3.5/bin/openssl s_server \
+        -accept {{ openssl_pqc_port }} \
+        -cert {{ openssl_pqc_cert_path }} \
+        -key {{ openssl_pqc_key_path }} \
+        -CAfile {{ openssl_pqc_chain_path }} \
+      {%- if openssl_pqc_verify_client | default(false) %}
+
+        -Verify 1 \
+      {%- endif %}
+
+        -www \
+        -quiet
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: restart openssl_pqc_demo
+
+- name: Stat cert (mtime drives reload decision)
+  ansible.builtin.stat:
+    path: "{{ openssl_pqc_cert_path }}"
+  register: openssl_pqc_cert_stat
+
+- name: Stat unit-last-cert-mtime marker
+  ansible.builtin.stat:
+    path: "/var/lib/{{ openssl_pqc_unit_name }}.cert-mtime"
+  register: openssl_pqc_marker
+
+- name: Read marker mtime if present
+  ansible.builtin.slurp:
+    src: "/var/lib/{{ openssl_pqc_unit_name }}.cert-mtime"
+  register: openssl_pqc_marker_content
+  when: openssl_pqc_marker.stat.exists
+
+- name: Determine if cert changed since last unit start
+  ansible.builtin.set_fact:
+    openssl_pqc_cert_changed: >-
+      {{ not openssl_pqc_marker.stat.exists
+         or (openssl_pqc_marker_content.content | b64decode | trim | int) != (openssl_pqc_cert_stat.stat.mtime | int) }}
+
+- name: Enable + start unit
+  ansible.builtin.systemd:
+    name: "{{ openssl_pqc_unit_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Force restart if cert changed (s_server holds cert in memory)
+  ansible.builtin.systemd:
+    name: "{{ openssl_pqc_unit_name }}"
+    state: restarted
+  when: openssl_pqc_cert_changed
+
+- name: Update marker with current cert mtime
+  ansible.builtin.copy:
+    content: "{{ openssl_pqc_cert_stat.stat.mtime }}\n"
+    dest: "/var/lib/{{ openssl_pqc_unit_name }}.cert-mtime"
+    owner: root
+    group: root
+    mode: "0644"
+  when: openssl_pqc_cert_changed
+
+- name: Wait for listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ openssl_pqc_port }}"
+    timeout: 15
+
+- name: Verify ML-DSA handshake works (openssl35 client)
+  # Loopback connect from the server has no client cert, so skip it when
+  # the listener requires one — that mode's verification belongs to the
+  # mTLS-from-client probe in the calling playbook.
+  when: not (openssl_pqc_verify_client | default(false))
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      timeout 5 /opt/openssl-3.5/bin/openssl s_client \
+        -connect 127.0.0.1:{{ openssl_pqc_port }} \
+        -CAfile {{ openssl_pqc_chain_path }} \
+        -verify_return_error </dev/null 2>&1 | grep -E "Verify return code|Server certificate"
+  args:
+    executable: /bin/bash
+  register: tls_handshake
+  changed_when: false
+  failed_when: "'Verify return code: 0 (ok)' not in tls_handshake.stdout"
+
+- name: Show handshake result
+  when: not (openssl_pqc_verify_client | default(false))
+  ansible.builtin.debug:
+    var: tls_handshake.stdout_lines

@@ -1,0 +1,12 @@
+name: ad-cs-two-tier
+description: |
+  Microsoft PKI lab — two-tier AD CS topology. Offline standalone root
+  CA (ROOTCA, not domain-joined) + enterprise issuing CA (ISSUECA).
+  More realistic enterprise pattern than one-tier.
+
+components:
+  - dc1
+  - rootca
+  - issueca
+  - web1
+  - manage1

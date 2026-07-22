@@ -1,0 +1,143 @@
+---
+# Web Server role: IIS site for CRL/AIA distribution
+
+- name: Create PKI directory structure
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - C:\PKI
+    - C:\PKI\CRL
+    - C:\PKI\AIA
+    # PQC hierarchy's separate CDP/AIA namespace. Pre-created so web1
+    # serves http://pki/crl/pqc + /aia/pqc (MIME + dir-browse inherited from the
+    # parent crl/aia virtual dirs) even before the PQC CAs' first publish.
+    - C:\PKI\CRL\pqc
+    - C:\PKI\AIA\pqc
+
+- name: Install IIS features
+  ansible.windows.win_feature:
+    name:
+      - Web-Server
+      - Web-Default-Doc
+      - Web-Dir-Browsing
+      - Web-Http-Errors
+      - Web-Static-Content
+    include_management_tools: true
+    state: present
+
+- name: Stop Default Web Site to free port 80
+  community.windows.win_iis_website:
+    name: "Default Web Site"
+    state: stopped
+
+- name: Create PKI website
+  community.windows.win_iis_website:
+    name: PKI
+    physical_path: C:\PKI
+    port: 80
+    state: started
+
+- name: Create CRL virtual directory
+  community.windows.win_iis_virtualdirectory:
+    name: crl
+    site: PKI
+    physical_path: C:\PKI\CRL
+    state: present
+
+- name: Create AIA virtual directory
+  community.windows.win_iis_virtualdirectory:
+    name: aia
+    site: PKI
+    physical_path: C:\PKI\AIA
+    state: present
+
+- name: Stop Default Web Site and configure IIS settings
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Import-Module WebAdministration
+
+      # Stop Default Web Site (conflicts with PKI site on port 80)
+      $site = Get-Website -Name "Default Web Site" -ErrorAction SilentlyContinue
+      if ($site -and $site.State -eq 'Started') {
+          Write-PSFMessage -Level Host -Message 'Stopping Default Web Site' -Tag 'web-server'
+          Stop-Website -Name "Default Web Site"
+      }
+
+      Write-PSFMessage -Level Host -Message 'Configuring IIS MIME types and directory browsing' -Tag 'web-server'
+
+      # Add .crl MIME type
+      $crlMime = Get-WebConfigurationProperty -PSPath "IIS:\Sites\PKI" `
+          -Filter "system.webServer/staticContent/mimeMap[@fileExtension='.crl']" `
+          -Name "." -ErrorAction SilentlyContinue
+      if (-not $crlMime) {
+          Write-PSFMessage -Level Host -Message 'Adding .crl MIME type' -Tag 'web-server'
+          Add-WebConfigurationProperty -PSPath "IIS:\Sites\PKI" `
+              -Filter "system.webServer/staticContent" -Name "." `
+              -Value @{fileExtension='.crl'; mimeType='application/pkix-crl'}
+      }
+
+      # Add .crt MIME type
+      $crtMime = Get-WebConfigurationProperty -PSPath "IIS:\Sites\PKI" `
+          -Filter "system.webServer/staticContent/mimeMap[@fileExtension='.crt']" `
+          -Name "." -ErrorAction SilentlyContinue
+      if (-not $crtMime) {
+          Write-PSFMessage -Level Host -Message 'Adding .crt MIME type' -Tag 'web-server'
+          Add-WebConfigurationProperty -PSPath "IIS:\Sites\PKI" `
+              -Filter "system.webServer/staticContent" -Name "." `
+              -Value @{fileExtension='.crt'; mimeType='application/pkix-cert'}
+      }
+
+      # Enable directory browsing for /crl and /aia
+      Write-PSFMessage -Level Host -Message 'Enabling directory browsing for /crl and /aia' -Tag 'web-server'
+      Set-WebConfigurationProperty -PSPath "IIS:\Sites\PKI\crl" `
+          -Filter "system.webServer/directoryBrowse" -Name "enabled" -Value $true
+      Set-WebConfigurationProperty -PSPath "IIS:\Sites\PKI\aia" `
+          -Filter "system.webServer/directoryBrowse" -Name "enabled" -Value $true
+
+      # Allow double escaping (required for delta CRLs with + character)
+      Write-PSFMessage -Level Host -Message 'Enabling double escaping for delta CRLs' -Tag 'web-server'
+      Set-WebConfigurationProperty -PSPath "IIS:\Sites\PKI" `
+          -Filter "system.webServer/security/requestFiltering" `
+          -Name "allowDoubleEscaping" -Value $true
+
+      Wait-PSFMessage
+
+- name: Set IIS_IUSRS permissions on PKI directory
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $acl = Get-Acl C:\PKI
+      $existing = $acl.Access | Where-Object { $_.IdentityReference -like '*IIS_IUSRS*' }
+      if (-not $existing) {
+          Write-PSFMessage -Level Host -Message 'Setting IIS_IUSRS read permissions on C:\PKI' -Tag 'web-server'
+          $permission = "IIS_IUSRS", "Read,ReadAndExecute,ListDirectory", "ContainerInherit,ObjectInherit", "None", "Allow"
+          $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule $permission
+          $acl.SetAccessRule($accessRule)
+          Set-Acl C:\PKI $acl
+      } else {
+          $Ansible.Changed = $false
+      }
+      Wait-PSFMessage
+
+- name: Create SMB share for CRL publishing with scoped permissions
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $shareName = "PKI$"
+      $domain = '{{ lab_netbios }}'
+
+      $existing = Get-SmbShare -Name $shareName -ErrorAction SilentlyContinue
+      if (-not $existing) {
+          Write-PSFMessage -Level Host -Message 'Creating PKI$ SMB share with scoped permissions' -Tag 'web-server'
+          New-SmbShare -Name $shareName -Path C:\PKI `
+              -FullAccess "BUILTIN\Administrators" `
+              -ChangeAccess "$domain\Domain Computers" `
+              -ReadAccess "Everyone" `
+              -Description "PKI CRL/AIA Distribution"
+      } else {
+          Write-PSFMessage -Level Host -Message 'PKI$ SMB share already exists' -Tag 'web-server'
+          $Ansible.Changed = $false
+      }
+      Wait-PSFMessage

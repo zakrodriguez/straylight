@@ -1,0 +1,19 @@
+PLAY [all] *********************************************************************
+
+TASK [common : Detect Windows installation type] *******************************
+ok: [manage1]
+
+TASK [common : Set timezone] ***************************************************
+changed: [manage1]
+
+TASK [common : Ensure WinRM firewall rule] *************************************
+ok: [manage1]
+
+TASK [Include rsat role] *******************************************************
+included: rsat for manage1
+
+TASK [rsat : Install RSAT tools] ***********************************************
+skipping: [manage1]
+
+TASK [rsat : Verify tooling] ***************************************************
+ok: [manage1]

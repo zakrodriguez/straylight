@@ -1,0 +1,132 @@
+---
+# gnupg_pqc — build GnuPG 2.5+ with PQC primitives (ML-DSA, ML-KEM)
+# from RFC 9580. Stock Ubuntu 22.04 ships GnuPG 2.2.27 / libgcrypt 1.9.4 —
+# both predate PQC. Builds the entire dep chain to /opt/gnupg-pqc so the
+# system gpg/gpg-agent on /usr/bin stays untouched.
+#
+# Dependency chain (all need PQC-era versions):
+#   libgpg-error → libgcrypt (PQC primitives live here) → libksba →
+#   libassuan → npth → pinentry → gnupg
+#
+# Build vars come from defaults/main.yml. Skip the whole chain if the
+# target binary already reports a 2.5+ version.
+
+- name: Check whether PQC-capable gpg is already installed
+  ansible.builtin.command:
+    cmd: "{{ gnupg_pqc_prefix }}/bin/gpg --version"
+  register: gpg_pqc_check
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether build is needed
+  ansible.builtin.set_fact:
+    gnupg_pqc_needs_build: >-
+      {{ gpg_pqc_check.rc != 0
+         or 'gpg (GnuPG) 2.5' not in (gpg_pqc_check.stdout | default(''))
+         and 'gpg (GnuPG) 2.6' not in (gpg_pqc_check.stdout | default('')) }}
+
+- name: Install build dependencies
+  ansible.builtin.apt:
+    name:
+      - build-essential
+      - gettext
+      - texinfo
+      - bzip2
+      - libbz2-dev
+      - zlib1g-dev
+      - libreadline-dev
+      - libncurses-dev
+      - pkg-config
+    state: present
+    update_cache: true
+  when: gnupg_pqc_needs_build
+
+# Build vendored chain. URLs from gnupg.org/download/. Versions chosen to
+# satisfy GnuPG 2.5.x's minimum reqs + PQC primitives (libgcrypt 1.11+).
+- name: Build GnuPG dependency chain
+  vars:
+    common_configure: >-
+      ./configure
+      --prefix={{ gnupg_pqc_prefix }}
+      --enable-maintainer-mode
+      LDFLAGS=-Wl,-rpath,{{ gnupg_pqc_prefix }}/lib
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      cd /tmp
+      pkg="{{ item.pkg }}"
+      ver="{{ item.ver }}"
+      url="https://www.gnupg.org/ftp/gcrypt/{{ item.dir }}/${pkg}-${ver}.tar.bz2"
+      tarball="${pkg}-${ver}.tar.bz2"
+      srcdir="${pkg}-${ver}"
+
+      if [ -d "{{ gnupg_pqc_prefix }}/lib" ] && \
+         (ls "{{ gnupg_pqc_prefix }}/lib"/lib${pkg}*.so* 2>/dev/null | grep -q . || \
+          ls "{{ gnupg_pqc_prefix }}/bin/${pkg}"* 2>/dev/null | grep -q .); then
+        # Already installed — heuristic check on artifact presence
+        echo "skipped: ${pkg} ${ver} appears installed"
+        exit 0
+      fi
+
+      # Cache-first: prefer the host-staged tarball under /software/gnupg-cache/.
+      # Falls back to curl from gnupg.org only when the cache miss happens.
+      cache_path="{{ software_source_linux | default('/software') }}/gnupg-cache/${tarball}"
+      if [ ! -f "$tarball" ]; then
+        if [ -f "$cache_path" ]; then
+          cp "$cache_path" "$tarball"
+        else
+          curl -fsSLO "$url"
+        fi
+      fi
+      rm -rf "$srcdir"
+      tar xf "$tarball"
+      cd "$srcdir"
+      PKG_CONFIG_PATH={{ gnupg_pqc_prefix }}/lib/pkgconfig \
+        {{ common_configure }} {{ item.extra_configure | default('') }}
+      make -j{{ ansible_processor_vcpus | default(2) }}
+      make install
+      cd /tmp && rm -rf "$srcdir" "$tarball"
+      echo "installed: ${pkg} ${ver}"
+    executable: /bin/bash
+  loop:
+    - { pkg: libgpg-error, ver: "1.56",  dir: libgpg-error }
+    - { pkg: libgcrypt,    ver: "1.11.2", dir: libgcrypt,
+        extra_configure: "--with-libgpg-error-prefix={{ gnupg_pqc_prefix }} --disable-doc" }
+    - { pkg: libassuan,    ver: "3.0.2", dir: libassuan,
+        extra_configure: "--with-libgpg-error-prefix={{ gnupg_pqc_prefix }}" }
+    - { pkg: libksba,      ver: "1.6.7", dir: libksba,
+        extra_configure: "--with-libgpg-error-prefix={{ gnupg_pqc_prefix }}" }
+    - { pkg: npth,         ver: "1.8",   dir: npth }
+    - { pkg: pinentry,     ver: "1.3.2", dir: pinentry,
+        extra_configure: "--with-libgpg-error-prefix={{ gnupg_pqc_prefix }} --with-libassuan-prefix={{ gnupg_pqc_prefix }} --enable-pinentry-curses --disable-pinentry-gtk2 --disable-pinentry-gnome3 --disable-pinentry-qt5 --disable-pinentry-tty --disable-pinentry-fltk --disable-pinentry-emacs" }
+    - { pkg: gnupg,        ver: "{{ gnupg_pqc_version }}",  dir: gnupg,
+        extra_configure: "--with-libgpg-error-prefix={{ gnupg_pqc_prefix }} --with-libgcrypt-prefix={{ gnupg_pqc_prefix }} --with-libassuan-prefix={{ gnupg_pqc_prefix }} --with-ksba-prefix={{ gnupg_pqc_prefix }} --with-npth-prefix={{ gnupg_pqc_prefix }} --disable-doc --disable-gpgsm --disable-gpgtar --disable-wks-tools" }
+  register: build_result
+  changed_when: "'installed:' in (build_result.stdout | default(''))"
+  when: gnupg_pqc_needs_build
+
+- name: Verify PQC-capable gpg installed
+  ansible.builtin.command:
+    cmd: "{{ gnupg_pqc_prefix }}/bin/gpg --version"
+  register: gpg_pqc_post
+  changed_when: false
+
+- name: Show installed gpg version
+  ansible.builtin.debug:
+    msg: "{{ gpg_pqc_post.stdout_lines[:3] }}"
+
+- name: Confirm Kyber/ML-KEM pubkey algo recognized
+  # GnuPG 2.5.x lists "Kyber" in --version's Pubkey set; that's its name for
+  # the ECC+Kyber (Brainpool P-256 + Kyber-768) composite shipped in
+  # libgcrypt 1.11. ML-DSA signing is NOT in 2.5.x yet — see
+  # docs/gnupg-pqc-status.md for the upstream gap.
+  ansible.builtin.shell:
+    cmd: "{{ gnupg_pqc_prefix }}/bin/gpg --version | grep -iE 'kyber|mlkem'"
+  register: pqc_algo_check
+  changed_when: false
+  failed_when: pqc_algo_check.rc != 0
+
+# Generate the lab's PQC OpenPGP key in a dedicated GNUPGHOME under the
+# install prefix. Stays out of the user's ~/.gnupg; idempotent.
+- name: Include keygen tasks
+  ansible.builtin.include_tasks: keygen.yml

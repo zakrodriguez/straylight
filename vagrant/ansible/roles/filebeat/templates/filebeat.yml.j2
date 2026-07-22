@@ -1,0 +1,54 @@
+filebeat.inputs:
+  - type: container
+    paths:
+      - /var/lib/docker/containers/*/*.log
+    processors:
+      - add_docker_metadata:
+          host: "unix:///var/run/docker.sock"
+
+  - type: filestream
+    id: syslog
+    paths:
+      - /var/log/syslog
+      - /var/log/auth.log
+    parsers:
+      - syslog:
+          format: auto
+
+output.elasticsearch:
+  hosts: ["https://{{ observe_ip }}:{{ beats_tls_port | default(9244) }}"]
+  username: "{{ beats_basic_auth_user }}"
+  password: "{{ beats_basic_auth_password }}"
+  # observe1 serves an ACME cert from step-ca (Smallstep-CA Intermediate).
+  # `certificate` mode verifies the chain but skips hostname check, so Beats
+  # connecting via {{ observe_ip }} (IP, not the cert CN) still work.
+  # The step-ca root is distributed forest-wide via stepca_ad_trust; on Linux
+  # hosts it lands in /usr/local/share/ca-certificates via acme_client.
+  ssl.verification_mode: certificate
+  # Date-suffixed index so the server-side ISM policy (opensearch_stack role)
+  # can age out whole daily indices instead of one fixed-name index growing
+  # unbounded on the single-node cluster. Field types are locked by
+  # the `straylight-logs` index template, which also auto-attaches the
+  # retention policy on index creation.
+  index: "logs-linux-%{+yyyy.MM.dd}"
+  allow_older_versions: true
+  pipeline: ""
+
+# Index template + ISM policy are managed server-side by the opensearch_stack
+# role (single source of truth), not pushed per-Beat. A custom non-default
+# index name also requires ilm disabled.
+setup.ilm.enabled: false
+setup.template.enabled: false
+
+fields:
+  lab_source: "{{ log_prefix }}-{{ inventory_hostname | upper }}"
+  lab_domain: "{{ lab_domain }}"
+
+fields_under_root: true
+
+logging.level: warning
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 3

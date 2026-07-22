@@ -1,0 +1,18 @@
+---
+# Manage role: RSAT tools for AD DS, AD CS, DNS, Group Policy management
+# Server 2025 Desktop: RSAT ships on-disk via WinSxS. Install-WindowsFeature
+# completes in ~30s. No external FoD source needed.
+#
+# Server 2025 Desktop is used here because client Windows ships RSAT as
+# FoD cabs whose ISO is only available via VLSC/MSDN — not suitable for an
+# open lab — whereas Server 2025 has RSAT on-disk.
+
+- name: Install RSAT tools
+  ansible.windows.win_feature:
+    name:
+      - RSAT-AD-Tools        # AD DS + LDS (snap-ins + AD PowerShell)
+      - RSAT-ADCS-Mgmt       # Certification Authority snap-in (certsrv.msc)
+      - RSAT-DNS-Server      # DNS Manager (dnsmgmt.msc)
+      - GPMC                 # Group Policy Management Console
+    state: present
+    include_management_tools: true

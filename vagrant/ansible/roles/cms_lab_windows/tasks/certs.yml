@@ -1,0 +1,163 @@
+---
+# Cert generation + enrollment for cms_lab_windows.
+# Uses New-SelfSignedCertificate for throwaway certs and certreq for
+# AD CS lab-CA enrolled certs (classical via WebServer template,
+# PQC via Straylight-PQC-Machine-MLDSA65-v1).
+
+# ── Self-signed certs ─────────────────────────────────────────────────────
+
+- name: Check if self-rsa.pfx already exists
+  ansible.windows.win_stat:
+    path: "{{ cms_lab_win_root }}\\certs\\self-rsa.pfx"
+  register: self_rsa_pfx
+
+- name: Generate self-signed RSA-2048 cert + export PFX/CER
+  ansible.windows.win_powershell:
+    script: |
+      $cert = New-SelfSignedCertificate `
+          -Subject "{{ cms_lab_win_self_rsa_subject }}" `
+          -KeyAlgorithm RSA -KeyLength 2048 `
+          -KeyExportPolicy Exportable `
+          -CertStoreLocation Cert:\LocalMachine\My `
+          -NotAfter (Get-Date).AddDays(365)
+      $pwd = ConvertTo-SecureString -String "{{ cms_lab_win_pfx_password }}" -Force -AsPlainText
+      Export-PfxCertificate -Cert $cert `
+          -FilePath "{{ cms_lab_win_root }}\certs\self-rsa.pfx" `
+          -Password $pwd | Out-Null
+      Export-Certificate -Cert $cert `
+          -FilePath "{{ cms_lab_win_root }}\certs\self-rsa.cer" | Out-Null
+  when: not self_rsa_pfx.stat.exists
+
+- name: Check if self-ecdsa.pfx already exists
+  ansible.windows.win_stat:
+    path: "{{ cms_lab_win_root }}\\certs\\self-ecdsa.pfx"
+  register: self_ecdsa_pfx
+
+- name: Generate self-signed ECDSA P-256 cert + export PFX/CER
+  ansible.windows.win_powershell:
+    script: |
+      $cert = New-SelfSignedCertificate `
+          -Subject "{{ cms_lab_win_self_ecdsa_subject }}" `
+          -KeyAlgorithm ECDSA_nistP256 `
+          -KeyExportPolicy Exportable `
+          -CertStoreLocation Cert:\LocalMachine\My `
+          -NotAfter (Get-Date).AddDays(365)
+      $pwd = ConvertTo-SecureString -String "{{ cms_lab_win_pfx_password }}" -Force -AsPlainText
+      Export-PfxCertificate -Cert $cert `
+          -FilePath "{{ cms_lab_win_root }}\certs\self-ecdsa.pfx" `
+          -Password $pwd | Out-Null
+      Export-Certificate -Cert $cert `
+          -FilePath "{{ cms_lab_win_root }}\certs\self-ecdsa.cer" | Out-Null
+  when: not self_ecdsa_pfx.stat.exists
+
+# ── RSA lab-CA cert from YOURLAB-Issuing-CA via certreq ───────────────────
+
+- name: Check if RSA lab-CA cert already enrolled
+  ansible.windows.win_stat:
+    path: "{{ cms_lab_win_root }}\\certs\\rsa-labca.thumbprint"
+  register: rsa_labca_thumbprint
+
+- name: Render RSA labca enrollment INF + wrapper (when not already enrolled)
+  ansible.windows.win_template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+  loop:
+    - { src: rsa-labca.inf.j2, dest: '{{ cms_lab_win_root }}\certs\rsa-labca.inf' }
+    - { src: labca-enroll.ps1.j2, dest: 'C:\Windows\Temp\rsa-labca-enroll.ps1' }
+  vars:
+    enroll_label: rsa-labca
+    enroll_config: "{{ cms_lab_win_ca_config }}"
+  when: not rsa_labca_thumbprint.stat.exists
+
+- name: Enroll RSA cert from YOURLAB-Issuing-CA via certreq (SYSTEM/machine identity)
+  ansible.windows.win_powershell:
+    script: |
+      # WinRM runs as 'vagrant' (Network logon, no machine creds for DCOM/RPC),
+      # so run the certreq wrapper as SYSTEM via a scheduled task — the request
+      # then authenticates as {{ inventory_hostname }}$ (holds Enroll on the
+      # template). The wrapper (labca-enroll.ps1.j2) uses certreq -submit, not
+      # Get-Certificate/CertEnroll, which fails on the multi-homed Vagrant CA
+      # (shared NAT IP 10.0.2.15) with RPC_S_SERVER_UNAVAILABLE. It writes
+      # OK:<thumbprint> / ERR:<msg> to the status file + persists the thumbprint
+      # and chain PEM under {{ cms_lab_win_root }}\certs.
+      $status = 'C:\Windows\Temp\rsa-labca.status'
+      Remove-Item $status -Force -ErrorAction SilentlyContinue
+
+      $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\rsa-labca-enroll.ps1'
+      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+      Register-ScheduledTask -TaskName 'cms-lab-rsa-enroll' -Action $action -Principal $principal -Force | Out-Null
+      Start-ScheduledTask -TaskName 'cms-lab-rsa-enroll'
+
+      $deadline = (Get-Date).AddSeconds(90)
+      while ((Get-Date) -lt $deadline) {
+        if (((Get-ScheduledTask -TaskName 'cms-lab-rsa-enroll').State -eq 'Ready') -and (Test-Path $status)) { break }
+        Start-Sleep -Milliseconds 500
+      }
+      Unregister-ScheduledTask -TaskName 'cms-lab-rsa-enroll' -Confirm:$false -ErrorAction SilentlyContinue
+
+      $log = if (Test-Path $status) { Get-Content $status -Raw } else { '(no status)' }
+      if ($log -notmatch 'OK:([0-9A-Fa-f]+)') { throw "RSA enrollment failed: $log" }
+  register: rsa_labca_enroll
+  # Same replication-race guard as the ML-DSA enroll below: on a cold build a
+  # client enroll can briefly outrun the issuing CA's template ACL replicating
+  # forest-wide, returning CERTSRV_E_BAD_REQUESTSTATUS. Retry until it issues.
+  until: rsa_labca_enroll is succeeded
+  retries: 10
+  delay: 30
+  when: not rsa_labca_thumbprint.stat.exists
+
+# ── ML-DSA-65 cert from YOURLAB-PQC-Issuing-CA via certreq ────────────────
+
+- name: Check if ML-DSA lab-CA cert already enrolled
+  ansible.windows.win_stat:
+    path: "{{ cms_lab_win_root }}\\certs\\ml-dsa-labca.thumbprint"
+  register: ml_dsa_labca_thumbprint
+
+- name: Render ML-DSA labca enrollment INF + wrapper (when not already enrolled)
+  ansible.windows.win_template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+  loop:
+    - { src: mldsa-labca.inf.j2, dest: '{{ cms_lab_win_root }}\certs\ml-dsa-labca.inf' }
+    - { src: labca-enroll.ps1.j2, dest: 'C:\Windows\Temp\ml-dsa-labca-enroll.ps1' }
+  vars:
+    enroll_label: ml-dsa-labca
+    enroll_config: "{{ cms_lab_win_pqc_config }}"
+  when: not ml_dsa_labca_thumbprint.stat.exists
+
+- name: Enroll ML-DSA-65 cert from YOURLAB-PQC-Issuing-CA via certreq (SYSTEM/machine identity)
+  ansible.windows.win_powershell:
+    script: |
+      # Same SYSTEM-scheduled-task + certreq -submit pattern as the RSA enroll
+      # (and pqc_machine_cert): Get-Certificate/CertEnroll fails on the
+      # multi-homed Vagrant CA with RPC_S_SERVER_UNAVAILABLE; certreq -submit
+      # against the explicit PQC CA config binds to the host directly. The
+      # wrapper (labca-enroll.ps1.j2) writes OK:<thumb> / ERR:<msg> + persists
+      # the thumbprint and chain PEM under {{ cms_lab_win_root }}\certs.
+      $status = 'C:\Windows\Temp\ml-dsa-labca.status'
+      Remove-Item $status -Force -ErrorAction SilentlyContinue
+
+      $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\Windows\Temp\ml-dsa-labca-enroll.ps1'
+      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+      Register-ScheduledTask -TaskName 'cms-lab-mldsa-enroll' -Action $action -Principal $principal -Force | Out-Null
+      Start-ScheduledTask -TaskName 'cms-lab-mldsa-enroll'
+
+      $deadline = (Get-Date).AddSeconds(120)
+      while ((Get-Date) -lt $deadline) {
+        if (((Get-ScheduledTask -TaskName 'cms-lab-mldsa-enroll').State -eq 'Ready') -and (Test-Path $status)) { break }
+        Start-Sleep -Milliseconds 500
+      }
+      Unregister-ScheduledTask -TaskName 'cms-lab-mldsa-enroll' -Confirm:$false -ErrorAction SilentlyContinue
+
+      $log = if (Test-Path $status) { Get-Content $status -Raw } else { '(no status)' }
+      if ($log -notmatch 'OK:([0-9A-Fa-f]+)') { throw "ML-DSA enrollment failed: $log" }
+  register: ml_dsa_labca_enroll
+  # The PQC issuing CA's Domain-Computers Enroll/Autoenroll ACE (granted by
+  # cert_templates_pqc on issueca-pqc) must replicate before a remote client
+  # like manage1 can enroll; a cold build races it and the CA denies with
+  # CERTSRV_E_BAD_REQUESTSTATUS (0x80094003) "Denied by Policy Module". Retry
+  # ~5 min until the ACE propagates and the CA issues the ML-DSA-65 leaf.
+  until: ml_dsa_labca_enroll is succeeded
+  retries: 10
+  delay: 30
+  when: not ml_dsa_labca_thumbprint.stat.exists

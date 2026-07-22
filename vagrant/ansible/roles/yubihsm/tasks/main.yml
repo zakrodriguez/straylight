@@ -1,0 +1,132 @@
+---
+# YubiHSM2 role: Install SDK, configure connector, deploy PKCS#11 configs
+# Runs on EJBCA1 (Ubuntu 22.04). Idempotent.
+
+# =========================================================================
+# Install YubiHSM2 SDK
+# =========================================================================
+
+- name: Check if yubihsm-shell is fully installed
+  ansible.builtin.shell: dpkg -s yubihsm-shell 2>&1 | grep -q "^Status:.*installed"
+  register: yubihsm_installed
+  changed_when: false
+  failed_when: false
+
+- name: Check for staged YubiHSM2 SDK in local software cache
+  ansible.builtin.stat:
+    path: '/software/{{ yubihsm_sdk_tarball }}'
+  register: yubihsm_local
+  when:
+    - yubihsm_installed.rc != 0
+    - software_source_linux is defined
+
+- name: Copy YubiHSM2 SDK from local cache
+  ansible.builtin.copy:
+    src: '/software/{{ yubihsm_sdk_tarball }}'
+    dest: '/tmp/{{ yubihsm_sdk_tarball }}'
+    remote_src: true
+    mode: "0644"
+  when:
+    - yubihsm_installed.rc != 0
+    - software_source_linux is defined
+    - yubihsm_local.stat.exists | default(false)
+
+- name: Download YubiHSM2 SDK tarball
+  # SHA256 computed locally on 2026-05-26 (Yubico publishes PGP .sig only, no .sha256 sibling)
+  # against https://developers.yubico.com/YubiHSM2/Releases/yubihsm2-sdk-2026-01-ubuntu2204-amd64.tar.gz
+  ansible.builtin.get_url:
+    url: "{{ yubihsm_sdk_url }}"
+    dest: "/tmp/{{ yubihsm_sdk_tarball }}"
+    mode: "0644"
+    checksum: "sha256:4b2b8d15c818bfa72479d09680fd13473de92390aaa8755b5fc448673aad9702"
+  when:
+    - yubihsm_installed.rc != 0
+    - software_source_linux is not defined or not (yubihsm_local.stat.exists | default(false))
+
+- name: Extract SDK tarball
+  ansible.builtin.unarchive:
+    src: "/tmp/{{ yubihsm_sdk_tarball }}"
+    dest: /tmp
+    remote_src: true
+  when: yubihsm_installed.rc != 0
+
+- name: Install YubiHSM2 SDK packages (dpkg may report dep errors, apt fixes them)
+  ansible.builtin.shell:
+    cmd: >-
+      dpkg -i
+      libyubihsm1_*.deb
+      libyubihsm-http1_*.deb
+      libyubihsm-usb1_*.deb
+      libykhsmauth1_*.deb
+      yubihsm-shell_*.deb
+      yubihsm-connector_*.deb
+      yubihsm-pkcs11_*.deb
+      || true;
+      apt-get install -f -y
+    chdir: /tmp/yubihsm2-sdk
+  when: yubihsm_installed.rc != 0
+
+- name: Clean up SDK tarball and extracted files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/{{ yubihsm_sdk_tarball }}"
+    - /tmp/yubihsm2-sdk
+  when: yubihsm_installed.rc != 0
+
+# =========================================================================
+# Configure connector
+# =========================================================================
+
+- name: Deploy connector config
+  ansible.builtin.template:
+    src: yubihsm-connector.yaml.j2
+    dest: /etc/yubihsm-connector.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart yubihsm-connector
+
+- name: Enable and start yubihsm-connector
+  ansible.builtin.systemd:
+    name: yubihsm-connector
+    enabled: true
+    state: started
+
+# =========================================================================
+# Deploy PKCS#11 configs
+# =========================================================================
+
+- name: Deploy PKCS#11 config (host)
+  ansible.builtin.template:
+    src: yubihsm_pkcs11.conf.j2
+    dest: /etc/yubihsm_pkcs11.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy PKCS#11 config (Docker)
+  ansible.builtin.template:
+    src: yubihsm_pkcs11_docker.conf.j2
+    dest: /etc/yubihsm_pkcs11_docker.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+# =========================================================================
+# Verify
+# =========================================================================
+
+- name: Verify connector is running
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:12345/connector/status"
+    return_content: true
+  register: connector_status
+  retries: 5
+  delay: 2
+  until: connector_status.status == 200
+
+- name: Display connector status
+  ansible.builtin.debug:
+    msg: "YubiHSM connector: {{ connector_status.content | trim }}"

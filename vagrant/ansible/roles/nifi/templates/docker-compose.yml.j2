@@ -1,0 +1,23 @@
+services:
+  nifi:
+    image: apache/nifi:{{ nifi_tag }}
+    container_name: nifi
+    ports:
+      - "8444:8443"
+    environment:
+      SINGLE_USER_CREDENTIALS_USERNAME: admin
+      SINGLE_USER_CREDENTIALS_PASSWORD: "{{ nifi_admin_password }}"
+      NIFI_JVM_HEAP_INIT: 512m
+      NIFI_JVM_HEAP_MAX: 1536m
+    volumes:
+      - nifi-data:/opt/nifi/nifi-current
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider --no-check-certificate https://localhost:8443/nifi/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  nifi-data:

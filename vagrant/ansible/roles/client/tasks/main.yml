@@ -1,0 +1,21 @@
+---
+# Client role: PKI connectivity test
+# Cert enrollment moved to machine_cert role
+
+- name: Test PKI connectivity
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $domain = $env:USERDNSDOMAIN
+      $pkiUrl = "http://pki.$domain/crl/"
+      Write-PSFMessage -Level Host -Message "Testing PKI connectivity at $pkiUrl" -Tag 'client'
+      try {
+          $response = Invoke-WebRequest -Uri $pkiUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+          Write-PSFMessage -Level Host -Message "PKI web server reachable at $pkiUrl" -Tag 'client'
+          $Ansible.Result = "PKI web server reachable at $pkiUrl"
+      } catch {
+          Write-PSFMessage -Level Warning -Message "PKI web server not reachable at $pkiUrl (may not be provisioned yet)" -Tag 'client'
+          $Ansible.Result = "PKI web server not reachable at $pkiUrl (may not be provisioned yet)"
+      }
+      $Ansible.Changed = $false
+      Wait-PSFMessage

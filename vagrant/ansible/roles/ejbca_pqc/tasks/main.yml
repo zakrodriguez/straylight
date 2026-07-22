@@ -1,0 +1,586 @@
+---
+# ejbca_pqc role: create ML-DSA-65 PQC CAs and a chimera (hybrid) CA on EJBCA 9.3+
+# Assumes EJBCA CE is already running (ejbca role has already been applied)
+
+- name: Wait for EJBCA to be ready
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca listcas
+  register: ejbca_ready
+  until: ejbca_ready.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+# =========================================================================
+# Snapshot: existing CAs and tokens (used for all idempotency checks)
+# =========================================================================
+
+- name: List existing CAs
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca listcas
+  register: ca_list
+  changed_when: false
+
+- name: List existing crypto tokens
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken list
+  register: token_list
+  changed_when: false
+
+# =========================================================================
+# PQC Root CA
+# =========================================================================
+
+- name: Create PQC Root CA crypto token
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken create
+      --token "EJBCA-PQC-Root-Token"
+      --pin "{{ ejbca_token_password | default('foo123') }}"
+      --type SoftCryptoToken
+      --autoactivate true
+  when:
+    - "'EJBCA-PQC-Root-CA' not in ca_list.stdout"
+    - "'EJBCA-PQC-Root-Token' not in token_list.stdout"
+
+- name: Generate PQC Root CA sign key (ML-DSA-65)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-PQC-Root-Token"
+      --alias signKey
+      --keyspec ML-DSA-65
+  register: pqc_root_signkey
+  failed_when: pqc_root_signkey.rc != 0 and 'is in use' not in pqc_root_signkey.stdout
+  when: "'EJBCA-PQC-Root-CA' not in ca_list.stdout"
+
+- name: Generate PQC Root CA default key (ML-DSA-65)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-PQC-Root-Token"
+      --alias defaultKey
+      --keyspec ML-DSA-65
+  register: pqc_root_defaultkey
+  failed_when: pqc_root_defaultkey.rc != 0 and 'is in use' not in pqc_root_defaultkey.stdout
+  when: "'EJBCA-PQC-Root-CA' not in ca_list.stdout"
+
+- name: Generate PQC Root CA test key (ML-DSA-65)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-PQC-Root-Token"
+      --alias testKey
+      --keyspec ML-DSA-65
+  register: pqc_root_testkey
+  failed_when: pqc_root_testkey.rc != 0 and 'is in use' not in pqc_root_testkey.stdout
+  when: "'EJBCA-PQC-Root-CA' not in ca_list.stdout"
+
+- name: Write PQC Root CA token properties file
+  ansible.builtin.copy:
+    dest: /opt/ejbca/data/export/pqc-rootca-token.properties
+    content: |
+      certSignKey signKey
+      crlSignKey signKey
+      defaultKey defaultKey
+      testKey testKey
+    mode: "0644"
+  when: "'EJBCA-PQC-Root-CA' not in ca_list.stdout"
+
+- name: Initialize PQC Root CA (ML-DSA-65, self-signed, 7300 days)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca init
+      --caname "EJBCA-PQC-Root-CA"
+      --dn "CN=EJBCA-PQC-Root-CA,O={{ ejbca_organization | default('YOURLAB') }}"
+      --tokenName "EJBCA-PQC-Root-Token"
+      --tokenPass "{{ ejbca_token_password | default('foo123') }}"
+      --keyspec ML-DSA-65
+      --keytype ML-DSA
+      -v 7300
+      --policy null
+      -s ML-DSA-65
+      --tokenprop /mnt/export/pqc-rootca-token.properties
+  when: "'EJBCA-PQC-Root-CA' not in ca_list.stdout"
+
+# =========================================================================
+# PQC Issuing CA
+# =========================================================================
+
+- name: Get PQC Root CA ID for signing
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca info
+      --caname "EJBCA-PQC-Root-CA"
+      | grep -oP 'CA ID:\s*\K[-0-9]+'
+  register: pqc_root_ca_id
+  changed_when: false
+  when: "'EJBCA-PQC-Issuing-CA' not in ca_list.stdout"
+
+- name: Create PQC Issuing CA crypto token
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken create
+      --token "EJBCA-PQC-Issuing-Token"
+      --pin "{{ ejbca_token_password | default('foo123') }}"
+      --type SoftCryptoToken
+      --autoactivate true
+  when:
+    - "'EJBCA-PQC-Issuing-CA' not in ca_list.stdout"
+    - "'EJBCA-PQC-Issuing-Token' not in token_list.stdout"
+
+- name: Generate PQC Issuing CA sign key (ML-DSA-65)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-PQC-Issuing-Token"
+      --alias signKey
+      --keyspec ML-DSA-65
+  register: pqc_issue_signkey
+  failed_when: pqc_issue_signkey.rc != 0 and 'is in use' not in pqc_issue_signkey.stdout
+  when: "'EJBCA-PQC-Issuing-CA' not in ca_list.stdout"
+
+- name: Generate PQC Issuing CA default key (ML-DSA-65)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-PQC-Issuing-Token"
+      --alias defaultKey
+      --keyspec ML-DSA-65
+  register: pqc_issue_defaultkey
+  failed_when: pqc_issue_defaultkey.rc != 0 and 'is in use' not in pqc_issue_defaultkey.stdout
+  when: "'EJBCA-PQC-Issuing-CA' not in ca_list.stdout"
+
+- name: Generate PQC Issuing CA test key (ML-DSA-65)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-PQC-Issuing-Token"
+      --alias testKey
+      --keyspec ML-DSA-65
+  register: pqc_issue_testkey
+  failed_when: pqc_issue_testkey.rc != 0 and 'is in use' not in pqc_issue_testkey.stdout
+  when: "'EJBCA-PQC-Issuing-CA' not in ca_list.stdout"
+
+- name: Write PQC Issuing CA token properties file
+  ansible.builtin.copy:
+    dest: /opt/ejbca/data/export/pqc-issueca-token.properties
+    content: |
+      certSignKey signKey
+      crlSignKey signKey
+      defaultKey defaultKey
+      testKey testKey
+    mode: "0644"
+  when: "'EJBCA-PQC-Issuing-CA' not in ca_list.stdout"
+
+- name: Initialize PQC Issuing CA (ML-DSA-65, signed by PQC Root, 3650 days)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca init
+      --caname "EJBCA-PQC-Issuing-CA"
+      --dn "CN=EJBCA-PQC-Issuing-CA,O={{ ejbca_organization | default('YOURLAB') }}"
+      --tokenName "EJBCA-PQC-Issuing-Token"
+      --tokenPass "{{ ejbca_token_password | default('foo123') }}"
+      --keyspec ML-DSA-65
+      --keytype ML-DSA
+      -v 3650
+      --policy null
+      -s ML-DSA-65
+      --tokenprop /mnt/export/pqc-issueca-token.properties
+      --signedby {{ pqc_root_ca_id.stdout }}
+  when: "'EJBCA-PQC-Issuing-CA' not in ca_list.stdout"
+
+# =========================================================================
+# Chimera (Hybrid) Root CA
+# RSA primary key + ML-DSA-65 alternative key for hybrid signatures
+# =========================================================================
+
+- name: Create Chimera Root CA crypto token
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken create
+      --token "EJBCA-Chimera-Token"
+      --pin "{{ ejbca_token_password | default('foo123') }}"
+      --type SoftCryptoToken
+      --autoactivate true
+  when:
+    - "'EJBCA-Chimera-Root-CA' not in ca_list.stdout"
+    - "'EJBCA-Chimera-Token' not in token_list.stdout"
+
+- name: Generate Chimera Root CA RSA signing key (RSA 4096)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-Chimera-Token"
+      --alias signKeyRsa
+      --keyspec 4096
+  register: chimera_signkey_rsa
+  failed_when: chimera_signkey_rsa.rc != 0 and 'is in use' not in chimera_signkey_rsa.stdout
+  when: "'EJBCA-Chimera-Root-CA' not in ca_list.stdout"
+
+- name: Generate Chimera Root CA ML-DSA alternative signing key (ML-DSA-65)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-Chimera-Token"
+      --alias signKeyMLDSA
+      --keyspec ML-DSA-65
+  register: chimera_signkey_mldsa
+  failed_when: chimera_signkey_mldsa.rc != 0 and 'is in use' not in chimera_signkey_mldsa.stdout
+  when: "'EJBCA-Chimera-Root-CA' not in ca_list.stdout"
+
+- name: Generate Chimera Root CA default key (RSA 4096)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-Chimera-Token"
+      --alias defaultKey
+      --keyspec 4096
+  register: chimera_defaultkey
+  failed_when: chimera_defaultkey.rc != 0 and 'is in use' not in chimera_defaultkey.stdout
+  when: "'EJBCA-Chimera-Root-CA' not in ca_list.stdout"
+
+- name: Generate Chimera Root CA test key (RSA 1024)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "EJBCA-Chimera-Token"
+      --alias testKey
+      --keyspec 1024
+  register: chimera_testkey
+  failed_when: chimera_testkey.rc != 0 and 'is in use' not in chimera_testkey.stdout
+  when: "'EJBCA-Chimera-Root-CA' not in ca_list.stdout"
+
+- name: Write Chimera Root CA token properties file
+  ansible.builtin.copy:
+    dest: /opt/ejbca/data/export/chimera-token.properties
+    content: |
+      certSignKey signKeyRsa
+      alternativeCertSignKey signKeyMLDSA
+      crlSignKey signKeyRsa
+      defaultKey defaultKey
+      testKey testKey
+    mode: "0644"
+  when: "'EJBCA-Chimera-Root-CA' not in ca_list.stdout"
+
+- name: Initialize Chimera Root CA (RSA primary + ML-DSA-65 alt, self-signed, 7300 days)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca init
+      --caname "EJBCA-Chimera-Root-CA"
+      --dn "CN=EJBCA-Chimera-Root-CA,O={{ ejbca_organization | default('YOURLAB') }}"
+      --tokenName "EJBCA-Chimera-Token"
+      --tokenPass "{{ ejbca_token_password | default('foo123') }}"
+      --keyspec 4096
+      --keytype RSA
+      -v 7300
+      --policy null
+      -s SHA512WithRSAAndMGF1
+      --tokenprop /mnt/export/chimera-token.properties
+  when: "'EJBCA-Chimera-Root-CA' not in ca_list.stdout"
+
+# =========================================================================
+# Patch Chimera Root CA catoken: set alternativeSignatureAlgorithm = ML-DSA-65
+#
+# Two methods, selected by `ejbca_chimera_method` (see defaults/main.yml):
+#   db_patch   — direct MariaDB CAData blob mutation (default; works on 9.3.7)
+#   playwright — drive Admin UI (forward-compat skeleton; requires EJBCA 9.4+)
+#
+# EJBCA's `ca init` writes alternativeCertSignKey (key alias) into the catoken
+# propertydata but does NOT populate the sibling alternativeSignatureAlgorithm
+# entry in the catoken LinkedHashMap.  Without it, X509CAImpl.generateCertificate
+# never calls getAlternativePrivateKey() and therefore never emits OIDs 2.5.29.73
+# (altSignatureAlgorithm) or 2.5.29.74 (altSignatureValue) in issued leaf certs.
+#
+# Idempotency: the SELECT gate (count == 0) prevents either method from running
+# on re-runs once both fields are present. The DB patch script errors if the
+# expected anchor string is absent — it does not silently no-op.
+# =========================================================================
+
+- name: Check whether Chimera Root CA catoken already has both alt-sig patches
+  # Two independent gates because each patch is idempotent on its own:
+  #   1. alternativeSignatureAlgorithm in the catoken LinkedHashMap
+  #   2. alternativeCertSignKey in propertydata (key alias mapping)
+  # `ca init` writes neither — both must be added for X509CAImpl to load
+  # the alt-sign key and emit OIDs 2.5.29.72/73/74 on issued leaves.
+  ansible.builtin.shell: >-
+    docker exec ejbca-db mariadb -u ejbca -pejbca -D ejbca -se
+    "SELECT COUNT(*) FROM CAData WHERE name = 'EJBCA-Chimera-Root-CA'
+     AND data LIKE '%alternativeSignatureAlgorithm%'
+     AND data LIKE '%alternativeCertSignKey%';"
+  register: chimera_altsig_check
+  changed_when: false
+  failed_when: false
+
+- name: Patch Chimera Root CA catoken — alt-sig algo + alt-key alias
+  # EJBCA `ca init --tokenprop` accepts alternativeCertSignKey in the props
+  # file but silently drops it when serializing the CAToken — the resulting
+  # propertydata string only carries certSignKey/crlSignKey/testKey/defaultKey.
+  # And `ca init` never populates alternativeSignatureAlgorithm at all. Both
+  # missing pieces are what causes "CA token offline" at sign time: X509CAImpl
+  # looks up `alternativeCertSignKey` in propertydata, can't find it, marks
+  # the CAToken offline. Two REPLACEs on the stored XML blob: one inserts a
+  # new <void method="put"> for alternativeSignatureAlgorithm in the main
+  # LinkedHashMap, the other appends alternativeCertSignKey=signKeyMLDSA\n
+  # to the propertydata string. Both are idempotent (gate above checks both).
+  ansible.builtin.shell: |
+    python3 << 'PYEOF'
+    import subprocess, sys
+
+    result = subprocess.run(
+        ['docker', 'exec', 'ejbca-db', 'mariadb', '-u', 'ejbca', '-pejbca', '-D', 'ejbca', '-se',
+         'SELECT data FROM CAData WHERE name = "EJBCA-Chimera-Root-CA";'],
+        capture_output=True, text=True
+    )
+    data = result.stdout.rstrip()
+
+    LF = chr(92) + chr(110)  # literal backslash-n as stored in DB
+
+    # ── Patch 1: alternativeSignatureAlgorithm in catoken LinkedHashMap ──
+    if 'alternativeSignatureAlgorithm' not in data:
+        old1 = (
+            f'     <string>encryptionalgorithm</string>{LF}'
+            f'     <string>SHA512WithRSAAndMGF1</string>{LF}'
+            f'    </void>{LF}'
+            f'   </object>{LF}'
+            f'  </void>'
+        )
+        new1 = (
+            f'     <string>encryptionalgorithm</string>{LF}'
+            f'     <string>SHA512WithRSAAndMGF1</string>{LF}'
+            f'    </void>{LF}'
+            f'    <void method="put">{LF}'
+            f'     <string>alternativeSignatureAlgorithm</string>{LF}'
+            f'     <string>ML-DSA-65</string>{LF}'
+            f'    </void>{LF}'
+            f'   </object>{LF}'
+            f'  </void>'
+        )
+        if old1 not in data:
+            print("ERROR: alt-sig algo anchor not found — schema may have changed", file=sys.stderr)
+            sys.exit(1)
+        data = data.replace(old1, new1, 1)
+        print("OK: alternativeSignatureAlgorithm=ML-DSA-65 inserted")
+
+    # ── Patch 2: alternativeCertSignKey in propertydata key=value string ──
+    if 'alternativeCertSignKey' not in data:
+        old_pd = f'certSignKey=signKeyRsa{LF}crlSignKey=signKeyRsa{LF}testKey=testKey{LF}defaultKey=defaultKey{LF}'
+        new_pd = f'certSignKey=signKeyRsa{LF}alternativeCertSignKey=signKeyMLDSA{LF}crlSignKey=signKeyRsa{LF}testKey=testKey{LF}defaultKey=defaultKey{LF}'
+        if old_pd not in data:
+            print("ERROR: propertydata anchor not found — schema may have changed", file=sys.stderr)
+            sys.exit(1)
+        data = data.replace(old_pd, new_pd, 1)
+        print("OK: alternativeCertSignKey=signKeyMLDSA inserted into propertydata")
+
+    escaped = data.replace("'", "''")
+    sql = f"UPDATE CAData SET data = '{escaped}' WHERE name = 'EJBCA-Chimera-Root-CA';"
+    r2 = subprocess.run(
+        ['docker', 'exec', '-i', 'ejbca-db', 'mariadb', '-u', 'ejbca', '-pejbca', '-D', 'ejbca'],
+        input=sql, capture_output=True, text=True
+    )
+    if r2.returncode != 0:
+        print(f"SQL ERROR: {r2.stderr}", file=sys.stderr)
+        sys.exit(1)
+    print("OK: CAData updated with both alt-sig patches")
+    PYEOF
+  when:
+    - ejbca_chimera_method == 'db_patch'
+    - (chimera_altsig_check.stdout | trim) == '0'
+  changed_when: true
+
+- name: Clear EJBCA CA cache after Chimera catoken patch
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh clearcache -ca
+  when:
+    - ejbca_chimera_method == 'db_patch'
+    - (chimera_altsig_check.stdout | trim) == '0'
+  changed_when: true
+
+# After a direct CAData blob mutation, `clearcache -ca` re-reads the CA row
+# but the in-memory CAToken (the wrapper around the CryptoToken) is NOT
+# rebuilt — its cached propertydata still lacks alternativeSignatureAlgorithm.
+# The symptom is paradoxical: `ejbca.sh ca info` reports the CA active and
+# `cryptotoken list` reports the token active, yet `ca createcert` fails
+# with "CA token is offline" and `ca activateca` refuses with "must be
+# offline to be activated". A container restart drops every Java cache and
+# forces all CA/CAToken state to reload cleanly from the patched DB.
+- name: Restart ejbca-ce container so CAToken reloads patched propertydata
+  ansible.builtin.command:
+    cmd: docker restart ejbca-ce
+  when:
+    - ejbca_chimera_method == 'db_patch'
+    - (chimera_altsig_check.stdout | trim) == '0'
+  changed_when: true
+
+- name: Wait for EJBCA WildFly TLS port to come back after restart
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 8443
+    state: started
+    timeout: 180
+  when:
+    - ejbca_chimera_method == 'db_patch'
+    - (chimera_altsig_check.stdout | trim) == '0'
+
+- name: Wait for EJBCA CLI to respond after restart (catalog command sanity)
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca listcas
+  register: ejbca_cli_ready
+  retries: 30
+  delay: 5
+  until: ejbca_cli_ready.rc == 0 and 'EJBCA-Chimera-Root-CA' in ejbca_cli_ready.stdout
+  changed_when: false
+  when:
+    - ejbca_chimera_method == 'db_patch'
+    - (chimera_altsig_check.stdout | trim) == '0'
+
+# =========================================================================
+# Playwright branch — forward-compat skeleton, requires EJBCA 9.4+ Admin UI.
+# Default `ejbca_chimera_method: db_patch` skips this entire block.
+# Set `ejbca_chimera_method: playwright` to enable (will fail FIELD-MISSING
+# on 9.3.7 by design — the script reports the exact failure mode).
+# =========================================================================
+
+- name: Stage Playwright alt-sig script
+  ansible.builtin.copy:
+    src: set-chimera-altsig.py
+    dest: /opt/ejbca/data/work/set-chimera-altsig.py
+    mode: "0644"
+  when: ejbca_chimera_method == 'playwright'
+
+- name: Ensure Playwright work dir exists
+  ansible.builtin.file:
+    path: /opt/ejbca/data/work
+    state: directory
+    mode: "0700"
+  when: ejbca_chimera_method == 'playwright'
+
+- name: Set Chimera Root CA alt-sig via EJBCA Admin UI (Playwright)
+  # Reuses the image + run pattern from ejbca_chimera_profile. Exit code 2 from
+  # the script = FIELD-MISSING (EJBCA < 9.4). The role default stays db_patch
+  # until CE 9.4 ships and we verify selectors against the live DOM.
+  ansible.builtin.shell: >-
+    docker run --rm --network host
+    -v "/opt/ejbca/data/secrets:/secrets:ro"
+    -v "/opt/ejbca/data/work/set-chimera-altsig.py:/script.py:ro"
+    mcr.microsoft.com/playwright/python:v1.48.0-noble
+    bash -c 'pip install playwright==1.48.0 --quiet --root-user-action=ignore 2>/dev/null &&
+    python3 /script.py
+    --base-url https://127.0.0.1:8443
+    --p12 /secrets/superadmin.p12
+    --pwd-file /secrets/superadmin.pwd
+    --ca EJBCA-Chimera-Root-CA
+    --alt-algo ML-DSA-65
+    --alt-key-alias signKeyMLDSA'
+  register: altsig_pw_run
+  changed_when: "'OK: set' in altsig_pw_run.stdout"
+  failed_when: altsig_pw_run.rc not in [0]
+  when:
+    - ejbca_chimera_method == 'playwright'
+    - (chimera_altsig_check.stdout | trim) == '0'
+
+- name: Show Playwright alt-sig output
+  ansible.builtin.debug:
+    msg: "{{ altsig_pw_run.stdout_lines | default([]) }}"
+  when:
+    - ejbca_chimera_method == 'playwright'
+    - altsig_pw_run is defined
+
+# =========================================================================
+# Export CA certificates
+# =========================================================================
+
+- name: Export PQC Root CA certificate (PEM) to container /tmp
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca getcacert
+      --caname "EJBCA-PQC-Root-CA"
+      -f /tmp/ejbca-pqc-root-ca.pem
+  changed_when: false
+
+- name: Copy PQC Root CA PEM to host
+  ansible.builtin.command:
+    cmd: docker cp ejbca-ce:/tmp/ejbca-pqc-root-ca.pem /opt/ejbca/data/export/ejbca-pqc-root-ca.pem
+  changed_when: false
+
+- name: Export PQC Issuing CA certificate (PEM) to container /tmp
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca getcacert
+      --caname "EJBCA-PQC-Issuing-CA"
+      -f /tmp/ejbca-pqc-issuing-ca.pem
+  changed_when: false
+
+- name: Copy PQC Issuing CA PEM to host
+  ansible.builtin.command:
+    cmd: docker cp ejbca-ce:/tmp/ejbca-pqc-issuing-ca.pem /opt/ejbca/data/export/ejbca-pqc-issuing-ca.pem
+  changed_when: false
+
+- name: Export Chimera Root CA certificate (PEM) to container /tmp
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca getcacert
+      --caname "EJBCA-Chimera-Root-CA"
+      -f /tmp/ejbca-chimera-root-ca.pem
+  changed_when: false
+
+- name: Copy Chimera Root CA PEM to host
+  ansible.builtin.command:
+    cmd: docker cp ejbca-ce:/tmp/ejbca-chimera-root-ca.pem /opt/ejbca/data/export/ejbca-chimera-root-ca.pem
+  changed_when: false
+
+# =========================================================================
+# Generate CRLs
+# =========================================================================
+
+- name: Generate PQC Root CA CRL
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca createcrl
+      --caname "EJBCA-PQC-Root-CA"
+  changed_when: false
+
+- name: Generate PQC Issuing CA CRL
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca createcrl
+      --caname "EJBCA-PQC-Issuing-CA"
+  changed_when: false
+
+- name: Generate Chimera Root CA CRL
+  # Without an initial CRL, Windows chimera-cert clients (web1) log
+  # CRL-fetch 404s until first revocation triggers auto-generation.
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca createcrl
+      --caname "EJBCA-Chimera-Root-CA"
+  changed_when: false
+
+# =========================================================================
+# Verify all three CAs are present
+# =========================================================================
+
+- name: Final CA list
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca listcas
+  register: final_ca_list
+  changed_when: false
+
+- name: Assert PQC Root CA exists
+  ansible.builtin.assert:
+    that: "'EJBCA-PQC-Root-CA' in final_ca_list.stdout"
+    fail_msg: "EJBCA-PQC-Root-CA was not found in ca listcas output"
+
+- name: Assert PQC Issuing CA exists
+  ansible.builtin.assert:
+    that: "'EJBCA-PQC-Issuing-CA' in final_ca_list.stdout"
+    fail_msg: "EJBCA-PQC-Issuing-CA was not found in ca listcas output"
+
+- name: Assert Chimera Root CA exists
+  ansible.builtin.assert:
+    that: "'EJBCA-Chimera-Root-CA' in final_ca_list.stdout"
+    fail_msg: "EJBCA-Chimera-Root-CA was not found in ca listcas output"
+
+- name: Display final CA list
+  ansible.builtin.debug:
+    var: final_ca_list.stdout_lines

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run {{ observe_timer_description }} on a timer
+{% if observe_timer_documentation %}
+Documentation={{ observe_timer_documentation }}
+{% endif %}
+
+[Timer]
+OnCalendar={{ observe_timer_oncalendar }}
+Persistent=true
+Unit={{ observe_timer_name }}.service
+
+[Install]
+WantedBy=timers.target

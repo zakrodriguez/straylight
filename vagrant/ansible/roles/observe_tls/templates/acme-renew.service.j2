@@ -1,0 +1,12 @@
+[Unit]
+Description=ACME cert renewal for observe1.yourlab.local
+Documentation=https://smallstep.com/docs/step-cli/reference/ca/renew/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/acme-renew.sh
+# Don't fail the unit if step-ca is briefly unreachable; the next timer
+# tick will retry. Cert stays valid until expiry regardless.
+SuccessExitStatus=0 1

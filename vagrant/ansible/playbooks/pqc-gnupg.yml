@@ -1,0 +1,29 @@
+---
+# pqc-gnupg.yml — build PQC-capable GnuPG (2.5+) on observe1 and provision
+# the lab's ECC+Kyber composite key. Demonstrates ML-KEM (Kyber) post-quantum
+# encryption in OpenPGP per RFC 9580.
+#
+# Caveat: GnuPG 2.5.x ships ML-KEM (encryption) but NOT ML-DSA (signing) as
+# of 2.5.19 (May 2026). The "git commit signing with ML-DSA" demo is blocked
+# upstream. See docs/gnupg-pqc-status.md for the gap and paths forward.
+#
+# Usage:
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-gnupg.yml
+
+- name: Build PQC GnuPG + lab key
+  # Targets all Linux PQC hosts. Each gets its own /opt/gnupg-pqc with
+  # the full chain + a per-host key (UID disambiguates). ~6-8 min per
+  # host build, parallelized via Ansible forks.
+  hosts: linux_pqc_targets
+  gather_facts: true
+  become: true
+  ignore_unreachable: true
+  vars:
+    gnupg_pqc_prefix: /opt/gnupg-pqc
+    gnupg_pqc_homedir: /opt/gnupg-pqc/home
+    # Per-host UID so each VM gets its own key — not a shared lab-wide
+    # secret. Same email handle for the validate.sh probe.
+    gnupg_pqc_uid: "Straylight PQC Demo ({{ inventory_hostname }}) <pqc@yourlab.local>"
+    gnupg_pqc_email: "pqc@yourlab.local"
+  roles:
+    - gnupg_pqc

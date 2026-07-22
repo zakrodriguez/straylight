@@ -1,0 +1,61 @@
+---
+# Sysinternals Suite — installs full suite on all Windows VMs
+
+- name: Create temp download directory
+  ansible.windows.win_file:
+    path: C:\tmp
+    state: directory
+
+- name: Check if Sysinternals Suite is already installed
+  ansible.windows.win_stat:
+    path: 'C:\Tools\Sysinternals\procmon.exe'
+  register: sysinternals_installed
+
+- name: Check for staged Sysinternals ZIP in local software cache
+  ansible.windows.win_stat:
+    path: '{{ software_source }}\SysinternalsSuite.zip'
+  register: sysinternals_local
+  when:
+    - not sysinternals_installed.stat.exists
+    - software_source is defined
+
+- name: Copy Sysinternals ZIP from local cache
+  ansible.windows.win_copy:
+    src: '{{ software_source }}\SysinternalsSuite.zip'
+    dest: 'C:\tmp\SysinternalsSuite.zip'
+    remote_src: true
+  when:
+    - not sysinternals_installed.stat.exists
+    - software_source is defined
+    - sysinternals_local.stat.exists | default(false)
+
+# Best-effort fallback ONLY (cache-miss path). The trusted source is the
+# operator-populated cache (C:\Software\SysinternalsSuite.zip, copied above);
+# this download runs only when that cache file is absent — typically the
+# GA/VBox shared-folder mount race (host VBox 7.1.x vs box GA 7.2.x), whose
+# real fix is aligning host VirtualBox to 7.2.
+# No checksum: Microsoft serves SysinternalsSuite.zip as a rolling release with
+# no stable per-file hash, so any pinned SHA256 inevitably rots and hard-fails
+# this fallback (this broke the cold-build whenever the mount race hit). The
+# cache copy is the integrity-controlled path (pinned at cache-population time).
+- name: Download Sysinternals Suite (best-effort fallback, no stable upstream checksum)
+  ansible.windows.win_get_url:
+    url: "https://download.sysinternals.com/files/SysinternalsSuite.zip"
+    dest: 'C:\tmp\SysinternalsSuite.zip'
+  when:
+    - not sysinternals_installed.stat.exists
+    - software_source is not defined or not (sysinternals_local.stat.exists | default(false))
+
+- name: Extract Sysinternals Suite
+  community.windows.win_unzip:
+    src: 'C:\tmp\SysinternalsSuite.zip'
+    dest: 'C:\Tools\Sysinternals'
+    creates: 'C:\Tools\Sysinternals\procmon.exe'
+  when: not sysinternals_installed.stat.exists
+
+- name: Add Sysinternals to system PATH
+  ansible.windows.win_path:
+    elements:
+      - 'C:\Tools\Sysinternals'
+    scope: machine
+    state: present

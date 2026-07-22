@@ -1,0 +1,218 @@
+---
+# openssh_pqc — build OpenSSH 10.0+ from source and run a parallel sshd
+# that negotiates `mlkem768x25519-sha256` (NIST-standardized PQC hybrid KEX,
+# OpenSSH default since 10.0 / April 2025).
+#
+# Stock Ubuntu 22.04 ships 8.9p1, which has the OLD PQC KEX
+# `sntrup761x25519-sha512@openssh.com` but not the standardized ML-KEM one.
+# Lives at /opt/openssh-10 alongside the system openssh (default :22
+# untouched — new sshd listens on a configurable port).
+#
+# Required vars (set by caller; sensible defaults):
+#   openssh_pqc_version    OpenSSH source version (default 10.0p2)
+#   openssh_pqc_prefix     Install prefix (default /opt/openssh-10)
+#   openssh_pqc_port       New sshd port (default 2222)
+#   openssh_pqc_unit_name  Systemd unit name (default sshd-pqc)
+# Defaults live in defaults/main.yml (callers override via play/inventory vars).
+
+- name: Check whether OpenSSH 10 is already installed
+  ansible.builtin.command:
+    cmd: "{{ openssh_pqc_prefix }}/bin/ssh -V"
+  register: openssh_pqc_check
+  changed_when: false
+  failed_when: false
+
+- name: Install build dependencies
+  ansible.builtin.apt:
+    name:
+      - build-essential
+      - zlib1g-dev
+      - libssl-dev
+    state: present
+    update_cache: true
+  when: openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+
+- name: Check for staged OpenSSH {{ openssh_pqc_version }} tarball in local software cache
+  ansible.builtin.stat:
+    path: "{{ software_source_linux }}/openssh-{{ openssh_pqc_version }}.tar.gz"
+  register: openssh_pqc_local
+  when:
+    - openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+    - software_source_linux is defined
+
+- name: Copy OpenSSH tarball from local cache
+  ansible.builtin.copy:
+    src: "{{ software_source_linux }}/openssh-{{ openssh_pqc_version }}.tar.gz"
+    dest: "/tmp/openssh-{{ openssh_pqc_version }}.tar.gz"
+    remote_src: true
+    mode: "0644"
+  when:
+    - openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+    - software_source_linux is defined
+    - openssh_pqc_local.stat.exists | default(false)
+
+# SHA256 from https://www.openssh.com/releasenotes.html (base64-decoded) — update when bumping openssh_pqc_version
+- name: Download OpenSSH {{ openssh_pqc_version }} source from upstream
+  ansible.builtin.get_url:
+    url: "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-{{ openssh_pqc_version }}.tar.gz"
+    dest: "/tmp/openssh-{{ openssh_pqc_version }}.tar.gz"
+    mode: "0644"
+    checksum: "sha256:021a2e709a0edf4250b1256bd5a9e500411a90dddabea830ed59cef90eb9d85c"
+  when:
+    - openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+    - software_source_linux is not defined or not (openssh_pqc_local.stat.exists | default(false))
+
+- name: Extract OpenSSH source
+  ansible.builtin.unarchive:
+    src: "/tmp/openssh-{{ openssh_pqc_version }}.tar.gz"
+    dest: /tmp
+    remote_src: true
+  when: openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+
+- name: Resolve actual extracted source directory
+  # OpenSSH portable tarballs occasionally use a directory name that doesn't
+  # exactly match the tarball version (e.g. openssh-10.0p2.tar.gz extracts
+  # to openssh-10.0p1/). Resolve by glob so the build works regardless.
+  #
+  # Gated on build-needed: on a re-run, the prior cleanup deleted /tmp/openssh-10*,
+  # so the glob returns empty. Skipping when OpenSSH 10 is already installed keeps
+  # openssh_pqc_src_dir undefined → cleanup loop's default() fallback fires cleanly.
+  ansible.builtin.shell:
+    cmd: ls -d /tmp/openssh-10* 2>/dev/null | grep -v '\.tar\.gz' | head -1
+  register: openssh_pqc_src_dir_result
+  changed_when: false
+  when: openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+
+- name: Capture extracted source path as fact
+  ansible.builtin.set_fact:
+    openssh_pqc_src_dir: "{{ openssh_pqc_src_dir_result.stdout | trim }}"
+  when: openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+
+- name: Configure OpenSSH build
+  # Use system OpenSSL 3.0 (ML-KEM in OpenSSH 9.9+ is vendored via libcrux —
+  # doesn't depend on OpenSSL having PQC support). Privsep dir under prefix
+  # so we don't collide with /var/empty (stock sshd's privsep dir).
+  ansible.builtin.command:
+    cmd: >-
+      ./configure
+      --prefix={{ openssh_pqc_prefix }}
+      --sysconfdir={{ openssh_pqc_prefix }}/etc
+      --with-privsep-path={{ openssh_pqc_prefix }}/var/empty
+      --with-privsep-user=sshd
+    chdir: "{{ openssh_pqc_src_dir }}"
+  when: openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+
+- name: Build OpenSSH
+  ansible.builtin.command:
+    cmd: make -j{{ ansible_processor_vcpus | default(2) }}
+    chdir: "{{ openssh_pqc_src_dir }}"
+  when: openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+
+- name: Install OpenSSH
+  ansible.builtin.command:
+    cmd: make install-nokeys
+    chdir: "{{ openssh_pqc_src_dir }}"
+  when: openssh_pqc_check.rc != 0 or 'OpenSSH_10' not in (openssh_pqc_check.stderr | default(''))
+
+- name: Create privsep dir
+  ansible.builtin.file:
+    path: "{{ openssh_pqc_prefix }}/var/empty"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure etc dir exists
+  ansible.builtin.file:
+    path: "{{ openssh_pqc_prefix }}/etc"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Generate ed25519 host key
+  ansible.builtin.command:
+    cmd: "{{ openssh_pqc_prefix }}/bin/ssh-keygen -t ed25519 -f {{ openssh_pqc_prefix }}/etc/ssh_host_ed25519_key -N ''"
+    creates: "{{ openssh_pqc_prefix }}/etc/ssh_host_ed25519_key"
+
+- name: Generate RSA host key (4096-bit)
+  ansible.builtin.command:
+    cmd: "{{ openssh_pqc_prefix }}/bin/ssh-keygen -t rsa -b 4096 -f {{ openssh_pqc_prefix }}/etc/ssh_host_rsa_key -N ''"
+    creates: "{{ openssh_pqc_prefix }}/etc/ssh_host_rsa_key"
+
+- name: Render sshd_config for the PQC instance
+  ansible.builtin.copy:
+    dest: "{{ openssh_pqc_prefix }}/etc/sshd_config"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # OpenSSH PQC parallel sshd. Listens on a non-standard port so the
+      # system sshd on :22 keeps working for `vagrant ssh`.
+      Port {{ openssh_pqc_port }}
+      ListenAddress 0.0.0.0
+      Protocol 2
+
+      # Explicit KEX list with mlkem768x25519-sha256 *first*, so this
+      # endpoint demonstrates the NIST-standardized PQC hybrid as the
+      # preferred KEX. sntrup761 (the pre-standard PQC KEX) kept second
+      # as fallback; classical curve25519 last.
+      KexAlgorithms mlkem768x25519-sha256,sntrup761x25519-sha512@openssh.com,curve25519-sha256
+
+      HostKey {{ openssh_pqc_prefix }}/etc/ssh_host_ed25519_key
+      HostKey {{ openssh_pqc_prefix }}/etc/ssh_host_rsa_key
+
+      AuthorizedKeysFile .ssh/authorized_keys
+      PasswordAuthentication no
+      PubkeyAuthentication yes
+      PermitRootLogin no
+      # UsePAM omitted — this OpenSSH built --without-pam (no libpam-dev
+      # in the build deps; PAM isn't needed for the demo handshake test).
+      Subsystem sftp {{ openssh_pqc_prefix }}/libexec/sftp-server
+
+      LogLevel VERBOSE
+
+- name: Render systemd unit
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ openssh_pqc_unit_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=OpenSSH {{ openssh_pqc_version }} parallel sshd (PQC KEX demo)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart={{ openssh_pqc_prefix }}/sbin/sshd -D -f {{ openssh_pqc_prefix }}/etc/sshd_config
+      ExecReload=/bin/kill -HUP $MAINPID
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: restart openssh_pqc
+
+- name: Enable + start PQC sshd
+  ansible.builtin.systemd:
+    name: "{{ openssh_pqc_unit_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for PQC sshd listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ openssh_pqc_port }}"
+    timeout: 15
+
+- name: Cleanup build artifacts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ openssh_pqc_src_dir | default('/tmp/openssh-skip-cleanup-no-src') }}"
+    - "/tmp/openssh-{{ openssh_pqc_version }}.tar.gz"
+  when: openssh_pqc_src_dir is defined

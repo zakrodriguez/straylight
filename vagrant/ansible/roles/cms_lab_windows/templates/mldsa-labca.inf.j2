@@ -1,0 +1,32 @@
+[Version]
+Signature="$Windows NT$"
+
+[NewRequest]
+; ML-DSA-65 leaf request for the cms-lab PQC enrollment, mirroring the proven
+; pqc_machine_cert INF. KeyAlgorithm "ML-DSA:65" + the CNG KSP match the PQC
+; template ({{ cms_lab_win_pqc_template }}) crypto provider. KeySpec MUST be
+; AT_SIGNATURE and HashAlgorithm NoHash (ML-DSA is pure, signature-only).
+; ProviderType 0 selects the CNG KSP named by ProviderName. The enterprise
+; template is AD-bound (SUBJECT_ALT_REQUIRE_DNS, ESC1-safe), so the CA ignores
+; this placeholder Subject and builds the DNS SAN from the machine's AD object.
+; Run as SYSTEM so the machine identity reaches the CA.
+Subject = "CN={{ inventory_hostname }}.{{ lab_domain }}"
+KeyAlgorithm = "ML-DSA:65"
+KeySpec = AT_SIGNATURE
+HashAlgorithm = NoHash
+ProviderName = "Microsoft Software Key Storage Provider"
+ProviderType = 0
+MachineKeySet = TRUE
+RequestType = PKCS10
+Exportable = FALSE
+SMIME = False
+
+[EnhancedKeyUsageExtension]
+OID=1.3.6.1.5.5.7.3.1
+Critical=FALSE
+
+[Extensions]
+2.5.29.19 = "{text}CA=FALSE"
+
+[RequestAttributes]
+CertificateTemplate = {{ cms_lab_win_pqc_template }}

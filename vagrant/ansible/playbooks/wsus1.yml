@@ -1,0 +1,62 @@
+---
+# WSUS1 - Windows Server Update Services
+# Pre-installs UpdateServices, joins domain, configures WSUS
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Include common role
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        dns_servers:
+          - "{{ dc_ip }}"
+
+    # Pre-install WSUS features while DC1 is building (overlaps with DC promo)
+    - name: Pre-install UpdateServices features
+      ansible.windows.win_feature:
+        name:
+          - UpdateServices
+          - UpdateServices-WidDB
+          - UpdateServices-Services
+        include_management_tools: true
+        state: present
+
+    - name: Include domain_join role
+      ansible.builtin.include_role:
+        name: domain_join
+
+    - name: Include wsus_server role
+      ansible.builtin.include_role:
+        name: wsus_server
+
+    - name: Include machine_cert role
+      ansible.builtin.include_role:
+        name: machine_cert
+
+    - name: Include sysinternals role
+      ansible.builtin.include_role:
+        name: sysinternals
+
+    - name: Include bginfo role
+      ansible.builtin.include_role:
+        name: bginfo
+      vars:
+        vm_role: generic
+
+    - name: Include windows_logging role
+      ansible.builtin.include_role:
+        name: windows_logging
+
+    - name: Include sysmon role
+      ansible.builtin.include_role:
+        name: sysmon
+
+    - name: Include winlogbeat role
+      ansible.builtin.include_role:
+        name: winlogbeat
+      vars:
+        winlogbeat_wsus_channels: true

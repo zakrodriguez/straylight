@@ -1,0 +1,49 @@
+---
+# pqc-migrate-gpg.yml — Phase 4/5 of the PQC migration orchestrator.
+# Wraps pqc-gnupg.yml (builds GnuPG 2.5 + Kyber composite key on the four
+# PQC GPG targets) and verifies the keyring + Kyber round-trip via the shared
+# verifier scripts/lib/pqc-verify/gpg-kyber.sh (same file validate.sh runs —
+# see playbooks/README.md).
+#
+# Standalone usage:
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-migrate-gpg.yml
+
+- name: Phase 4/5 banner
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "═══ Phase 4/5: GPG migration ═══"
+
+- import_playbook: pqc-gnupg.yml
+
+- name: Phase 4 verification — GnuPG 2.5+ with Kyber subkey on all PQC GPG hosts
+  hosts: linux_pqc_targets
+  gather_facts: false
+  become: true
+  ignore_unreachable: true
+  tasks:
+    # The Kyber round-trip probe is the SINGLE source of
+    # truth in scripts/lib/pqc-verify/gpg-kyber.sh, shared verbatim with
+    # validate.sh (scripts/checks/pqc-chimera.sh runs the same file). No more
+    # hand-sync. The probe checks the Kyber subkey + ML-KEM encrypt/decrypt
+    # round-trip, emits PASS:/FAIL: lines, and always exits 0 (the validate.sh
+    # contract), so failed_when keys off FAIL:.
+    - name: GPG — Kyber subkey + ML-KEM round-trip (shared verifier)
+      ansible.builtin.script: ../../scripts/lib/pqc-verify/gpg-kyber.sh
+      args:
+        executable: /bin/bash
+      register: gpg_probe
+      changed_when: false
+      failed_when: "'FAIL:' in gpg_probe.stdout"
+
+    - name: GPG — probe results
+      ansible.builtin.debug:
+        msg: "{{ gpg_probe.stdout_lines }}"
+
+- name: Phase 4 summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "Phase 4/5 (GPG) complete"

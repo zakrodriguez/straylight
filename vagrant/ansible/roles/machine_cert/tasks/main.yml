@@ -1,0 +1,258 @@
+---
+# Machine certificate autoenrollment role
+# Waits for root CA trust, triggers autoenrollment, verifies machine cert
+# Intended for all domain-joined VMs except DCs. Used by CAs themselves
+# (post cert_templates) so the host can autoenroll a Server Auth cert
+# before ca_services binds it to IIS:443.
+#
+# Identity model: enrollment runs in a SYSTEM scheduled task (authenticates
+# to AD as the *machine* account). See roles/README.md "Windows identity
+# model" for why and the canonical pattern.
+
+- name: Wait for Root CA cert in trusted store
+  # Cascade timing: the Root CA cert lands in AD only after subordinate_ca's
+  # "Publish Root CA to AD" task runs on issueca, which itself happens *after*
+  # issueca finishes installing — that can take a 25min parent-CA wait + 5min
+  # install. Retries are set high (90 = 30min) so web1/manage1 cover the
+  # cascade without giving up early.
+  #
+  # On exhaustion, attach diagnostic context (issueca reachability + AD CA
+  # publication state) so the operator knows whether to look at issueca or here.
+  #
+  # gpupdate /force takes 10-15s per invocation. Running it on every retry
+  # doesn't make the cert arrive any faster — AD GPO replication is the
+  # bottleneck, not the local refresh. So: gpupdate on retry 1, then every
+  # 6th retry (~2-min intervals) while polling cheaply in between. Saves
+  # ~5-7 min per VM on healthy mid-case waits (15 retries).
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      # Tightened from `Subject -like "*{{ lab_netbios }}*"` (matched any cert
+      # with the NetBIOS name embedded, including stale machine/user certs).
+      # A Root CA cert is self-signed (Subject -eq Issuer) AND contains the
+      # NetBIOS-derived CA name in the Subject. Also require NotAfter > now
+      # so we don't claim success on an expired Root CA cert left in the store.
+      $found = Get-ChildItem Cert:\LocalMachine\Root -ErrorAction SilentlyContinue |
+          Where-Object {
+              $_.Subject -eq $_.Issuer -and
+              $_.Subject -like "*{{ lab_netbios }}*" -and
+              $_.NotAfter -gt (Get-Date)
+          }
+      if ($found) {
+          Write-PSFMessage -Level Host -Message 'Root CA cert already in trusted store' -Tag 'machine-cert'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+          return
+      }
+      # Track retry count via a marker file so we can pace gpupdate calls.
+      $marker = 'C:\tmp\machine-cert-retry-counter'
+      New-Item -ItemType Directory -Path 'C:\tmp' -Force | Out-Null
+      $attempt = if (Test-Path $marker) { [int](Get-Content $marker -Raw) + 1 } else { 1 }
+      $attempt | Out-File $marker -Force
+      # gpupdate on first attempt + every 6th retry afterwards (every ~2 min).
+      $doGpupdate = ($attempt -eq 1) -or (($attempt - 1) % 6 -eq 0)
+      if ($doGpupdate) {
+          Write-PSFMessage -Level Host -Message "Root CA cert not in trusted store (attempt $attempt) — running gpupdate" -Tag 'machine-cert'
+          gpupdate /force /target:computer /wait:0 2>&1 | Out-Null
+      } else {
+          Write-PSFMessage -Level Host -Message "Root CA cert not in trusted store (attempt $attempt) — polling without gpupdate" -Tag 'machine-cert'
+      }
+      Start-Sleep -Seconds 2
+      $found = Get-ChildItem Cert:\LocalMachine\Root -ErrorAction SilentlyContinue |
+          Where-Object {
+              $_.Subject -eq $_.Issuer -and
+              $_.Subject -like "*{{ lab_netbios }}*" -and
+              $_.NotAfter -gt (Get-Date)
+          }
+      if (-not $found) {
+          Wait-PSFMessage
+          throw "Root CA cert not yet in trusted store (attempt $attempt)"
+      }
+      Write-PSFMessage -Level Host -Message "Root CA cert arrived in trusted store on attempt $attempt" -Tag 'machine-cert'
+      Remove-Item $marker -Force -ErrorAction SilentlyContinue
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  retries: 90
+  delay: 20
+  register: root_ca_wait
+  until: root_ca_wait is not failed
+  ignore_errors: true   # let the diagnostic task below explain WHY before failing
+
+- name: Diagnose Root CA wait failure with cascade context
+  when: root_ca_wait is failed
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $diag = [ordered]@{}
+      # 1. issueca host reachability via TCP/445 (SMB)
+      try {
+          $tcp = New-Object System.Net.Sockets.TcpClient
+          $iar = $tcp.BeginConnect('issueca.{{ lab_domain }}', 445, $null, $null)
+          $reachable = $iar.AsyncWaitHandle.WaitOne(3000, $false) -and $tcp.Connected
+          $tcp.Close()
+          $diag['issueca_smb_reachable'] = $reachable
+      } catch {
+          $diag['issueca_smb_reachable'] = "probe-failed: $($_.Exception.Message)"
+      }
+      # 2. AD pKIEnrollmentService — issueca registers here when its CA service starts
+      try {
+          $base = "LDAP://CN=Enrollment Services,CN=Public Key Services,CN=Services,CN=Configuration,{{ domain_dn }}"
+          $searcher = New-Object DirectoryServices.DirectorySearcher
+          $searcher.SearchRoot = New-Object DirectoryServices.DirectoryEntry($base)
+          $searcher.Filter = '(objectClass=pKIEnrollmentService)'
+          $diag['ad_enrollment_services_count'] = @($searcher.FindAll()).Count
+      } catch {
+          $diag['ad_enrollment_services_count'] = "probe-failed: $($_.Exception.Message)"
+      }
+      # 3. AD Certification Authorities — Root CA cert lands here from the
+      #    'Publish Root CA certificate to AD' task (subordinate_ca, certutil -dspublish)
+      try {
+          $base2 = "LDAP://CN=Certification Authorities,CN=Public Key Services,CN=Services,CN=Configuration,{{ domain_dn }}"
+          $searcher2 = New-Object DirectoryServices.DirectorySearcher
+          $searcher2.SearchRoot = New-Object DirectoryServices.DirectoryEntry($base2)
+          $searcher2.Filter = '(objectClass=certificationAuthority)'
+          $diag['ad_root_ca_count'] = @($searcher2.FindAll()).Count
+      } catch {
+          $diag['ad_root_ca_count'] = "probe-failed: $($_.Exception.Message)"
+      }
+      $diagStr = ($diag.Keys | ForEach-Object { "$_=$($diag[$_])" }) -join '; '
+      $hint = if ($diag['issueca_smb_reachable'] -ne $true) {
+          'issueca host unreachable — likely a subordinate_ca install ERROR_LOGON_FAILURE cascade. Run: vagrant winrm issueca -c "certutil -getreg ca\CAType"'
+      } elseif ($diag['ad_root_ca_count'] -eq 0) {
+          'issueca reachable but Root CA not yet published to AD — subordinate_ca "Publish Root CA certificate to AD" task did not complete. Check issueca provisioning log.'
+      } else {
+          'Root CA is in AD but local store has not picked it up — GPO autoenrollment problem. Try: gpupdate /force on this host.'
+      }
+      Write-PSFMessage -Level Error -Message "machine_cert wait failed: $diagStr. HINT: $hint" -Tag 'machine-cert'
+      Wait-PSFMessage
+      throw "Root CA cert wait exhausted (30 min). $diagStr. HINT: $hint"
+
+- name: Trigger certificate autoenrollment via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Triggering certificate autoenrollment via scheduled task (SYSTEM context)' -Tag 'machine-cert'
+
+      # WinRM Basic auth = Network logon = no outbound DCOM/RPC credentials.
+      # certutil -pulse under Network logon silently fails to reach the CA.
+      # Run as SYSTEM via scheduled task to get Batch logon with full credentials.
+      $taskScript = @'
+      gpupdate /force /target:computer /wait:0 2>&1 | Out-Null
+      certutil -pulse 2>&1 | Out-Null
+      '@
+      $taskScript | Out-File 'C:\trigger-autoenroll.ps1' -Encoding ASCII
+
+      $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+          -Argument '-ExecutionPolicy Bypass -File C:\trigger-autoenroll.ps1'
+      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' `
+          -LogonType ServiceAccount -RunLevel Highest
+      Register-ScheduledTask -TaskName 'TriggerAutoenroll' `
+          -Action $action -Principal $principal -Force | Out-Null
+      Start-ScheduledTask -TaskName 'TriggerAutoenroll'
+
+      # Wait for the task to complete
+      $timeout = 60
+      $elapsed = 0
+      while ($elapsed -lt $timeout) {
+          Start-Sleep -Seconds 5
+          $elapsed += 5
+          $task = Get-ScheduledTask -TaskName 'TriggerAutoenroll'
+          if ($task.State -eq 'Ready') { break }
+      }
+
+      Unregister-ScheduledTask -TaskName 'TriggerAutoenroll' -Confirm:$false -ErrorAction SilentlyContinue
+      Remove-Item 'C:\trigger-autoenroll.ps1' -ErrorAction SilentlyContinue
+
+      Write-PSFMessage -Level Host -Message 'Autoenrollment triggered as SYSTEM' -Tag 'machine-cert'
+      Wait-PSFMessage
+
+- name: Wait for machine cert with Server Auth EKU
+  # Same gpupdate-throttling pattern as the Root CA wait — running
+  # gpupdate /force every retry doesn't
+  # make the CA grant the cert any faster (CA pulse already kicked it
+  # off). Throttle to retry 1 + every 4th retry (~80s intervals).
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $serverAuthOid = '1.3.6.1.5.5.7.3.1'
+      # Filter NotAfter > now so an expired cert in LocalMachine\My doesn't
+      # let the task "succeed" silently; sort descending so the longest-lived
+      # valid cert wins when multiple exist (e.g. post-renewal overlap window).
+      $cert = Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+          Where-Object {
+              $_.EnhancedKeyUsageList.ObjectId -contains $serverAuthOid -and
+              $_.NotAfter -gt (Get-Date)
+          } |
+          Sort-Object NotAfter -Descending |
+          Select-Object -First 1
+      if (-not $cert) {
+          $marker = 'C:\tmp\machine-cert-eku-counter'
+          New-Item -ItemType Directory -Path 'C:\tmp' -Force | Out-Null
+          $attempt = if (Test-Path $marker) { [int](Get-Content $marker -Raw) + 1 } else { 1 }
+          $attempt | Out-File $marker -Force
+          $doGpupdate = ($attempt -eq 1) -or (($attempt - 1) % 4 -eq 0)
+          if ($doGpupdate) {
+              Write-PSFMessage -Level Warning -Message "No machine cert yet (attempt $attempt) — re-triggering gpupdate" -Tag 'machine-cert'
+              gpupdate /force /target:computer /wait:0 2>&1 | Out-Null
+          } else {
+              Write-PSFMessage -Level Warning -Message "No machine cert yet (attempt $attempt) — polling without gpupdate" -Tag 'machine-cert'
+          }
+          Wait-PSFMessage
+          throw "No machine cert with Server Auth EKU yet (attempt $attempt)"
+      }
+      Remove-Item 'C:\tmp\machine-cert-eku-counter' -Force -ErrorAction SilentlyContinue
+      Write-PSFMessage -Level Host -Message "Machine cert found: $($cert.Subject) (Thumbprint: $($cert.Thumbprint.Substring(0,8))...)" -Tag 'machine-cert'
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  # 90×20s = 30 min. Bumped from 30 (10 min): in heavier profiles
+  # (pqc-adcs-two-tier) the issuing CA can finish + publish templates well past
+  # the old window, and autoenrollment then needs a few GPO/pulse cycles to
+  # issue. Mirrors the 90-retry Root-CA-cert wait above.
+  retries: 90
+  delay: 20
+  register: machine_cert_wait
+  until: machine_cert_wait is not failed
+
+- name: Remove empty-subject autoenrollment-race certs
+  # Autoenrollment can fire mid-provision (notably during the RSAT install on
+  # manage1) before the template's full attribute set has materialized, leaving
+  # a cert in LocalMachine\My with an empty Subject and no EKU. It's harmless,
+  # but validate.sh flags it as a duplicate/empty subject and every fresh cold
+  # build then FAILs the cert-hygiene check until it's hand-cleaned. Remove them
+  # idempotently now that the real Server-Auth cert is confirmed present above.
+  # The guard is precise — empty Subject AND zero EKUs. The real machine cert
+  # has both a Subject and the Server Auth EKU, so it is never matched.
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $stale = Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+          Where-Object { -not $_.Subject -and $_.EnhancedKeyUsageList.Count -eq 0 }
+      if ($stale) {
+          foreach ($c in $stale) {
+              Write-PSFMessage -Level Warning -Message "Removing empty-subject autoenrollment-race cert (Thumbprint: $($c.Thumbprint.Substring(0,8))...)" -Tag 'machine-cert'
+              Remove-Item -Path "Cert:\LocalMachine\My\$($c.Thumbprint)" -Force -ErrorAction SilentlyContinue
+          }
+          $Ansible.Changed = $true
+      } else {
+          Write-PSFMessage -Level Host -Message 'No empty-subject race certs to clean' -Tag 'machine-cert'
+          $Ansible.Changed = $false
+      }
+      Wait-PSFMessage
+
+- name: Display machine cert info
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $serverAuthOid = '1.3.6.1.5.5.7.3.1'
+      $certs = Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+          Where-Object { $_.EnhancedKeyUsageList.ObjectId -contains $serverAuthOid }
+      foreach ($c in $certs) {
+          Write-PSFMessage -Level Host -Message "Machine cert: Subject=$($c.Subject), Thumbprint=$($c.Thumbprint), NotAfter=$($c.NotAfter.ToString('yyyy-MM-dd'))" -Tag 'machine-cert'
+          $Ansible.Result = @{
+              Subject    = $c.Subject
+              Thumbprint = $c.Thumbprint
+              NotAfter   = $c.NotAfter.ToString('yyyy-MM-dd HH:mm:ss')
+          }
+      }
+      $Ansible.Changed = $false
+      Wait-PSFMessage

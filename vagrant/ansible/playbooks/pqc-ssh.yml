@@ -1,0 +1,27 @@
+---
+# pqc-ssh.yml — build OpenSSH 10.0+ on observe1 and run a parallel sshd
+# advertising mlkem768x25519-sha256 (NIST-standardized PQC hybrid KEX).
+#
+# Stock Ubuntu 22.04 ships OpenSSH 8.9p1 which has the OLD PQC KEX
+# (sntrup761x25519-sha512@openssh.com — pre-standard). The new instance
+# preferred by mlkem768x25519-sha256 is the standardized one (OpenSSH
+# default since 10.0).
+#
+# Usage:
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-ssh.yml
+
+- name: Build OpenSSH 10 + run parallel PQC-KEX sshd
+  # Targets the lab's Linux PQC hosts (observe1, stepca1, ejbca1, hydra1).
+  # Each gets /opt/openssh-10 + sshd-pqc on :2222. Parallel build saves
+  # serial wall time when applied to multiple hosts.
+  hosts: linux_pqc_targets
+  gather_facts: true
+  become: true
+  ignore_unreachable: true
+  vars:
+    openssh_pqc_version: "10.0p2"
+    openssh_pqc_prefix:  "/opt/openssh-10"
+    openssh_pqc_port:    2222
+    openssh_pqc_unit_name: "sshd-pqc"
+  roles:
+    - openssh_pqc

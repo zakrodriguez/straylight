@@ -1,0 +1,126 @@
+# ============================================================================
+# SECURITY: DO NOT ADD `pull_request` OR `pull_request_target` TRIGGERS.
+# ----------------------------------------------------------------------------
+# This workflow runs on a self-hosted [self-hosted, vagrant] runner and
+# executes ./up.sh, which provisions VirtualBox VMs and runs Ansible roles
+# with root-equivalent privileges on the runner host. Adding a PR trigger
+# would let any fork's PR (or any pushed branch on a fork-enabled trigger)
+# execute attacker-controlled Vagrantfile / Ansible code as root on our
+# runner. Keep triggers limited to `workflow_dispatch` + `schedule` only.
+# See: https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/
+# ============================================================================
+
+name: Profile build (self-hosted)
+
+# Cold-builds a representative slice of lab profiles end-to-end and reports
+# validate.sh PASS/FAIL counts. Requires a self-hosted runner with VirtualBox,
+# Vagrant, Ansible, and the Ansible Galaxy collections from
+# vagrant/ansible/requirements.yml already installed.
+#
+# Runner labels expected: [self-hosted, vagrant]
+#
+# Triggers:
+#   - Weekly cron (Sundays 02:00 UTC) to catch silent breakage
+#   - Manual workflow_dispatch for on-demand smoke runs
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Sunday 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Single profile to build (leave blank for the default matrix)'
+        required: false
+        default: ''
+
+# Minimum-privilege default. This workflow only needs to read source; the
+# build/validate/teardown steps don't write to the repo, post statuses, or
+# publish artifacts. If a future job needs more, grant it AT THE JOB LEVEL.
+permissions:
+  contents: read
+
+# Don't queue overlapping runs — VirtualBox slots are finite on the runner.
+concurrency:
+  group: profile-build
+  cancel-in-progress: false
+
+jobs:
+  # Resolve the build matrix: a single profile when one is passed to
+  # workflow_dispatch, otherwise the default representative slice.
+  setup:
+    name: Resolve profile matrix
+    runs-on: [self-hosted, vagrant]
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - id: resolve
+        env:
+          PROFILE_INPUT: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PROFILE_INPUT" ]; then
+            printf 'matrix={"profile":["%s"]}\n' "$PROFILE_INPUT" >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"profile":["ad-cs-two-tier","pqc-linux","pqc-full"]}' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build + validate (${{ matrix.profile }})
+    needs: setup
+    runs-on: [self-hosted, vagrant]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    env:
+      LAB_PROFILE: ${{ matrix.profile }}
+    steps:
+      # Pinned to commit SHA: third-party + moving-tag risk is amplified on
+      # a self-hosted runner that executes the checked-out code as root.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Pre-flight — tear down any stale lab state for this profile
+        run: |
+          set -euo pipefail
+          cd vagrant
+          # Best-effort: profile-aware nuke. Ignore failure if there's nothing to nuke.
+          ./nuke.sh --confirm || true
+
+      - name: Bring up the lab
+        run: |
+          set -euo pipefail
+          cd vagrant
+          ./up.sh
+
+      - name: Run validate.sh
+        id: validate
+        run: |
+          set -euo pipefail
+          cd vagrant
+          tmp=$(mktemp)
+          if bash scripts/validate.sh | tee "$tmp"; then
+            status=pass
+          else
+            status=fail
+          fi
+          # validate.sh prints its summary as "  PASS: N    FAIL: N    SKIP: N"
+          # with unconditional ANSI color codes. Strip the colors, then match that
+          # line (the old '^[0-9]+ PASS' pattern never matched and always fell back).
+          summary=$(sed -E 's/\x1b\[[0-9;]*m//g' "$tmp" \
+            | grep -E 'PASS: [0-9]+[[:space:]]+FAIL: [0-9]+[[:space:]]+SKIP: [0-9]+' \
+            | tail -1 | sed -E 's/^[[:space:]]+//' || echo 'no summary line')
+          echo "status=$status"          >> "$GITHUB_OUTPUT"
+          echo "summary=$summary"        >> "$GITHUB_OUTPUT"
+          echo "## Profile: $LAB_PROFILE" >> "$GITHUB_STEP_SUMMARY"
+          echo ""                         >> "$GITHUB_STEP_SUMMARY"
+          echo "Result: \`$status\`"      >> "$GITHUB_STEP_SUMMARY"
+          echo ""                         >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$summary\`"             >> "$GITHUB_STEP_SUMMARY"
+          [[ "$status" == "pass" ]]
+
+      - name: Tear down (always)
+        if: always()
+        run: |
+          set -euo pipefail
+          cd vagrant
+          ./nuke.sh --confirm || true

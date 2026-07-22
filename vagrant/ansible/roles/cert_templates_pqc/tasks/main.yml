@@ -1,0 +1,172 @@
+---
+# PQC certificate templates role: publish the ML-DSA-65 leaf template on the
+# PQC issuing CA, grant enroll/autoenroll, then prove issuance by enrolling and
+# verifying one ML-DSA leaf on issueca-pqc itself.
+#
+# Sibling of the classical cert_templates role, scoped to the single PQC
+# template. Shares the same hard-won patterns: scheduled-task (Batch logon +
+# explicit -Credential) for the AD writes, the replication-wait helper,
+# Set-ADObject (not ADSI CommitChanges) for ACLs on JSON-imported templates,
+# and the SYSTEM-context autoenroll pulse (machine_cert).
+#
+# Requires KB5087539 (ML-DSA support) — already installed by ca.yml before
+# subordinate_ca (PQC mode) runs. The leaf template uses an AD-bound subject
+# (msPKI-Certificate-Name-Flag = 0) so it carries no ESC1 ENROLLEE_SUPPLIES_SUBJECT
+# exposure, matching the hardening of Straylight-Machine.
+
+- name: Install RSAT-AD-PowerShell (required by ADCSTemplate module)
+  ansible.windows.win_feature:
+    name: RSAT-AD-PowerShell
+    state: present
+  when: software_source is defined
+
+- name: Publish PQC template and grant enroll/autoenroll via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      $taskUser = "{{ lab_netbios }}\Administrator"
+      $scriptFile = "C:\tmp\publish-pqc-template.ps1"
+      $logFile = "C:\tmp\publish-pqc-template.log"
+      $statusFile = "C:\tmp\publish-pqc-template-status.txt"
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+
+      $wrapper = @"
+      {{ psf_init }}
+      `$netbiosName = '{{ lab_netbios }}'
+      `$templateName = 'Straylight-PQC-Machine-MLDSA65-v1'
+      `$templateFile = 'C:\Software\Straylight-PQC-Machine-MLDSA65-v1.json'
+      # Explicit PSCredential (NTLM, full Administrator) — the scheduled task's
+      # Batch-logon token can drop privileges so Get-ADObject/Set-ADObject fall
+      # back to a failing Kerberos handshake.
+      `$adCred = New-Object System.Management.Automation.PSCredential(
+          "`$netbiosName\Administrator",
+          (ConvertTo-SecureString '{{ admin_password }}' -AsPlainText -Force))
+
+      function Get-ADObjectWaitForReplication {
+          param(`$Identity, `$Properties, `$Credential, [int]`$MaxAttempts = 15, [int]`$DelaySeconds = 4)
+          `$attempt = 0
+          while (`$attempt -lt `$MaxAttempts) {
+              try {
+                  return Get-ADObject -Identity `$Identity -Properties `$Properties -Credential `$Credential -ErrorAction Stop
+              } catch {
+                  if (`$_.Exception.Message -match 'Directory object not found|Cannot find object') {
+                      Start-Sleep -Seconds `$DelaySeconds
+                      `$attempt++
+                  } else { throw }
+              }
+          }
+          throw "AD object still not found after `$(`$MaxAttempts * `$DelaySeconds)s: `$Identity"
+      }
+
+      try {
+          `$results = [System.Collections.Generic.List[string]]::new()
+          `$rootDSE = [ADSI]'LDAP://RootDSE'
+          `$configNC = `$rootDSE.configurationNamingContext.Value
+          `$templateBase = "CN=Certificate Templates,CN=Public Key Services,CN=Services,`$configNC"
+          `$enrollGuid = [Guid]'0e10c968-78fb-11d2-90d4-00c04f79dc55'
+          `$autoenrollGuid = [Guid]'a05b8cc2-17bc-4802-a710-e7c15ab866a2'
+
+          # 1. Import the ML-DSA template (idempotent) + publish on the local CA.
+          Import-Module 'C:\Software\ADCSTemplate\ADCSTemplate.psm1'
+          `$existing = Get-ADCSTemplate -DisplayName `$templateName -ErrorAction SilentlyContinue
+          if (-not `$existing) {
+              New-ADCSTemplate -DisplayName `$templateName -JSON (Get-Content `$templateFile -Raw) -Publish
+              `$results.Add("Imported: `$templateName")
+          } else {
+              `$results.Add("Already exists: `$templateName")
+          }
+          # Add-CATemplate is idempotent + always re-binds; covers re-provision
+          # where the AD template exists but the new CA never got it in its
+          # local issuance list (same rationale as cert_templates step 2).
+          try {
+              Add-CATemplate -Name `$templateName -Force -ErrorAction Stop
+              `$results.Add("Published on CA: `$templateName")
+          } catch {
+              `$results.Add("Publish skipped: `$templateName (`$(`$_.Exception.Message))")
+          }
+
+          # 2. Grant Enroll + Autoenroll to Domain Computers (issueca-pqc itself
+          #    is a domain computer, so it can autoenroll its own ML-DSA leaf).
+          Import-Module ActiveDirectory
+          `$acct = New-Object System.Security.Principal.NTAccount(`$netbiosName, 'Domain Computers')
+          `$groupSID = `$acct.Translate([System.Security.Principal.SecurityIdentifier])
+          `$tplDN = "CN=`$templateName,`$templateBase"
+          `$tplAD = Get-ADObjectWaitForReplication -Identity `$tplDN -Properties nTSecurityDescriptor -Credential `$adCred
+          `$sd = `$tplAD.nTSecurityDescriptor
+          `$existingRules = `$sd.GetAccessRules(`$true, `$false, [System.Security.Principal.SecurityIdentifier])
+          `$aceAdded = `$false
+          foreach (`$right in @(`$enrollGuid, `$autoenrollGuid)) {
+              `$have = `$existingRules | Where-Object {
+                  `$_.IdentityReference -eq `$groupSID -and `$_.ObjectType -eq `$right -and `$_.AccessControlType -eq 'Allow'
+              }
+              if (-not `$have) {
+                  `$ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                      `$groupSID,
+                      [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight,
+                      [System.Security.AccessControl.AccessControlType]::Allow,
+                      `$right)
+                  `$sd.AddAccessRule(`$ace)
+                  `$aceAdded = `$true
+              }
+          }
+          if (`$aceAdded) {
+              Set-ADObject -Identity `$tplDN -Replace @{nTSecurityDescriptor = `$sd} -Credential `$adCred -ErrorAction Stop
+              `$results.Add("Granted Enroll+Autoenroll: Domain Computers -> `$templateName")
+          } else {
+              `$results.Add("Enroll+Autoenroll already set: Domain Computers -> `$templateName")
+          }
+
+          `$results -join "`n" | Out-File $logFile
+          'SUCCESS' | Out-File $statusFile
+      } catch {
+          Write-PSFMessage -Level Error -Message 'PQC template publish failed' -ErrorRecord `$_ -Tag 'cert-templates-pqc'
+          `$_.Exception.Message | Out-File $logFile -Append
+          'FAILED' | Out-File $statusFile
+      }
+      Wait-PSFMessage
+      "@
+      # $logFile / $statusFile (unescaped) interpolate the literal paths into the
+      # wrapper at build time; `$results / `$_ (escaped) stay as wrapper-local vars.
+      $wrapper | Out-File -FilePath $scriptFile -Encoding ASCII -Force
+      Remove-Item $statusFile -ErrorAction SilentlyContinue
+
+      schtasks /create /tn "PublishPQCTemplate" `
+          /tr "powershell.exe -ExecutionPolicy Bypass -File $scriptFile" `
+          /sc once /st 00:00 /ru $taskUser /rp '{{ admin_password }}' /rl highest /f 2>&1 | Out-Null
+      schtasks /run /tn "PublishPQCTemplate" | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "schtasks /run PublishPQCTemplate failed (exit $LASTEXITCODE)" }
+
+      $maxWait = 300; $waited = 0; $timedOut = $true
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 5; $waited += 5
+          $taskInfo = schtasks /query /tn "PublishPQCTemplate" /fo csv /nh 2>$null
+          if ($taskInfo -match "Ready") { $timedOut = $false; break }
+      }
+      $timeoutDiag = ''
+      if ($timedOut) {
+          $timeoutDiag = "schtasks-wait timed out after ${maxWait}s. State: " +
+                        ((schtasks /query /tn "PublishPQCTemplate" /v /fo list 2>&1 | Out-String) -replace "`r?`n", " | ")
+      }
+      schtasks /delete /tn "PublishPQCTemplate" /f 2>$null
+
+      $log = Get-Content $logFile -ErrorAction SilentlyContinue
+      if ($log) { $Ansible.Result = $log -join "`n" }
+      $status = Get-Content $statusFile -ErrorAction SilentlyContinue
+      Remove-Item $scriptFile, $logFile, $statusFile -Force -ErrorAction SilentlyContinue
+
+      if ($status -ne "SUCCESS") {
+          $msg = "PQC template publish failed. Log: $($log -join '; ')"
+          if ($timeoutDiag) { $msg += " ; $timeoutDiag" }
+          throw $msg
+      }
+  no_log: true
+
+- name: Enroll the ML-DSA-65 leaf on this CA host (proves issuance E2E)
+  # The CA host is itself a Domain Computer; the template ACL we just granted
+  # lets it certreq against its own CA. This is the smoke test the role's
+  # original inline block performed — now factored into pqc_machine_cert so the
+  # same path is reused on every other domain client (manage1, etc.).
+  ansible.builtin.include_role:
+    name: pqc_machine_cert
+  vars:
+    pqc_ca_config: "ISSUECAPQC.{{ lab_domain }}\\{{ ca_common_name }}"
+    pqc_template_name: "Straylight-PQC-Machine-MLDSA65-v1"

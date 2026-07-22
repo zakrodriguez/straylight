@@ -1,0 +1,1050 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+require 'fileutils'
+#===============================================================================
+# Straylight PKI Lab
+#===============================================================================
+# Active VM set is selected by LAB_PROFILE (resolved via lib/lab_profile.rb).
+# See `bash up.sh --list-profiles` for the full list — common choices:
+#
+#   core             DC1, CA1, WEB1, MANAGE1 (default, ~15 min)
+#   ad-cs-two-tier   DC1, ROOTCA, ISSUECA, WEB1, MANAGE1
+#   pqc-full         two-tier + PQC AD CS (ROOTCA-PQC, ISSUECA-PQC) + EJBCA +
+#                    step-ca + Hydra + OBSERVE1 + SCANNER1 + ACME1
+#                    (13 VMs, post-quantum demo)
+#   full             18 VMs — every classical-stack VM (backstop; excludes the
+#                    PQC AD CS pair, which only the pqc-* profiles build)
+#
+# Provisioning: Ansible (per-VM invocation)
+# Orchestration: up.sh (profile-aware parallel launch)
+#===============================================================================
+
+require_relative "lib/lab_env"   # load vagrant/.env BEFORE config.rb reads ENV
+
+# ── Active lab profile resolution ─────────────────────────────────
+# Resolve BEFORE config.rb so the dynamically-allocated /24 feeds LAB_NETWORK /
+# IP_ADDRESSES. An explicit LAB_NETWORK (shell or .env) still wins; otherwise
+# LabNetwork grabs the lowest free host-only /24 from the base up, skipping
+# subnets already used by other running labs (lib/lab_network.rb).
+require_relative "lib/lab_profile"
+require_relative "lib/lab_network"
+PROFILE    = LabProfile.resolve
+# Treat empty/blank as unset ("" is truthy in Ruby, so a bare `LAB_NETWORK=
+# vagrant up` would otherwise pin Topology.network to "" and break IPs/PORT_OFFSET).
+if ENV["LAB_NETWORK"].to_s.strip.empty?
+  own_vms = PROFILE[:components].map { |c| "#{PROFILE[:vbox_prefix]}-#{c}" }
+  ENV["LAB_NETWORK"] = LabNetwork.for_lab(PROFILE[:vbox_prefix], own_vms: own_vms)
+end
+require_relative "config"
+COMPONENTS = PROFILE[:components]
+RESOURCES  = PROFILE[:resources]
+
+# Set dotfile path before Vagrant initializes, unless user explicitly overrode.
+ENV["VAGRANT_DOTFILE_PATH"] ||= PROFILE[:dotfile_dir]
+$stderr.puts "[lab_profile] active: #{PROFILE[:name]} (#{COMPONENTS.size} VMs, source=#{PROFILE[:source]})"
+
+# Per-VM resource override helpers — applied alongside VM_DEFAULTS.
+def vm_memory(vm_name, default)
+  (RESOURCES[vm_name] || {})["memory"] || default
+end
+def vm_cpus(vm_name, default)
+  (RESOURCES[vm_name] || {})["cpus"] || default
+end
+
+# Box freshness contract. Assigns vm.box and, when a straylight/*
+# box is in use AND STRAYLIGHT_BOX_VERSION is pinned (config.rb), pins
+# vm.box_version too so a stale local bake can't silently satisfy `vagrant up`.
+# Upstream gusztavvargadr boxes are left to Vagrant's default version
+# resolution (they carry their own published versions).
+def set_box(vm, box)
+  vm.vm.box = box
+  if box.to_s.start_with?("straylight/") && STRAYLIGHT_BOX_VERSION
+    vm.vm.box_version = STRAYLIGHT_BOX_VERSION
+  end
+end
+
+
+# Path to ansible directory
+ANSIBLE_DIR = File.expand_path("ansible", __dir__)
+
+# Domain DN derived from domain name (e.g., "yourlab.local" -> "DC=yourlab,DC=local")
+DOMAIN_DN = LAB_DOMAIN.split('.').map { |dc| "DC=#{dc}" }.join(',')
+
+# VirtualBox VM name prefix (preserves existing naming convention)
+VB_PREFIX = ENV["VB_PREFIX"] || PROFILE[:vbox_prefix]
+
+# Port offset for static forwarded ports (avoids collisions when running
+# multiple topologies on different subnets simultaneously).
+# Default subnet .56 = offset 0; .57 = offset +1000, etc.
+PORT_OFFSET = (LAB_NETWORK.split('.').last.to_i - 56) * 1000
+
+# WinRM connection vars (written to static inventory at parse time)
+# ansible_host uses the private network IP (not NAT), ansible_port is real WinRM port
+WINRM_VARS_BASE = {
+  ansible_connection: "winrm",
+  ansible_user: "vagrant",
+  ansible_password: "vagrant",
+  ansible_port: 5985,
+  ansible_winrm_transport: "basic",
+  ansible_winrm_scheme: "http",
+  ansible_winrm_operation_timeout_sec: 600,
+  ansible_winrm_read_timeout_sec: 660,
+}
+
+# SSH connection vars for Linux VMs (overrides global WinRM transport in ansible.cfg)
+SSH_VARS_BASE = {
+  ansible_connection: "ssh",
+  ansible_user: "vagrant",
+  ansible_python_interpreter: "/usr/bin/python3",
+}
+
+# Smallstep step-ca vars
+STEPCA_VARS = {
+  stepca_ca_name:    STEPCA_CONFIG[:ca_name],
+  stepca_password:   STEPCA_CONFIG[:password],
+  stepca_image_tag:  STEPCA_CONFIG[:image_tag],
+  stepca_ip:         IP_ADDRESSES[:stepca1],
+}
+
+# EJBCA vars
+EJBCA_VARS = {
+  ejbca_root_ca_name:    EJBCA_CONFIG[:root_ca_name],
+  ejbca_issuing_ca_name: EJBCA_CONFIG[:issuing_ca_name],
+  ejbca_organization:    EJBCA_CONFIG[:organization],
+  ejbca_db_password:     EJBCA_CONFIG[:db_password],
+  ejbca_token_password:  EJBCA_CONFIG[:token_password],
+  ejbca_image_tag:       EJBCA_CONFIG[:image_tag],
+  ejbca_ip:              IP_ADDRESSES[:ejbca1],
+  # EJBCA's hierarchy (Root + Issuing) is independent of AD CS topology.
+  # Always provision two-tier when ejbca1 is in the profile — the issuing
+  # CA is the trust anchor for the SuperAdmin cert (ejbca_admin_bootstrap)
+  # and the parent for EJBCA-Chimera-Root-CA's truststore import.
+  ejbca_two_tier:        COMPONENTS.include?("ejbca1"),
+}
+
+# YubiHSM vars
+YUBIHSM_VARS = {
+  yubihsm_mode:     YUBIHSM_CONFIG[:mode],
+  yubihsm_password: YUBIHSM_CONFIG[:password],
+}
+
+# Hydra vars
+HYDRA_VARS = {
+  hydra_image_tag:     HYDRA_CONFIG[:image_tag],
+  hydra_db_password:   HYDRA_CONFIG[:db_password],
+  hydra_system_secret: HYDRA_CONFIG[:system_secret],
+  hydra_ip:            IP_ADDRESSES[:hydra1],
+}
+
+# WSUS vars
+WSUS_VARS = {
+  wsus_ip: IP_ADDRESSES[:wsus1],
+  wsus_content_disk: WSUS_CONTENT_DISK_GB > 0,
+  wsus_cache_restore: WSUS_CACHE_RESTORE,
+  wsus_cache_capture: WSUS_CACHE_CAPTURE,
+}
+
+# Apps vars (APPS1)
+APPS_VARS = {
+  keycloak_tag:  APPS_CONFIG[:keycloak_tag],
+  vault_tag:     APPS_CONFIG[:vault_tag],
+  nifi_tag:      APPS_CONFIG[:nifi_tag],
+  gitea_tag:     APPS_CONFIG[:gitea_tag],
+  minio_tag:     APPS_CONFIG[:minio_tag],
+  apps_ip:       IP_ADDRESSES[:apps1],
+}
+
+# OpenSearch vars
+OPENSEARCH_VARS = {
+  opensearch_tag: OPENSEARCH_CONFIG[:opensearch_tag],
+}
+
+# Common extra_vars passed to all playbooks (non-connection vars only)
+COMMON_VARS = {
+  lab_domain: LAB_DOMAIN,
+  lab_netbios: LAB_NETBIOS,
+  admin_password: ADMIN_PASSWORD,
+  safe_mode_password: SAFE_MODE_PASSWORD,
+  svc_password: SVC_PASSWORD,
+  domain_dn: DOMAIN_DN,
+  dc_ip: IP_ADDRESSES[:dc1],
+  web_ip: IP_ADDRESSES[:web1],
+  lab_subnet_cidr: "#{LAB_NETWORK}.0/24",   # active /24 (dynamic) for cbom_lens scan hint
+}
+COMMON_VARS[:psf_source] = 'C:\PSModules' if PSF_AVAILABLE
+COMMON_VARS[:psf_init] = '. C:\Users\Public\Logs\straylight\Initialize-PSFLogging.ps1'
+COMMON_VARS[:software_source] = 'C:\Software' if SOFTWARE_AVAILABLE
+COMMON_VARS[:software_source_linux] = '/software' if SOFTWARE_AVAILABLE
+COMMON_VARS[:observe_ip] = IP_ADDRESSES[:observe1]
+COMMON_VARS[:log_prefix] = LOG_PREFIX
+COMMON_VARS[:winlogbeat_version] = WINLOGBEAT_CONFIG[:version]
+COMMON_VARS[:sysmon_version] = SYSMON_CONFIG[:version]
+COMMON_VARS[:filebeat_version] = FILEBEAT_CONFIG[:version]
+COMMON_VARS[:logging_enabled] = LOGGING_ENABLED
+COMMON_VARS[:winlogbeat_enabled] = WINLOGBEAT_ENABLED
+COMMON_VARS[:filebeat_enabled] = FILEBEAT_ENABLED
+COMMON_VARS[:sysmon_enabled] = SYSMON_ENABLED
+COMMON_VARS[:lab_timezone] = LAB_TIMEZONE
+COMMON_VARS[:lab_timezone_linux] = LAB_TIMEZONE_LINUX
+COMMON_VARS[:pwsh_version] = PWSH_VERSION
+# Desktop UX toggle — controls bginfo / gui_tools / desktop_customize roles.
+# Default true preserves the demo UX; set LAB_DESKTOP_ENABLED=false for fast cold builds.
+COMMON_VARS[:lab_desktop_enabled] = ENV.fetch('LAB_DESKTOP_ENABLED', 'true').downcase == 'true'
+
+#===============================================================================
+# PKI vars — topology-dependent
+#===============================================================================
+# All three CA var sets defined unconditionally — only the active VM uses
+# its corresponding set. Composable profiles can include any combination
+# (or none) of the CA VMs.
+PKI_VARS = {
+  ca_common_name: PKI_CONFIG[:issuing_ca_name],
+  ca_type: "EnterpriseRootCA",
+  ca_key_length: 4096,
+  ca_hash_algorithm: "SHA256",
+  ca_validity_period: "Years",
+  ca_validity_period_units: PKI_CONFIG[:validity_years][:root],
+  crl_url: PKI_CONFIG[:crl_url],
+  aia_url: PKI_CONFIG[:aia_url],
+}
+
+ROOT_CA_VARS = {
+  ca_common_name: PKI_CONFIG[:root_ca_name],
+  ca_type: "StandaloneRootCA",
+  ca_key_length: 4096,
+  ca_hash_algorithm: "SHA256",
+  ca_validity_period: "Years",
+  ca_validity_period_units: PKI_CONFIG[:validity_years][:root],
+  crl_url: PKI_CONFIG[:crl_url],
+  aia_url: PKI_CONFIG[:aia_url],
+}
+
+ISSUING_CA_VARS = {
+  ca_common_name: PKI_CONFIG[:issuing_ca_name],
+  ca_type: "EnterpriseSubordinateCA",
+  ca_key_length: 4096,
+  ca_hash_algorithm: "SHA256",
+  ca_validity_period: "Years",
+  ca_validity_period_units: PKI_CONFIG[:validity_years][:issuing],
+  crl_url: PKI_CONFIG[:crl_url],
+  aia_url: PKI_CONFIG[:aia_url],
+  parent_ca_ip: IP_ADDRESSES[:rootca],
+  parent_ca_name: PKI_CONFIG[:root_ca_name],
+}
+
+# Parallel PQC AD CS hierarchy.  Requires KB5087539
+# on the target VM (the windows_kb_install role + fetch-windows-kb.sh
+# helper land that).  ML-DSA is GA on Server 2025 ≥ 26100.32860.
+#
+# Provider naming convention follows Microsoft's published format
+# (learn.microsoft.com/.../configure-ml-dsa-certification-authority):
+#   ML-DSA:65#Microsoft Software Key Storage Provider
+# Key length is the PUBLIC key size in bits — ML-DSA-65 = 1952 B × 8.
+# Hash algorithm MUST be NoHash; ML-DSA does internal hashing and
+# rejects external SHA configurations at install time.
+#
+# These vars drive the unified standalone_ca / subordinate_ca roles in
+# ML-DSA mode (CryptoProviderName = ca_crypto_provider); the same roles
+# build the classical RSA hierarchy when the vars are absent.
+ROOT_CA_PQC_VARS = {
+  ca_common_name: "#{LAB_NETBIOS}-PQC-Root-CA",
+  ca_type: "StandaloneRootCA",
+  ca_key_length: 20736,                            # ML-DSA-87 public key, bits
+  ca_crypto_provider: "ML-DSA:87#Microsoft Software Key Storage Provider",
+  ca_hash_algorithm: "NoHash",                     # mandatory for ML-DSA
+  ca_validity_period: "Years",
+  ca_validity_period_units: PKI_CONFIG[:validity_years][:root],
+  crl_url: PKI_CONFIG[:crl_url_pqc],               # separate PQC CDP/AIA namespace
+  aia_url: PKI_CONFIG[:aia_url_pqc],
+  kb_prereq: "KB5087539",                          # consumed by windows_kb_install role
+}
+
+ISSUING_CA_PQC_VARS = {
+  ca_common_name: "#{LAB_NETBIOS}-PQC-Issuing-CA",
+  ca_type: "EnterpriseSubordinateCA",
+  ca_key_length: 15616,                            # ML-DSA-65 public key, bits
+  ca_crypto_provider: "ML-DSA:65#Microsoft Software Key Storage Provider",
+  ca_hash_algorithm: "NoHash",                     # mandatory for ML-DSA
+  ca_validity_period: "Years",
+  ca_validity_period_units: PKI_CONFIG[:validity_years][:issuing],
+  crl_url: PKI_CONFIG[:crl_url_pqc],               # separate PQC CDP/AIA namespace
+  aia_url: PKI_CONFIG[:aia_url_pqc],
+  parent_ca_ip: IP_ADDRESSES[:"rootca-pqc"],
+  parent_ca_name: "#{LAB_NETBIOS}-PQC-Root-CA",
+  kb_prereq: "KB5087539",
+}
+
+#===============================================================================
+# Static Ansible inventory — generated by lib/render_inventory.rb on demand.
+#
+# Generation is an EXPLICIT step: RenderInventory.run runs only when
+# LAB_RENDER_INVENTORY=1 (set by up.sh / render-inventory.sh) or on first run.
+# The path constants below stay here because the per-VM provisioner blocks
+# reference INVENTORY_PATH; the generation logic itself moved to the module.
+#
+# Per-profile inventory directories (approach B: profile subdirectory) prevent
+# the write race when two profiles are running concurrently on the same checkout
+# (`LAB_PROFILE=core vagrant up` + `LAB_PROFILE=pqc-linux vagrant up` in
+# different terminals). Each profile writes only under
+# `inventory/<profile-name>/`, so the two never clobber each other.
+#
+# Writes use a tempfile-then-rename pattern (RenderInventory.atomic_write) so a
+# parse during another generation of the SAME profile can't yield a truncated
+# file.
+#
+# Subdirectory layout (rather than profile-suffixed filenames) preserves
+# ansible's auto-discovery of `<inventory_dir>/group_vars/all.yml` — each
+# profile's `all.yml` lives adjacent to its own inventory, so standalone
+# `ansible-playbook -i .../static.ini` invocations pick up the right vars
+# without needing -e overrides. Pre-existing `inventory/static.ini` and
+# `inventory/pqc.ini` from before this change are left in place (no
+# destructive cleanup) but no longer read by the orchestration.
+#===============================================================================
+DOTFILE_DIR    = PROFILE[:dotfile_dir]
+PROFILE_INV_DIR = File.join(ANSIBLE_DIR, "inventory", PROFILE[:name])
+INVENTORY_PATH = File.join(PROFILE_INV_DIR, "static.ini")
+
+# INVENTORY_HOSTS derived from topology.yml: os==windows -> winrm, else ssh.
+# Filtered to the active profile below.
+# Defined unconditionally (cheap, side-effect-free) because RenderInventory.run
+# needs it and the generation guard below may skip the run entirely.
+INVENTORY_HOSTS = Topology.names.each_with_object({}) do |name, h|
+  h[name] = { ip: Topology.ip(name),
+              type: Topology.os(name) == 'windows' ? :winrm : :ssh }
+end
+INVENTORY_HOSTS = INVENTORY_HOSTS.select { |name, _| COMPONENTS.include?(name) }
+
+#===============================================================================
+# Inventory generation is an EXPLICIT step.
+#===============================================================================
+# Previously the static.ini / pqc.ini / group_vars/all.yml generation ran as a
+# parse-time SIDE EFFECT — so every `vagrant status`, ssh-config, or
+# tab-completion parse rewrote those shared files. The generation logic now
+# lives in lib/render_inventory.rb and runs ONLY when explicitly requested
+# (up.sh / render-inventory.sh set LAB_RENDER_INVENTORY=1) or when the inventory
+# doesn't exist yet (first-run correctness). A bare `vagrant status` no longer
+# mutates shared files. Generated CONTENTS are byte-identical to before.
+require_relative 'lib/render_inventory'
+if ENV['LAB_RENDER_INVENTORY'] == '1' || !File.exist?(INVENTORY_PATH)
+  RenderInventory.run(
+    profile_name: PROFILE[:name], components: COMPONENTS,
+    inventory_hosts: INVENTORY_HOSTS, dotfile_dir: DOTFILE_DIR,
+    profile_inv_dir: PROFILE_INV_DIR,
+    winrm_vars_base: WINRM_VARS_BASE, ssh_vars_base: SSH_VARS_BASE,
+    common_vars: COMMON_VARS, ejbca_vars: EJBCA_VARS,
+    stepca_vars: STEPCA_VARS, hydra_vars: HYDRA_VARS,
+    vagrant_root: File.dirname(__FILE__))
+end
+
+Vagrant.configure("2") do |config|
+
+  # Global settings
+  config.vm.communicator = "winrm"
+  config.winrm.username = "vagrant"
+  config.winrm.password = "vagrant"
+  config.winrm.transport = :plaintext    # Basic auth — survives DC promo
+  config.winrm.timeout = 1800
+  config.winrm.retry_limit = 30
+  config.vm.boot_timeout = 1800
+  config.vm.graceful_halt_timeout = 600
+
+  # Auto-corrected forwarded ports (the box-defined WinRM/RDP/SSH maps) land in
+  # this range on collision. Vagrant's default 2200..2250 is 51 ports — at 4
+  # forwards per Windows VM that is a hard host-wide ceiling of ~12 concurrent
+  # VMs, hit 2026-07-01 launching `full` alongside three running labs ("the
+  # ports in the auto-correction range are all also used"). Give each lab its
+  # own disjoint 800-port window keyed off the lab subnet (same idea as
+  # PORT_OFFSET): .56 → 2200..2999, .57 → 3200..3999, … — 800 ports ≈ 200 VMs
+  # per lab, and simultaneously-launching labs can't race each other for the
+  # same host ports. Windows never overlap the static 2xxxx+PORT_OFFSET maps.
+  config.vm.usable_port_range = (2200 + PORT_OFFSET)..(2999 + PORT_OFFSET)
+
+  # The base box ships its own Guest Additions. When the host VirtualBox version
+  # differs from the box GA, the vagrant-vbguest plugin tries to auto-update the
+  # guest Additions on boot — which crashes on Ruby 3.3 (File.exists? was removed)
+  # in vbguest 0.32.0 and aborts `vagrant up`. Host 7.2.x and box GA 7.2.x are
+  # compatible, so disable the auto-update entirely (guarded for hosts without
+  # the plugin installed).
+  if Vagrant.has_plugin?("vagrant-vbguest")
+    config.vbguest.auto_update = false
+  end
+
+  # Disable default synced folder (causes issues on Windows guests)
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  # Mount local caches on Windows VMs (PSFramework module + staged software)
+  mount_shares = ->(vm) {
+    vm.vm.synced_folder PSF_PATH, "C:/PSModules", type: "virtualbox" if PSF_AVAILABLE
+    vm.vm.synced_folder SOFTWARE_PATH, "C:/Software", type: "virtualbox" if SOFTWARE_AVAILABLE
+  }
+
+  #=============================================================================
+  # DC1 - Primary Domain Controller
+  #=============================================================================
+  if COMPONENTS.include?("dc1")
+  config.vm.define "dc1", primary: true do |dc|
+    set_box(dc, BOX_WIN_SERVER_CORE)
+    dc.vm.hostname = "DC1"
+    dc.vm.network "private_network", ip: IP_ADDRESSES[:dc1]
+    mount_shares.call(dc)
+
+    dc.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-dc1"
+      vb.memory = vm_memory("dc1", VM_DEFAULTS[:dc][:memory])
+      vb.cpus = vm_cpus("dc1", VM_DEFAULTS[:dc][:cpus])
+      vb.gui = false
+    end
+
+    dc.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/dc1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({ ip_address: IP_ADDRESSES[:dc1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+
+    # Publish EJBCA Root CA cert to AD (run manually after EJBCA1 is provisioned)
+    dc.vm.provision "ejbca-trust", type: "ansible", run: "never" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/ejbca-trust.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(EJBCA_VARS).merge({ ip_address: IP_ADDRESSES[:dc1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+
+    # Publish step-ca Root CA cert to AD (run manually after STEPCA1 is provisioned)
+    dc.vm.provision "stepca-trust", type: "ansible", run: "never" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/stepca-trust.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(STEPCA_VARS).merge({ ip_address: IP_ADDRESSES[:dc1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("dc1")
+
+  #=============================================================================
+  # DC2 - Secondary Domain Controller (Optional)
+  #=============================================================================
+  if COMPONENTS.include?("dc2")
+  config.vm.define "dc2", autostart: false do |dc|
+    set_box(dc, BOX_WIN_SERVER_CORE)
+    dc.vm.hostname = "DC2"
+    dc.vm.network "private_network", ip: IP_ADDRESSES[:dc2]
+    mount_shares.call(dc)
+
+    dc.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-dc2"
+      vb.memory = vm_memory("dc2", VM_DEFAULTS[:dc][:memory])
+      vb.cpus = vm_cpus("dc2", VM_DEFAULTS[:dc][:cpus])
+      vb.gui = false
+    end
+
+    dc.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/dc2.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({ ip_address: IP_ADDRESSES[:dc2] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("dc2")
+
+  #=============================================================================
+  # CA VMs — topology-dependent
+  #=============================================================================
+  # CA1 - Combined Root/Issuing CA (one-tier)
+  if COMPONENTS.include?("ca1")
+  config.vm.define "ca1" do |ca|
+    set_box(ca, BOX_WIN_SERVER_CORE)
+    ca.vm.hostname = "CA1"
+    ca.vm.network "private_network", ip: IP_ADDRESSES[:ca1]
+    mount_shares.call(ca)
+
+    ca.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-ca1"
+      vb.memory = vm_memory("ca1", VM_DEFAULTS[:ca][:memory])
+      vb.cpus = vm_cpus("ca1", VM_DEFAULTS[:ca][:cpus])
+      vb.gui = false
+    end
+
+    ca.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/ca.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(PKI_VARS).merge({ ip_address: IP_ADDRESSES[:ca1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("ca1")
+
+  # ROOTCA - Offline Standalone Root CA (NOT domain-joined, two-tier)
+  if COMPONENTS.include?("rootca")
+  config.vm.define "rootca" do |ca|
+    set_box(ca, BOX_WIN_SERVER_CORE)
+    ca.vm.hostname = "ROOTCA"
+    ca.vm.network "private_network", ip: IP_ADDRESSES[:rootca]
+    mount_shares.call(ca)
+
+    ca.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-rootca"
+      vb.memory = vm_memory("rootca", VM_DEFAULTS[:ca][:memory])
+      vb.cpus = vm_cpus("rootca", VM_DEFAULTS[:ca][:cpus])
+      vb.gui = false
+    end
+
+    ca.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/ca.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(ROOT_CA_VARS).merge({ ip_address: IP_ADDRESSES[:rootca] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("rootca")
+
+  # ISSUECA - Online Enterprise Issuing CA (Subordinate, two-tier)
+  if COMPONENTS.include?("issueca")
+  config.vm.define "issueca" do |ca|
+    set_box(ca, BOX_WIN_SERVER_CORE)
+    ca.vm.hostname = "ISSUECA"
+    ca.vm.network "private_network", ip: IP_ADDRESSES[:issueca]
+    mount_shares.call(ca)
+
+    ca.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-issueca"
+      vb.memory = vm_memory("issueca", VM_DEFAULTS[:ca][:memory])
+      vb.cpus = vm_cpus("issueca", VM_DEFAULTS[:ca][:cpus])
+      vb.gui = false
+    end
+
+    ca.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/ca.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(ISSUING_CA_VARS).merge({ ip_address: IP_ADDRESSES[:issueca] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("issueca")
+
+  #=============================================================================
+  # ROOTCA-PQC - Standalone Offline Root CA, ML-DSA-87 signing
+  #
+  # Parallel to ROOTCA but configured with a Microsoft ML-DSA crypto provider
+  # at install time.  Requires KB5087539 (Windows Server 2025 May 2026
+  # cumulative); ca.yml installs it via the windows_kb_install role (gated on
+  # kb_prereq) before configuring the CA.  Not domain-joined (same as ROOTCA).
+  #=============================================================================
+  if COMPONENTS.include?("rootca-pqc")
+  config.vm.define "rootca-pqc" do |ca|
+    set_box(ca, BOX_WIN_SERVER_CORE)
+    ca.vm.hostname = "ROOTCAPQC"   # NetBIOS max 15 chars, no hyphens
+    ca.vm.network "private_network", ip: IP_ADDRESSES[:"rootca-pqc"]
+    mount_shares.call(ca)
+
+    ca.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-rootca-pqc"
+      vb.memory = vm_memory("rootca-pqc", VM_DEFAULTS[:ca][:memory])
+      vb.cpus = vm_cpus("rootca-pqc", VM_DEFAULTS[:ca][:cpus])
+      vb.gui = false
+    end
+
+    ca.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/ca.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(ROOT_CA_PQC_VARS).merge({ ip_address: IP_ADDRESSES[:"rootca-pqc"] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("rootca-pqc")
+
+  #=============================================================================
+  # ISSUECA-PQC - Online Enterprise Issuing CA, ML-DSA-65 signing
+  #
+  # Domain-joined enterprise CA chained off ROOTCA-PQC.  Same KB5087539
+  # prereq as ROOTCA-PQC, installed by ca.yml before the CA configure.
+  #=============================================================================
+  if COMPONENTS.include?("issueca-pqc")
+  config.vm.define "issueca-pqc" do |ca|
+    set_box(ca, BOX_WIN_SERVER_CORE)
+    ca.vm.hostname = "ISSUECAPQC"   # NetBIOS max 15 chars, no hyphens
+    ca.vm.network "private_network", ip: IP_ADDRESSES[:"issueca-pqc"]
+    mount_shares.call(ca)
+
+    ca.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-issueca-pqc"
+      vb.memory = vm_memory("issueca-pqc", VM_DEFAULTS[:ca][:memory])
+      vb.cpus = vm_cpus("issueca-pqc", VM_DEFAULTS[:ca][:cpus])
+      vb.gui = false
+    end
+
+    ca.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/ca.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(ISSUING_CA_PQC_VARS).merge({ ip_address: IP_ADDRESSES[:"issueca-pqc"] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("issueca-pqc")
+
+  #=============================================================================
+  # WEB1 - CRL/AIA Distribution Point
+  #=============================================================================
+  if COMPONENTS.include?("web1")
+  config.vm.define "web1" do |web|
+    set_box(web, BOX_WIN_SERVER_CORE)
+    web.vm.hostname = "WEB1"
+    web.vm.network "private_network", ip: IP_ADDRESSES[:web1]
+    mount_shares.call(web)
+
+    web.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-web1"
+      vb.memory = vm_memory("web1", VM_DEFAULTS[:web][:memory])
+      vb.cpus = vm_cpus("web1", VM_DEFAULTS[:web][:cpus])
+      vb.gui = false
+    end
+
+    web.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/web1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({ ip_address: IP_ADDRESSES[:web1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("web1")
+
+  #=============================================================================
+  # SQLHOST1 - SQL Server 2022 Developer on Windows Server 2025 (TLS cert labs)
+  #=============================================================================
+  if COMPONENTS.include?("sqlhost1")
+  config.vm.define "sqlhost1" do |sql|
+    set_box(sql, BOX_WIN_SERVER)
+    sql.vm.hostname = "SQLHOST1"
+    sql.vm.network "private_network", ip: IP_ADDRESSES[:sqlhost1]
+    mount_shares.call(sql)
+
+    sql.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-sqlhost1"
+      vb.memory = vm_memory("sqlhost1", VM_DEFAULTS[:sql][:memory])
+      vb.cpus = vm_cpus("sqlhost1", VM_DEFAULTS[:sql][:cpus])
+      vb.gui = false
+    end
+
+    sql.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/sqlhost1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({ ip_address: IP_ADDRESSES[:sqlhost1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("sqlhost1")
+
+  #=============================================================================
+  # CLIENT1 - Windows 11 Test Client
+  #=============================================================================
+  if COMPONENTS.include?("client1")
+  config.vm.define "client1" do |client|
+    set_box(client, BOX_WIN_CLIENT)
+    client.vm.hostname = "CLIENT1"
+    client.vm.network "private_network", ip: IP_ADDRESSES[:client1]
+    mount_shares.call(client)
+
+    client.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-client1"
+      vb.memory = vm_memory("client1", VM_DEFAULTS[:client][:memory])
+      vb.cpus = vm_cpus("client1", VM_DEFAULTS[:client][:cpus])
+      vb.gui = false
+      vb.customize ["modifyvm", :id, "--clipboard-mode", "bidirectional"]
+      vb.customize ["modifyvm", :id, "--draganddrop", "bidirectional"]
+      vb.customize ["modifyvm", :id, "--vram", "128"]
+    end
+
+    client.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/client1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({ ip_address: IP_ADDRESSES[:client1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("client1")
+
+  #=============================================================================
+  # MANAGE1 - Windows Server 2025 Management Workstation (Desktop Experience, RSAT)
+  # Reboxed from Win 11 → Server 2025 Desktop: RSAT installs natively via
+  # Install-WindowsFeature (~30s, on-disk in WinSxS) instead of Add-WindowsCapability
+  # (Win 11 FoD ISO is gated behind VLSC/MSDN — unsuitable for an open lab).
+  # client1 still provides the Win 11 client perspective for demos.
+  #=============================================================================
+  if COMPONENTS.include?("manage1")
+  config.vm.define "manage1", autostart: false do |mgmt|
+    set_box(mgmt, BOX_WIN_SERVER)
+    mgmt.vm.hostname = "MANAGE1"
+    mgmt.vm.network "private_network", ip: IP_ADDRESSES[:manage1]
+    mount_shares.call(mgmt)
+
+    mgmt.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-manage1"
+      vb.memory = vm_memory("manage1", VM_DEFAULTS[:manage][:memory])
+      vb.cpus = vm_cpus("manage1", VM_DEFAULTS[:manage][:cpus])
+      vb.gui = false
+      vb.customize ["modifyvm", :id, "--clipboard-mode", "bidirectional"]
+      vb.customize ["modifyvm", :id, "--draganddrop", "bidirectional"]
+      vb.customize ["modifyvm", :id, "--vram", "128"]
+    end
+
+    manage_vars = COMMON_VARS.merge({ ip_address: IP_ADDRESSES[:manage1] })
+
+    mgmt.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/manage1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = manage_vars
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("manage1")
+
+  #=============================================================================
+  # TOMCAT1 - Apache Tomcat + OpenJDK 17 (Optional)
+  #=============================================================================
+  if COMPONENTS.include?("tomcat1")
+  config.vm.define "tomcat1", autostart: false do |tc|
+    set_box(tc, BOX_WIN_SERVER)
+    tc.vm.hostname = "TOMCAT1"
+    tc.vm.network "private_network", ip: IP_ADDRESSES[:tomcat1]
+    mount_shares.call(tc)
+
+    # Static port forwards — avoids TOCTOU race with concurrent vagrant up
+    # PORT_OFFSET shifts ports when running on a non-default subnet (e.g. 192.168.57)
+    tc.vm.network "forwarded_port", guest: 3389, host: 23389 + PORT_OFFSET, auto_correct: false
+    tc.vm.network "forwarded_port", guest: 5985, host: 25985 + PORT_OFFSET, auto_correct: false
+    tc.vm.network "forwarded_port", guest: 5986, host: 25986 + PORT_OFFSET, auto_correct: false
+    tc.vm.network "forwarded_port", guest: 22,   host: 22060 + PORT_OFFSET, auto_correct: false
+
+    tc.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-tomcat1"
+      vb.memory = vm_memory("tomcat1", VM_DEFAULTS[:tomcat][:memory])
+      vb.cpus = vm_cpus("tomcat1", VM_DEFAULTS[:tomcat][:cpus])
+      vb.gui = false
+      vb.customize ["modifyvm", :id, "--clipboard-mode", "bidirectional"]
+      vb.customize ["modifyvm", :id, "--draganddrop", "bidirectional"]
+      vb.customize ["modifyvm", :id, "--vram", "128"]
+    end
+
+    # Phase 1: domain join (reboots VM, breaks VBoxSF on Desktop Experience boxes)
+    tc.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/tomcat1-phase1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({ ip_address: IP_ADDRESSES[:tomcat1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+
+    # Reload restores VBoxSF shared folders after domain join reboot
+    tc.vm.provision :reload
+
+    # Phase 2: application roles (tomcat, certs, winlogbeat — need C:\Software)
+    tc.vm.provision "phase2", type: "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/tomcat1-phase2.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({ ip_address: IP_ADDRESSES[:tomcat1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("tomcat1")
+
+  #=============================================================================
+  # WSUS1 - Windows Server Update Services (Optional)
+  #=============================================================================
+  if COMPONENTS.include?("wsus1")
+  config.vm.define "wsus1", autostart: false do |wsus|
+    set_box(wsus, BOX_WIN_SERVER_CORE)
+    wsus.vm.hostname = "WSUS1"
+    wsus.vm.network "private_network", ip: IP_ADDRESSES[:wsus1]
+    mount_shares.call(wsus)
+
+    wsus.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-wsus1"
+      vb.memory = vm_memory("wsus1", VM_DEFAULTS[:wsus][:memory])
+      vb.cpus = vm_cpus("wsus1", VM_DEFAULTS[:wsus][:cpus])
+      vb.gui = false
+
+      # Dedicated WSUS content disk (D:\WSUS instead of C:\WSUS)
+      if WSUS_CONTENT_DISK_GB > 0
+        wsus_disk = File.join(Dir.home, "VirtualBox VMs", vb.name, "wsus-data.vdi")
+        unless File.exist?(wsus_disk)
+          vb.customize ["createmedium", "disk",
+                         "--filename", wsus_disk,
+                         "--size", WSUS_CONTENT_DISK_GB * 1024,
+                         "--format", "VDI"]
+        end
+        vb.customize ["storageattach", :id,
+                       "--storagectl", "SATA Controller",
+                       "--port", 1, "--device", 0,
+                       "--type", "hdd",
+                       "--medium", wsus_disk]
+      end
+    end
+
+    wsus.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/wsus1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(WSUS_VARS).merge({ ip_address: IP_ADDRESSES[:wsus1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+
+    # Explicit WsusContent capture (run after content download completes):
+    #   scripts/cache-wsus.sh  →  vagrant provision wsus1 --provision-with wsus-capture
+    wsus.vm.provision "wsus-capture", type: "ansible", run: "never" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/wsus-capture.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(WSUS_VARS).merge({ ip_address: IP_ADDRESSES[:wsus1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("wsus1")
+
+  #=============================================================================
+  # EJBCA1 - EJBCA Community Edition on Ubuntu/Docker (Optional)
+  #=============================================================================
+  if COMPONENTS.include?("ejbca1")
+  config.vm.define "ejbca1", autostart: false do |ejbca|
+    ejbca.vm.box = BOX_LINUX_UBUNTU
+    ejbca.vm.hostname = "ejbca1"
+    ejbca.vm.communicator = "ssh"
+    ejbca.vm.network "private_network", ip: IP_ADDRESSES[:ejbca1]
+
+    ejbca.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-ejbca1"
+      vb.memory = vm_memory("ejbca1", VM_DEFAULTS[:ejbca][:memory])
+      vb.cpus = vm_cpus("ejbca1", VM_DEFAULTS[:ejbca][:cpus])
+      vb.gui = false
+
+      # YubiHSM2 USB passthrough (physical mode only)
+      if YUBIHSM_CONFIG[:mode] == 'physical'
+        vb.customize ["modifyvm", :id, "--usb", "on"]
+        vb.customize ["usbfilter", "add", "0",
+                       "--target", :id,
+                       "--name", "YubiHSM2",
+                       "--vendorid", "1050",
+                       "--productid", "0030"]
+      end
+    end
+
+    # Disable default synced folder (re-enable with SSH-compatible type)
+    ejbca.vm.synced_folder ".", "/vagrant", disabled: true
+    ejbca.vm.synced_folder SOFTWARE_PATH, "/software", type: "virtualbox" if SOFTWARE_AVAILABLE
+
+    ejbca.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/ejbca1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(EJBCA_VARS).merge(YUBIHSM_VARS).merge({ ip_address: IP_ADDRESSES[:ejbca1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("ejbca1")
+
+  #=============================================================================
+  # HYDRA1 - Ory Hydra OAuth 2.0 / OIDC Server on Ubuntu/Docker (Optional)
+  #=============================================================================
+  if COMPONENTS.include?("hydra1")
+  config.vm.define "hydra1", autostart: false do |hydra|
+    hydra.vm.box = BOX_LINUX_UBUNTU
+    hydra.vm.hostname = "hydra1"
+    hydra.vm.communicator = "ssh"
+    hydra.vm.network "private_network", ip: IP_ADDRESSES[:hydra1]
+
+    hydra.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-hydra1"
+      vb.memory = vm_memory("hydra1", VM_DEFAULTS[:hydra][:memory])
+      vb.cpus = vm_cpus("hydra1", VM_DEFAULTS[:hydra][:cpus])
+      vb.gui = false
+    end
+
+    # Disable default synced folder (re-enable with SSH-compatible type)
+    hydra.vm.synced_folder ".", "/vagrant", disabled: true
+    hydra.vm.synced_folder SOFTWARE_PATH, "/software", type: "virtualbox" if SOFTWARE_AVAILABLE
+
+    hydra.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/hydra1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(HYDRA_VARS).merge({ ip_address: IP_ADDRESSES[:hydra1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("hydra1")
+
+  #=============================================================================
+  # OBSERVE1 - OpenSearch Observability Stack on Ubuntu/Docker (Optional)
+  #=============================================================================
+  if COMPONENTS.include?("observe1")
+  config.vm.define "observe1", autostart: false do |obs|
+    obs.vm.box = BOX_LINUX_UBUNTU
+    obs.vm.hostname = "observe1"
+    obs.vm.communicator = "ssh"
+    obs.vm.network "private_network", ip: IP_ADDRESSES[:observe1]
+
+    obs.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-observe1"
+      vb.memory = vm_memory("observe1", VM_DEFAULTS[:observe][:memory])
+      vb.cpus = vm_cpus("observe1", VM_DEFAULTS[:observe][:cpus])
+      vb.gui = false
+    end
+
+    # Disable default synced folder (re-enable with SSH-compatible type)
+    obs.vm.synced_folder ".", "/vagrant", disabled: true
+    obs.vm.synced_folder SOFTWARE_PATH, "/software", type: "virtualbox" if SOFTWARE_AVAILABLE
+
+    obs.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/observe1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(OPENSEARCH_VARS).merge({ ip_address: IP_ADDRESSES[:observe1], stepca_ip: IP_ADDRESSES[:stepca1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("observe1")
+
+  #=============================================================================
+  # STEPCA1 - Smallstep step-ca on Ubuntu/Docker (Optional)
+  #=============================================================================
+  if COMPONENTS.include?("stepca1")
+  config.vm.define "stepca1", autostart: false do |stepca|
+    stepca.vm.box = BOX_LINUX_UBUNTU
+    stepca.vm.hostname = "stepca1"
+    stepca.vm.communicator = "ssh"
+    stepca.vm.network "private_network", ip: IP_ADDRESSES[:stepca1]
+
+    stepca.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-stepca1"
+      vb.memory = vm_memory("stepca1", VM_DEFAULTS[:stepca][:memory])
+      vb.cpus = vm_cpus("stepca1", VM_DEFAULTS[:stepca][:cpus])
+      vb.gui = false
+    end
+
+    # Disable default synced folder (re-enable with SSH-compatible type)
+    stepca.vm.synced_folder ".", "/vagrant", disabled: true
+    stepca.vm.synced_folder SOFTWARE_PATH, "/software", type: "virtualbox" if SOFTWARE_AVAILABLE
+
+    stepca.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/stepca1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(STEPCA_VARS).merge({ ip_address: IP_ADDRESSES[:stepca1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("stepca1")
+
+  #=============================================================================
+  # ACME1 - ACME learning sandbox on Ubuntu (Optional)
+  #   step CLI + acme.sh for HTTP-01 flow against step-ca on stepca1.
+  #=============================================================================
+  if COMPONENTS.include?("acme1")
+  config.vm.define "acme1", autostart: false do |acme|
+    acme.vm.box = BOX_LINUX_UBUNTU
+    acme.vm.hostname = "acme1"
+    acme.vm.communicator = "ssh"
+    acme.vm.network "private_network", ip: IP_ADDRESSES[:acme1]
+
+    acme.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-acme1"
+      vb.memory = vm_memory("acme1", VM_DEFAULTS[:acme][:memory])
+      vb.cpus = vm_cpus("acme1", VM_DEFAULTS[:acme][:cpus])
+      vb.gui = false
+    end
+
+    # Disable default synced folder (re-enable with SSH-compatible type)
+    acme.vm.synced_folder ".", "/vagrant", disabled: true
+    acme.vm.synced_folder SOFTWARE_PATH, "/software", type: "virtualbox" if SOFTWARE_AVAILABLE
+
+    acme.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/acme1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({
+        ip_address: IP_ADDRESSES[:acme1],
+        stepca_ip: IP_ADDRESSES[:stepca1],
+      })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("acme1")
+
+  #=============================================================================
+  # SCANNER1 - CBOM Scanner Hub on Ubuntu/Docker (Optional)
+  #   CBOM-Lens (nmap network scanning), CipherIQ suite (static, eBPF, passive)
+  #   cbomkit-theia source scanning, source repo clones
+  #=============================================================================
+  if COMPONENTS.include?("scanner1")
+  config.vm.define "scanner1", autostart: false do |scan|
+    scan.vm.box = BOX_LINUX_UBUNTU
+    scan.vm.hostname = "scanner1"
+    scan.vm.communicator = "ssh"
+    scan.vm.network "private_network", ip: IP_ADDRESSES[:scanner1]
+
+    scan.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-scanner1"
+      vb.memory = vm_memory("scanner1", VM_DEFAULTS[:scanner][:memory])
+      vb.cpus = vm_cpus("scanner1", VM_DEFAULTS[:scanner][:cpus])
+      vb.gui = false
+      # Promiscuous mode for pqc-flow passive network capture
+      vb.customize ["modifyvm", :id, "--nicpromisc2", "allow-all"]
+    end
+
+    scan.vm.synced_folder ".", "/vagrant", disabled: true
+    scan.vm.synced_folder SOFTWARE_PATH, "/software", type: "virtualbox" if SOFTWARE_AVAILABLE
+
+    scan.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/scanner1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({ ip_address: IP_ADDRESSES[:scanner1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("scanner1")
+
+  #=============================================================================
+  # APPS1 - Target Applications on Ubuntu/Docker (Optional)
+  #   Keycloak, HashiCorp Vault, Apache NiFi, Gitea, MinIO
+  #   Rich crypto surfaces for CBOM scanning
+  #=============================================================================
+  if COMPONENTS.include?("apps1")
+  config.vm.define "apps1", autostart: false do |apps|
+    apps.vm.box = BOX_LINUX_UBUNTU
+    apps.vm.hostname = "apps1"
+    apps.vm.communicator = "ssh"
+    apps.vm.network "private_network", ip: IP_ADDRESSES[:apps1]
+
+    apps.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-apps1"
+      vb.memory = vm_memory("apps1", VM_DEFAULTS[:apps][:memory])
+      vb.cpus = vm_cpus("apps1", VM_DEFAULTS[:apps][:cpus])
+      vb.gui = false
+    end
+
+    apps.vm.synced_folder ".", "/vagrant", disabled: true
+    apps.vm.synced_folder SOFTWARE_PATH, "/software", type: "virtualbox" if SOFTWARE_AVAILABLE
+
+    apps.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/apps1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge(APPS_VARS).merge({ ip_address: IP_ADDRESSES[:apps1] })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("apps1")
+end

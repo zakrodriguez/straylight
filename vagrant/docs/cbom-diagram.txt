@@ -1,0 +1,24 @@
+flowchart TD
+    A[1. Export Phase<br><code>cbom-scan.sh --export-only</code>] --> A1[Windows VMs: WinRM → certs/keys/CRLs]
+    A --> A2[Linux VMs: SSH → host + Docker certs]
+    A1 --> B
+    A2 --> B
+
+    B[2. CBOM Generation<br><code>cbomkit-theia</code>] --> C1[Scanner: theia]
+    B --> C2[Scanner: nmap-network]
+
+    C1 --> D
+    C2 --> D
+
+    D[3. Per-Scanner Pipeline] --> D1[a. Dedup — <code>cbom-dedup.py</code>]
+    D1 --> D2[b. Validate — <code>cbom_validate.py</code>]
+    D2 --> D3[c. Diff — <code>cbom_diff.py</code>]
+    D3 --> D4[d. Ingest — <code>cbom_ingest.py</code> → OpenSearch]
+    D4 --> D5[e. Score — <code>cbom_score.py</code> → PQC readiness]
+    D5 --> D6[f. Baseline Rotate]
+
+    D6 --> E[4. Dashboards & Alerts<br><i>one-time setup</i>]
+    E --> E1[<code>osd_dashboards.py</code><br>6 dashboards · 38 visualizations]
+    E --> E2[<code>cbom_alerts.py</code><br>5 alerting monitors]
+    E1 --> F[View: http://192.168.56.53:5601]
+    E2 --> F

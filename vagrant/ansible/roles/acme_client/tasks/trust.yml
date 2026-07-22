@@ -1,0 +1,53 @@
+---
+# Fetch step-ca root cert and seed system trust store.
+# We use curl -k once to bypass the chicken-and-egg bootstrap problem
+# (we don't yet trust step-ca's cert, which is what's signing /roots.pem
+# over HTTPS). Walkthrough step 0 manually verifies the fingerprint.
+
+# Wait for step-ca to be ready. Without this gate, parallel Phase-3
+# provisioning races: acme1 can attempt the curl before stepca1's
+# docker-compose-up has bound :9000, leading to "Connection refused"
+# on cold builds. Warm rebuilds mask the race because step-ca is
+# already serving.
+- name: Wait for step-ca to be reachable
+  ansible.builtin.wait_for:
+    host: "{{ stepca_ip }}"
+    port: 9000
+    state: started
+    timeout: 600
+    delay: 5
+    sleep: 5
+
+- name: Fetch step-ca root certificate
+  ansible.builtin.command:
+    cmd: >
+      curl -ksSf
+      --output /usr/local/share/ca-certificates/stepca-root.crt
+      https://{{ stepca_ip }}:9000/roots.pem
+  args:
+    creates: /usr/local/share/ca-certificates/stepca-root.crt
+  register: stepca_root_fetch
+
+- name: Set ownership/mode on root cert
+  ansible.builtin.file:
+    path: /usr/local/share/ca-certificates/stepca-root.crt
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Update system CA store
+  ansible.builtin.command:
+    cmd: update-ca-certificates
+  when: stepca_root_fetch.changed
+  register: update_ca
+  changed_when: "'1 added' in update_ca.stdout or 'added' in update_ca.stdout"
+
+- name: Display root cert subject (for sanity)
+  ansible.builtin.command:
+    cmd: openssl x509 -in /usr/local/share/ca-certificates/stepca-root.crt -noout -subject -fingerprint -sha256
+  register: stepca_root_info
+  changed_when: false
+
+- name: Show step-ca root cert info
+  ansible.builtin.debug:
+    var: stepca_root_info.stdout_lines

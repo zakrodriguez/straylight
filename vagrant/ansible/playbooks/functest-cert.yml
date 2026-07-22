@@ -1,0 +1,77 @@
+---
+# functest-cert.yml — fixture for the adcs-functest revocation walkthrough.
+# Provisions a FRESH Issued functest1.<domain> WebServer cert on issueca so
+# walkverify can capture/re-check the revocation golden. Enrollment runs in a
+# full-credential BATCH scheduled task (domain admin) with `certreq -f -q`:
+# the -q suppresses the hidden CSP prompt that hangs non-interactive certreq,
+# and the batch logon supplies the DCOM creds that Add-CATemplate + certreq
+# -submit need (WinRM network-logon fails NOT_AUTHENTICATED). Re-run before
+# each `walkverify verify`/`check` — it always mints a fresh cert.
+- name: Provision functest1 WebServer cert (revocation-lab fixture)
+  hosts: issueca
+  gather_facts: false
+  vars:
+    ca_config: "ISSUECA.{{ lab_domain }}\\{{ lab_netbios }}-Issuing-CA"
+    work_dir: 'C:\ProgramData\adcs-functest'
+    subject_cn: "functest1.{{ lab_domain }}"
+  tasks:
+    - name: Reset prior functest artifacts (always mint fresh)
+      ansible.windows.win_shell: >-
+        Remove-Item '{{ work_dir }}\functest*' -Force -ErrorAction SilentlyContinue;
+        New-Item -Path '{{ work_dir }}' -ItemType Directory -Force | Out-Null
+      changed_when: true
+
+    - name: Deploy the enroll script
+      ansible.windows.win_template:
+        src: functest-enroll.ps1.j2
+        dest: 'C:\ProgramData\adcs-functest\functest-enroll.ps1'
+
+    - name: Enroll functest cert via domain-admin batch scheduled task
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $work = '{{ work_dir }}'
+          $sf   = "$work\functest-enroll.ps1"
+          $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+              -Argument "-ExecutionPolicy Bypass -File $sf"
+          Register-ScheduledTask -TaskName 'FunctestEnroll' -Action $action `
+              -User '{{ lab_netbios }}\Administrator' -Password '{{ admin_password }}' `
+              -RunLevel Highest -Force | Out-Null
+          Start-ScheduledTask -TaskName 'FunctestEnroll'
+          $t = 0
+          while ($t -lt 180) {
+              Start-Sleep -Seconds 5; $t += 5
+              if ((Get-ScheduledTask -TaskName 'FunctestEnroll').State -eq 'Ready') { break }
+          }
+          Unregister-ScheduledTask -TaskName 'FunctestEnroll' -Confirm:$false -ErrorAction SilentlyContinue
+          Remove-Item $sf -Force -ErrorAction SilentlyContinue
+
+          $ids = if (Test-Path "$work\functest-cert-ids.txt") { Get-Content "$work\functest-cert-ids.txt" -Raw } else { $null }
+          $log = Get-Content "$work\enroll-log.txt" -Raw -ErrorAction SilentlyContinue
+          $Ansible.Result  = @{ cer = (Test-Path "$work\functest.cer"); ids = $ids }
+          $Ansible.Changed = $true
+          if (-not (Test-Path "$work\functest.cer") -or -not $ids -or ($ids -match '"RequestId":\s*""') -or ($ids -match '"SerialNumber":\s*""')) {
+              throw "functest enrollment failed / IDs empty. Enroll log: $log"
+          }
+
+    # Stage the issued cert to the relying party (manage1). A direct
+    # \\ISSUECA\C$ pull from manage1 fails the WinRM double-hop; the Ansible
+    # controller reaches both hosts directly, so route the file through it:
+    # fetch from issueca -> win_copy to manage1 (content over WinRM, no SMB).
+    - name: Fetch the issued cert to the controller
+      ansible.builtin.fetch:
+        src: 'C:\ProgramData\adcs-functest\functest.cer'
+        dest: /tmp/functest-cert.cer
+        flat: true
+
+    - name: Ensure the client work dir on manage1
+      ansible.windows.win_file:
+        path: 'C:\ProgramData\adcs-functest'
+        state: directory
+      delegate_to: manage1
+
+    - name: Stage the issued cert to manage1
+      ansible.windows.win_copy:
+        src: /tmp/functest-cert.cer
+        dest: 'C:\ProgramData\adcs-functest\functest.cer'
+      delegate_to: manage1

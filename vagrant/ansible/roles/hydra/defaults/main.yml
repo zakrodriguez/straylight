@@ -1,0 +1,10 @@
+---
+hydra_image_tag: "v2.2"
+hydra_db_password: "hydra"
+hydra_system_secret: "YOURLABHYDRA-system-secret!"
+# hydra_ip is derived from topology.yml — the Vagrantfile passes it as
+# extra_vars (HYDRA_VARS[:hydra_ip] = IP_ADDRESSES[:hydra1], highest precedence)
+# and lib/render_inventory.rb renders it into the generated group_vars/all.yml.
+# Not restated as a literal here so a re-IP touches only the source of truth.
+# (Mirrors observe_ip / ejbca_ip / stepca_ip, which are likewise never
+# redeclared in their role defaults.)

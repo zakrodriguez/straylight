@@ -1,0 +1,20 @@
+---
+# Method for installing the Chimera Root CA alt-sig configuration.
+#
+#   db_patch  (default) — patch CAData blob directly in MariaDB.
+#                         Works on EJBCA CE 9.3.7 (current ship).
+#                         Required while EJBCA Admin UI does not expose
+#                         `alternativeSignatureAlgorithm` /
+#                         `alternativeCertSignKey` on the Edit CA form.
+#
+#   playwright           — drive the EJBCA Admin UI via headless browser.
+#                         Forward-compatible skeleton. Requires EJBCA 9.4+
+#                         which exposes the fields (tracked upstream as
+#                         ECA-13071 + ECA-13368). Will fail with
+#                         "FIELD-MISSING" against 9.3.7. See
+#                         vagrant/docs/ejbca-chimera-setup.md.
+#
+# When EJBCA CE 9.4 ships and the lab bumps to it, flip the default to
+# `playwright` in a one-line PR, run pqc-full cold to verify, then remove
+# the DB patch path in a follow-up.
+ejbca_chimera_method: db_patch

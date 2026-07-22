@@ -1,0 +1,11 @@
+---
+# NiFi role defaults
+#
+# NiFi's single-user provider enforces a >= 12-character password
+# (setSingleUserCredentials). The lab-wide admin_password may be shorter
+# (e.g. "TenTowns00!" = 11 chars), so we deterministically pad it here
+# rather than bumping the global default and rippling into 30+ other roles.
+#
+# The suffix is fixed ("nifi-pad") so the operator can always derive the
+# NiFi password from the lab admin_password without consulting state.
+nifi_admin_password: "{{ admin_password }}nifi-pad"

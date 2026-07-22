@@ -1,0 +1,14 @@
+events {}
+http {
+    server {
+        listen {{ nginx_pqc_port }} ssl;
+        server_name _;
+        ssl_certificate     /etc/nginx/cert/server.crt;
+        ssl_certificate_key /etc/nginx/cert/server.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        location / {
+            add_header Content-Type text/plain;
+            return 200 "{{ nginx_pqc_service_name }} — {{ nginx_pqc_cert_label }} cert\n";
+        }
+    }
+}

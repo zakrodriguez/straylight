@@ -1,0 +1,76 @@
+---
+# Generate the lab's PQC OpenPGP key in a dedicated GNUPGHOME.
+# Composite ECC+Kyber: ed25519 primary (sign+cert) + ky768_bp256 subkey
+# (Kyber-768 + Brainpool P-256 hybrid encryption KEM, the GnuPG-native
+# composite shipped in 2.5.x). Lives at /opt/gnupg-pqc/home so the lab
+# user's ~/.gnupg stays untouched.
+#
+# Idempotency: skip generation if the lab UID already has a key.
+# Defaults (prefix/homedir/uid/email/validity) live in defaults/main.yml.
+
+- name: Ensure GNUPGHOME exists with restrictive perms
+  ansible.builtin.file:
+    path: "{{ gnupg_pqc_homedir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Check whether the lab key already exists
+  ansible.builtin.command:
+    cmd: "{{ gnupg_pqc_prefix }}/bin/gpg --homedir {{ gnupg_pqc_homedir }} --list-keys --with-colons {{ gnupg_pqc_email }}"
+  register: key_exists
+  changed_when: false
+  failed_when: false
+  environment:
+    LC_ALL: C
+
+- name: Generate ed25519 primary (sign + cert) — only if no key yet
+  ansible.builtin.command:
+    cmd: >-
+      {{ gnupg_pqc_prefix }}/bin/gpg --homedir {{ gnupg_pqc_homedir }}
+      --batch --pinentry-mode loopback --passphrase ''
+      --quick-gen-key '{{ gnupg_pqc_uid }}' ed25519 cert,sign {{ gnupg_pqc_validity }}
+  when: key_exists.rc != 0
+
+- name: Resolve primary fingerprint
+  ansible.builtin.shell:
+    cmd: |
+      {{ gnupg_pqc_prefix }}/bin/gpg --homedir {{ gnupg_pqc_homedir }} \
+        --list-keys --with-colons {{ gnupg_pqc_email }} | \
+        awk -F: '/^fpr/ {print $10; exit}'
+  register: gnupg_pqc_fpr_result
+  changed_when: false
+
+- name: Capture fingerprint as fact
+  ansible.builtin.set_fact:
+    gnupg_pqc_fingerprint: "{{ gnupg_pqc_fpr_result.stdout | trim }}"
+
+- name: Check whether Kyber subkey already exists
+  # Algo "8" = Kyber in libgcrypt enum. If a subkey exists for our key with
+  # that algo, skip the add.
+  ansible.builtin.shell:
+    cmd: |
+      {{ gnupg_pqc_prefix }}/bin/gpg --homedir {{ gnupg_pqc_homedir }} \
+        --list-keys --with-colons {{ gnupg_pqc_email }} | \
+        awk -F: '/^sub/ && $4 == "8" {print "yes"; exit}'
+  register: kyber_subkey_check
+  changed_when: false
+
+- name: Add Kyber-768 encryption subkey
+  ansible.builtin.command:
+    cmd: >-
+      {{ gnupg_pqc_prefix }}/bin/gpg --homedir {{ gnupg_pqc_homedir }}
+      --batch --pinentry-mode loopback --passphrase ''
+      --quick-add-key {{ gnupg_pqc_fingerprint }} kyber768 encr {{ gnupg_pqc_validity }}
+  when: kyber_subkey_check.stdout != 'yes'
+
+- name: Show final key state
+  ansible.builtin.command:
+    cmd: "{{ gnupg_pqc_prefix }}/bin/gpg --homedir {{ gnupg_pqc_homedir }} --list-keys --keyid-format long"
+  register: key_listing
+  changed_when: false
+
+- name: Display key listing
+  ansible.builtin.debug:
+    msg: "{{ key_listing.stdout_lines }}"

@@ -1,0 +1,1107 @@
+{
+  "$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:09ebb943-3bbd-41bd-9f7f-b27bbb18bf4f",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-04-12T22:58:39.060924+00:00",
+    "component": {
+      "type": "application",
+      "name": "nmap-network-scan",
+      "version": "1.0"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "c6503a37-78b5-5b13-9f94-241bb043dd29",
+      "type": "cryptographic-asset",
+      "name": "rsa-2048",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key",
+          "size": 2048
+        }
+      }
+    },
+    {
+      "bom-ref": "840c09de-b789-5971-8bcd-9b24ccc62589",
+      "type": "cryptographic-asset",
+      "name": "192.168.56.10:636",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "192.168.56.10:636",
+          "issuerName": "commonName=YOURLAB-Issuing-CA, domainComponent=yourlab",
+          "certificateFormat": "X.509",
+          "notValidBefore": "2026-04-12T00:42:46+00:00",
+          "notValidAfter": "2027-04-12T00:42:46+00:00",
+          "signatureAlgorithmRef": "9329de25-3488-56eb-b531-4de6dcf61ea5",
+          "subjectPublicKeyRef": "c6503a37-78b5-5b13-9f94-241bb043dd29"
+        }
+      }
+    },
+    {
+      "bom-ref": "d81cf6ea-e2ff-5520-8b98-79fc62689526",
+      "type": "cryptographic-asset",
+      "name": "rsa-2048",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key",
+          "size": 2048
+        }
+      }
+    },
+    {
+      "bom-ref": "e1a40e06-b417-5415-9e2e-8dbde3141895",
+      "type": "cryptographic-asset",
+      "name": "DC1.yourlab.local",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "commonName=DC1.yourlab.local",
+          "issuerName": "commonName=DC1.yourlab.local",
+          "certificateFormat": "X.509",
+          "notValidBefore": "2026-04-10T22:26:38+00:00",
+          "notValidAfter": "2026-10-10T22:26:38+00:00",
+          "signatureAlgorithmRef": "9329de25-3488-56eb-b531-4de6dcf61ea5",
+          "subjectPublicKeyRef": "d81cf6ea-e2ff-5520-8b98-79fc62689526"
+        }
+      }
+    },
+    {
+      "bom-ref": "20e7ccc5-49da-5b65-bcf2-47d5456c5a91",
+      "type": "cryptographic-asset",
+      "name": "rsa-2048",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.30/192.168.56.30:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key",
+          "size": 2048
+        }
+      }
+    },
+    {
+      "bom-ref": "2cb9568e-546b-5292-be5e-7aa0efab3178",
+      "type": "cryptographic-asset",
+      "name": "WEB1.yourlab.local",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.30/192.168.56.30:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "commonName=WEB1.yourlab.local",
+          "issuerName": "commonName=WEB1.yourlab.local",
+          "certificateFormat": "X.509",
+          "notValidBefore": "2026-04-10T22:40:52+00:00",
+          "notValidAfter": "2026-10-10T22:40:52+00:00",
+          "signatureAlgorithmRef": "9329de25-3488-56eb-b531-4de6dcf61ea5",
+          "subjectPublicKeyRef": "20e7ccc5-49da-5b65-bcf2-47d5456c5a91"
+        }
+      }
+    },
+    {
+      "bom-ref": "4b16caf4-78ac-5814-bdc2-bf125bf9c1ae",
+      "type": "cryptographic-asset",
+      "name": "rsa-3072",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key",
+          "size": 3072
+        }
+      }
+    },
+    {
+      "bom-ref": "e829ddd0-f67f-5b97-9c87-ce5275b3791a",
+      "type": "cryptographic-asset",
+      "name": "ejbca1.yourlab.local",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "userId=c-0kpl71aci1kfve5pd, organizationName=PrimeKey Container Quickstart, commonName=ejbca1.yourlab.local",
+          "issuerName": "userId=c-0kpl71aci1kfve5pd, organizationName=PrimeKey Container Quickstart, commonName=ejbca1.yourlab.local",
+          "certificateFormat": "X.509",
+          "notValidBefore": "2026-04-12T00:28:58+00:00",
+          "notValidAfter": "2036-04-11T00:28:58+00:00",
+          "signatureAlgorithmRef": "9329de25-3488-56eb-b531-4de6dcf61ea5",
+          "subjectPublicKeyRef": "4b16caf4-78ac-5814-bdc2-bf125bf9c1ae"
+        }
+      }
+    },
+    {
+      "bom-ref": "456bb4eb-209e-51dc-8c6d-bfcfe8bcaca8",
+      "type": "cryptographic-asset",
+      "name": "ec-256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.51/192.168.56.51:9000"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key",
+          "size": 256
+        }
+      }
+    },
+    {
+      "bom-ref": "0e9876ff-e664-5105-9e0c-95e6377162f2",
+      "type": "cryptographic-asset",
+      "name": "Step Online CA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.51/192.168.56.51:9000"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "commonName=Step Online CA",
+          "issuerName": "organizationName=Smallstep-CA, commonName=Smallstep-CA Intermediate CA",
+          "certificateFormat": "X.509",
+          "notValidBefore": "2026-04-12T16:37:56+00:00",
+          "notValidAfter": "2026-04-13T16:38:56+00:00",
+          "signatureAlgorithmRef": "f37b4d35-68a7-5c80-8f9d-e5a64ae4476a",
+          "subjectPublicKeyRef": "456bb4eb-209e-51dc-8c6d-bfcfe8bcaca8"
+        }
+      }
+    },
+    {
+      "bom-ref": "686d1733-fbfc-55d7-b531-6fddf3887304",
+      "type": "cryptographic-asset",
+      "name": "rsa-4096",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.55/192.168.56.55:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key",
+          "size": 4096
+        }
+      }
+    },
+    {
+      "bom-ref": "f436033e-9c2a-597f-87e9-1142f2439cfb",
+      "type": "cryptographic-asset",
+      "name": "localhost",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.55/192.168.56.55:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "commonName=localhost",
+          "issuerName": "commonName=localhost",
+          "certificateFormat": "X.509",
+          "notValidBefore": "2026-04-12T00:28:56+00:00",
+          "notValidAfter": "2026-06-11T00:28:56+00:00",
+          "signatureAlgorithmRef": "9329de25-3488-56eb-b531-4de6dcf61ea5",
+          "subjectPublicKeyRef": "686d1733-fbfc-55d7-b531-6fddf3887304"
+        }
+      }
+    },
+    {
+      "bom-ref": "b1b16f57-62ec-538f-8e91-a396d8bae399",
+      "type": "cryptographic-asset",
+      "name": "rsa-2048",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.60/192.168.56.60:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key",
+          "size": 2048
+        }
+      }
+    },
+    {
+      "bom-ref": "466b5779-46be-5757-9369-780f9292fe8a",
+      "type": "cryptographic-asset",
+      "name": "TOMCAT1.yourlab.local",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.60/192.168.56.60:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "commonName=TOMCAT1.yourlab.local",
+          "issuerName": "commonName=TOMCAT1.yourlab.local",
+          "certificateFormat": "X.509",
+          "notValidBefore": "2026-04-11T00:28:24+00:00",
+          "notValidAfter": "2026-10-11T00:28:24+00:00",
+          "signatureAlgorithmRef": "9329de25-3488-56eb-b531-4de6dcf61ea5",
+          "subjectPublicKeyRef": "b1b16f57-62ec-538f-8e91-a396d8bae399"
+        }
+      }
+    },
+    {
+      "bom-ref": "b07ab370-00ae-5be4-a0d8-0fa977439ce0",
+      "type": "cryptographic-asset",
+      "name": "rsa-2048",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.100/192.168.56.100:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key",
+          "size": 2048
+        }
+      }
+    },
+    {
+      "bom-ref": "15e2419f-5cd9-5321-853b-2fa1706b3235",
+      "type": "cryptographic-asset",
+      "name": "CLIENT1.yourlab.local",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.100/192.168.56.100:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "commonName=CLIENT1.yourlab.local",
+          "issuerName": "commonName=CLIENT1.yourlab.local",
+          "certificateFormat": "X.509",
+          "notValidBefore": "2026-04-11T00:28:29+00:00",
+          "notValidAfter": "2026-10-11T00:28:29+00:00",
+          "signatureAlgorithmRef": "9329de25-3488-56eb-b531-4de6dcf61ea5",
+          "subjectPublicKeyRef": "b07ab370-00ae-5be4-a0d8-0fa977439ce0"
+        }
+      }
+    },
+    {
+      "bom-ref": "e76ab325-0819-531b-8245-4624773d350b",
+      "type": "cryptographic-asset",
+      "name": "rsa-2048",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.101/192.168.56.101:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key",
+          "size": 2048
+        }
+      }
+    },
+    {
+      "bom-ref": "60c82cb3-4452-59e6-903a-6d5513a08f5c",
+      "type": "cryptographic-asset",
+      "name": "MANAGE1.yourlab.local",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.101/192.168.56.101:3389"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "commonName=MANAGE1.yourlab.local",
+          "issuerName": "commonName=MANAGE1.yourlab.local",
+          "certificateFormat": "X.509",
+          "notValidBefore": "2026-04-10T23:22:46+00:00",
+          "notValidAfter": "2026-10-10T23:22:46+00:00",
+          "signatureAlgorithmRef": "9329de25-3488-56eb-b531-4de6dcf61ea5",
+          "subjectPublicKeyRef": "e76ab325-0819-531b-8245-4624773d350b"
+        }
+      }
+    },
+    {
+      "bom-ref": "9329de25-3488-56eb-b531-4de6dcf61ea5",
+      "type": "cryptographic-asset",
+      "name": "sha256WithRSAEncryption",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "8629b175-d2f6-54b3-a256-41c4626d323d",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.0",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "cc9a5299-3d3b-5dac-b713-e66b70ae2618",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.0",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "c707f52e-09f4-5ae8-8401-cb1e7e325f02",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_256_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.0",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "3a4abe7b-ad53-5408-8b12-40cf3bfb1a27",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_128_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.0",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "2805fcbb-346e-54cb-ba07-53553eccacb2",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.1",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "473e0142-7a2b-5564-94d9-f3926e9b09d8",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.1",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "b210fbc3-15a8-5b74-b6da-4863be857c7f",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_256_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.1",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "ef1143cc-7e84-5f5f-b616-728213232c38",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_128_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.1",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "5e67a6fa-d1ee-50e5-ba91-1188206e7ee1",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "295b81e5-f33a-5788-852d-ded9d3ca50d5",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "de2bd233-834c-5ee8-b176-59125ebda11c",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "78606939-1025-58a6-9089-b6a7d6dc04f1",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "9e88e285-cab2-5348-9b0c-fd84fcf5f3e7",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "97599fe3-d2d0-5efd-be5d-4f0ebdc3e16e",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "9a58613e-e8d7-50a6-9c98-cea05988fba8",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_256_GCM_SHA384",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "62e6a62a-1d7f-5171-ae11-ba4726e67c16",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_128_GCM_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "3abcb6e7-e05f-5787-8dbc-809d0c62753c",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_256_CBC_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "b10f4041-920d-53b0-84e9-d03d89c062d4",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_128_CBC_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "7b08d2d9-cf6a-5707-94db-1aa88e374993",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_256_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "0ead34eb-3caf-57f1-b544-69f16f2a38e0",
+      "type": "cryptographic-asset",
+      "name": "TLS_RSA_WITH_AES_128_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.10/192.168.56.10:636"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "5be830f8-57e5-510d-8516-c72efc6052fc",
+      "type": "cryptographic-asset",
+      "name": "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "cd7b3f32-ee41-5141-b221-cff270ca6915",
+      "type": "cryptographic-asset",
+      "name": "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "4d08e755-4ee4-525f-b581-5447c581abf6",
+      "type": "cryptographic-asset",
+      "name": "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "dfd1d00c-391e-5b41-b70e-d9eff2a73e6d",
+      "type": "cryptographic-asset",
+      "name": "TLS_DHE_RSA_WITH_AES_256_CBC_SHA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "62e4c1de-fcb8-5b03-9c61-c290e7f496c5",
+      "type": "cryptographic-asset",
+      "name": "TLS_DHE_RSA_WITH_AES_128_CBC_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "4c37c7ee-43c9-5024-9bf5-422e5930dae6",
+      "type": "cryptographic-asset",
+      "name": "TLS_DHE_RSA_WITH_AES_256_CBC_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "f37b4d35-68a7-5c80-8f9d-e5a64ae4476a",
+      "type": "cryptographic-asset",
+      "name": "ecdsa-with-SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.51/192.168.56.51:9000"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "1f45d444-3a2f-5b8c-b9a8-ff7e9637b48c",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.51/192.168.56.51:9000"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "4e54ca8b-4da0-5b52-93e1-0b9bbf5360c6",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.51/192.168.56.51:9000"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "c001e2e0-2b22-568b-a64d-6fdd7949f0fc",
+      "type": "cryptographic-asset",
+      "name": "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.55/192.168.56.55:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "f4d8946a-15d8-5bbe-9b0a-ad34ab2535ea",
+      "type": "cryptographic-asset",
+      "name": "TLS_DHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.55/192.168.56.55:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "cipher",
+          "parameterSetIdentifier": "TLSv1.2",
+          "cryptoFunctions": [
+            "encapsulate"
+          ]
+        }
+      }
+    }
+  ],
+  "dependencies": []
+}

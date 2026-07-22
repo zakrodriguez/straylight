@@ -1,0 +1,17 @@
+[Unit]
+Description=Daily timer for ACME cert renewal
+Documentation=https://www.freedesktop.org/software/systemd/man/systemd.timer.html
+
+[Timer]
+# step-ca default cert lifetime is 24h. Daily timer can miss the renewal
+# window if the prior fire was a no-op (>8h until expiry); cert then
+# expires before next fire and `step ca renew` rejects (mTLS-bound).
+# Fire every 4h to guarantee at least one in-window renewal attempt.
+OnBootSec=5min
+OnUnitActiveSec=4h
+RandomizedDelaySec=15min
+Persistent=true
+Unit=acme-renew.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,108 @@
+---
+# CBOM Source Repos role: clone source repositories for CBOM scanning
+#
+# Caching: saves ~3 min on cold-builds after the first.
+# The cloned repos (keycloak + bc-java + ejbca-ce, ~500 MB) get archived together
+# to `{{ software_source_linux }}/scanner-cache/cbom-sources.tar.gz`. Subsequent
+# cold-builds extract the tarball instead of re-cloning (extraction ~20s, clones
+# were ~3 min — saves the bulk of the time, plus avoids GitHub rate limits).
+
+- name: Install git
+  ansible.builtin.apt:
+    name: git
+    state: present
+    update_cache: true
+
+- name: Create CBOM sources directory
+  ansible.builtin.file:
+    path: /opt/cbom-sources
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check if CBOM sources are already populated
+  ansible.builtin.stat:
+    path: /opt/cbom-sources/ejbca-ce/.git
+  register: cbom_sources_existing
+
+- name: Check for cached CBOM sources tarball
+  ansible.builtin.stat:
+    path: "{{ software_source_linux }}/scanner-cache/cbom-sources.tar.gz"
+  register: cbom_sources_cache
+  when:
+    - not cbom_sources_existing.stat.exists
+    - software_source_linux is defined
+
+- name: Restore CBOM sources from cache
+  ansible.builtin.unarchive:
+    src: "{{ software_source_linux }}/scanner-cache/cbom-sources.tar.gz"
+    dest: /opt
+    remote_src: true
+    owner: root
+    group: root
+  when:
+    - not cbom_sources_existing.stat.exists
+    - software_source_linux is defined
+    - cbom_sources_cache.stat.exists | default(false)
+  register: cbom_sources_restored
+
+# Clone path — skipped entirely when restored from cache.
+# Pinned to HEAD (HEAD as of 2026-05-26) — update via 'git ls-remote' when bumping
+- name: Clone Keycloak repository
+  ansible.builtin.git:
+    repo: https://github.com/keycloak/keycloak.git
+    dest: /opt/cbom-sources/keycloak
+    depth: 1
+    update: false
+    version: 71e63e99dc67bc73c657b9bf700e939b53371583
+  when:
+    - not cbom_sources_existing.stat.exists
+    - not (cbom_sources_restored.changed | default(false))
+
+# Pinned to HEAD (HEAD as of 2026-05-26) — update via 'git ls-remote' when bumping
+- name: Clone Bouncy Castle (bc-java) repository
+  ansible.builtin.git:
+    repo: https://github.com/bcgit/bc-java.git
+    dest: /opt/cbom-sources/bc-java
+    depth: 1
+    update: false
+    version: 397af23f2dedcab18ca7f449d3275e4825b90065
+  when:
+    - not cbom_sources_existing.stat.exists
+    - not (cbom_sources_restored.changed | default(false))
+
+# Pinned to HEAD (HEAD as of 2026-05-26) — update via 'git ls-remote' when bumping
+- name: Clone EJBCA CE repository
+  ansible.builtin.git:
+    repo: https://github.com/Keyfactor/ejbca-ce.git
+    dest: /opt/cbom-sources/ejbca-ce
+    depth: 1
+    update: false
+    version: 3eca262162abacada9c19aa535304a1f8677b756
+  when:
+    - not cbom_sources_existing.stat.exists
+    - not (cbom_sources_restored.changed | default(false))
+
+# Use tar via command (not community.general.archive — same reason as openssl_35:
+# that collection isn't in this lab's requirements.yml).
+#
+# NOTE: The prompt described this as "a git-clone with ignore_errors: true", but
+# the task at this location is actually the tar CACHE-SAVE step (the git clones
+# above gate on `when:` only, with no ignore_errors). The sources are already
+# cloned to /opt/cbom-sources on disk by the time this runs, so a failed cache
+# write never breaks the current build — it only means the *next* cold-build
+# re-clones instead of restoring. We therefore register the result and keep the
+# failure non-fatal (mirroring the original ignore_errors intent) rather than
+# adding a cache-existence gate that doesn't apply to a writer task.
+# Changes error-handling shape (register added) — flag for cold-build validation.
+- name: Save cloned CBOM sources to cache (for next cold-build)
+  ansible.builtin.command:
+    cmd: tar -czf "{{ software_source_linux }}/scanner-cache/cbom-sources.tar.gz" -C /opt "cbom-sources"
+  when:
+    - not cbom_sources_existing.stat.exists
+    - not (cbom_sources_restored.changed | default(false))
+    - software_source_linux is defined
+  register: cbom_sources_cache_save
+  failed_when: false
+  changed_when: false

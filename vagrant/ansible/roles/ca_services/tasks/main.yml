@@ -1,0 +1,285 @@
+---
+# CA Services role: Web Enrollment, NDES, CEP/CES, Key Archival
+
+# --- Web Enrollment ---
+
+- name: Install ADCS-Web-Enrollment feature
+  ansible.windows.win_feature:
+    name: ADCS-Web-Enrollment
+    include_management_tools: true
+    state: present
+
+- name: Install Web Enrollment role service
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      try {
+          Write-PSFMessage -Level Host -Message 'Installing Web Enrollment role service' -Tag 'ca-services'
+          Install-AdcsWebEnrollment -Force
+          Write-PSFMessage -Level Host -Message 'Web Enrollment installed' -Tag 'ca-services'
+      } catch {
+          if ($_ -match "already installed") {
+              Write-PSFMessage -Level Host -Message 'Web Enrollment already installed' -Tag 'ca-services'
+              $Ansible.Changed = $false
+              Wait-PSFMessage
+              return
+          }
+          Write-PSFMessage -Level Error -Message 'Web Enrollment installation failed' -ErrorRecord $_ -Tag 'ca-services'
+          Wait-PSFMessage
+          throw
+      }
+      Wait-PSFMessage
+
+# Install-AdcsWebEnrollment sets sslFlags=Ssl on /CertSrv but never binds a server
+# cert to IIS:443, so http://localhost/certsrv returns 403.4 and https fails the
+# TLS handshake. Pick the freshest Server Auth cert whose SAN matches this host
+# (autoenrolled by cert_templates) and bind it.
+- name: Bind machine Server Auth cert to IIS Default Web Site:443
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Import-Module WebAdministration
+      $fqdn = "{{ inventory_hostname | upper }}.{{ lab_domain }}"
+      $serverAuthOid = '1.3.6.1.5.5.7.3.1'
+
+      $cert = Get-ChildItem Cert:\LocalMachine\My |
+          Where-Object { $_.EnhancedKeyUsageList.ObjectId -contains $serverAuthOid -and $_.HasPrivateKey } |
+          Where-Object {
+              $san = $_.Extensions | Where-Object { $_.Oid.FriendlyName -eq 'Subject Alternative Name' } | Select-Object -First 1
+              $san -and $san.Format($false) -match [regex]::Escape($fqdn)
+          } |
+          Sort-Object NotAfter -Descending | Select-Object -First 1
+
+      if (-not $cert) {
+          Write-PSFMessage -Level Error -Message "No Server Auth cert with SAN $fqdn found in LocalMachine\My" -Tag 'ca-services'
+          Wait-PSFMessage
+          throw "No Server Auth cert with SAN $fqdn for IIS:443 binding"
+      }
+
+      Write-PSFMessage -Level Host -Message "Binding $($cert.Thumbprint) (NotAfter $($cert.NotAfter.ToString('yyyy-MM-dd'))) to IIS:443" -Tag 'ca-services'
+
+      $binding = Get-WebBinding -Name 'Default Web Site' -Protocol https -ErrorAction SilentlyContinue
+      if (-not $binding) {
+          New-WebBinding -Name 'Default Web Site' -Protocol https -Port 443 -IPAddress '*' | Out-Null
+          $binding = Get-WebBinding -Name 'Default Web Site' -Protocol https
+          Write-PSFMessage -Level Host -Message 'Created HTTPS binding on Default Web Site:443' -Tag 'ca-services'
+      }
+
+      $currentHash = $binding.certificateHash
+      if ($currentHash -eq $cert.Thumbprint) {
+          Write-PSFMessage -Level Host -Message "IIS:443 already bound to $($cert.Thumbprint)" -Tag 'ca-services'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+          return
+      }
+
+      # AddSslCertificate writes both the IIS metabase entry and the HTTP.SYS sslcert binding
+      $binding.AddSslCertificate($cert.Thumbprint, 'My')
+
+      # Re-fetch the binding — the IIS:\SslBindings drive caches, but Get-WebBinding reads the metabase directly
+      $verifyHash = (Get-WebBinding -Name 'Default Web Site' -Protocol https).certificateHash
+      if ($verifyHash -ne $cert.Thumbprint) {
+          Write-PSFMessage -Level Error -Message "Cert binding to IIS:443 did not stick (got $verifyHash)" -Tag 'ca-services'
+          Wait-PSFMessage
+          throw "Failed to bind cert to IIS:443"
+      }
+      Write-PSFMessage -Level Host -Message "Bound $($cert.Thumbprint) to IIS:443" -Tag 'ca-services'
+      Wait-PSFMessage
+
+# --- NDES ---
+
+- name: Install ADCS-Device-Enrollment feature
+  ansible.windows.win_feature:
+    name: ADCS-Device-Enrollment
+    include_management_tools: true
+    state: present
+
+- name: Add svc-ndes to IIS_IUSRS
+  ansible.windows.win_group_membership:
+    name: IIS_IUSRS
+    members:
+      - "{{ lab_netbios }}\\svc-ndes"
+    state: present
+
+- name: Install NDES via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      $taskUser = "{{ lab_netbios }}\Administrator"
+      $ndesUser = "{{ lab_netbios }}\svc-ndes"
+
+      $scriptFile = "C:\tmp\install-ndes.ps1"
+      $logFile = "C:\tmp\install-ndes.log"
+      $statusFile = "C:\tmp\install-ndes-status.txt"
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+
+      $wrapper = @"
+      {{ psf_init }}
+      try {
+          Write-PSFMessage -Level Host -Message 'Starting NDES installation' -Tag 'ca-services'
+          `$pw = ConvertTo-SecureString '{{ svc_password }}' -AsPlainText -Force
+          Install-AdcsNetworkDeviceEnrollmentService ``
+              -ServiceAccountName '$ndesUser' ``
+              -ServiceAccountPassword `$pw ``
+              -RAName 'NDES-RA' ``
+              -RACountry 'US' ``
+              -SigningProviderName 'Microsoft Strong Cryptographic Provider' ``
+              -SigningKeyLength 2048 ``
+              -EncryptionProviderName 'Microsoft Strong Cryptographic Provider' ``
+              -EncryptionKeyLength 2048 ``
+              -Force *> $logFile
+          Write-PSFMessage -Level Host -Message 'NDES installation succeeded' -Tag 'ca-services'
+          'SUCCESS' | Out-File $statusFile
+      } catch {
+          if (`$_ -match 'already installed') {
+              Write-PSFMessage -Level Host -Message 'NDES already installed' -Tag 'ca-services'
+              'Already installed' | Out-File $logFile
+              'SUCCESS' | Out-File $statusFile
+          } else {
+              Write-PSFMessage -Level Error -Message 'NDES installation failed' -ErrorRecord `$_ -Tag 'ca-services'
+              `$_.Exception.Message | Out-File $logFile -Append
+              'FAILED' | Out-File $statusFile
+          }
+      }
+      Wait-PSFMessage
+      "@
+      $wrapper | Out-File -FilePath $scriptFile -Encoding ASCII -Force
+      Remove-Item $statusFile -ErrorAction SilentlyContinue
+
+      schtasks /create /tn "InstallNDES" `
+          /tr "powershell.exe -ExecutionPolicy Bypass -File $scriptFile" `
+          /sc once /st 00:00 /ru $taskUser /rp '{{ admin_password }}' /rl highest /f | Out-Null
+      schtasks /run /tn "InstallNDES" | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "schtasks /run InstallNDES failed (exit $LASTEXITCODE)" }
+
+      $maxWait = 600; $waited = 0
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 5; $waited += 5
+          $taskInfo = schtasks /query /tn "InstallNDES" /fo csv /nh 2>$null
+          if ($taskInfo -match "Ready") { break }
+      }
+      schtasks /delete /tn "InstallNDES" /f 2>$null
+
+      $log = Get-Content $logFile -ErrorAction SilentlyContinue
+      if ($log) { $Ansible.Result = $log -join "`n" }
+      $status = Get-Content $statusFile -ErrorAction SilentlyContinue
+
+      # Clean up temp files (script contains plaintext password)
+      Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue
+      Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+      Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
+
+      if ($status -ne "SUCCESS") { throw "NDES installation failed. Log: $($log -join '; ')" }
+  no_log: true
+
+# --- CEP/CES ---
+
+- name: Install ADCS enrollment policy features
+  ansible.windows.win_feature:
+    name:
+      - ADCS-Enroll-Web-Pol
+      - ADCS-Enroll-Web-Svc
+    include_management_tools: true
+    state: present
+
+- name: Install CEP/CES via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      $taskUser = "{{ lab_netbios }}\Administrator"
+
+      $scriptFile = "C:\tmp\install-cepces.ps1"
+      $logFile = "C:\tmp\install-cepces.log"
+      $statusFile = "C:\tmp\install-cepces-status.txt"
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+
+      $wrapper = @"
+      {{ psf_init }}
+      try {
+          Write-PSFMessage -Level Host -Message 'Starting CEP/CES installation' -Tag 'ca-services'
+          `$log = @()
+          try {
+              Install-AdcsEnrollmentPolicyWebService -AuthenticationType Kerberos -Force *>> $logFile
+              Write-PSFMessage -Level Host -Message 'CEP installation succeeded' -Tag 'ca-services'
+          } catch {
+              if (`$_ -notmatch 'already (installed|exists)') { throw }
+              Write-PSFMessage -Level Host -Message 'CEP already installed' -Tag 'ca-services'
+              'CEP already installed' | Out-File $logFile -Append
+          }
+          try {
+              Install-AdcsEnrollmentWebService -AuthenticationType Kerberos -Force *>> $logFile
+              Write-PSFMessage -Level Host -Message 'CES installation succeeded' -Tag 'ca-services'
+          } catch {
+              if (`$_ -notmatch 'already (installed|exists)') { throw }
+              Write-PSFMessage -Level Host -Message 'CES already installed' -Tag 'ca-services'
+              'CES already installed' | Out-File $logFile -Append
+          }
+          'SUCCESS' | Out-File $statusFile
+      } catch {
+          Write-PSFMessage -Level Error -Message 'CEP/CES installation failed' -ErrorRecord `$_ -Tag 'ca-services'
+          `$_.Exception.Message | Out-File $logFile -Append
+          'FAILED' | Out-File $statusFile
+      }
+      Wait-PSFMessage
+      "@
+      $wrapper | Out-File -FilePath $scriptFile -Encoding ASCII -Force
+      Remove-Item $statusFile -ErrorAction SilentlyContinue
+
+      schtasks /create /tn "InstallCEPCES" `
+          /tr "powershell.exe -ExecutionPolicy Bypass -File $scriptFile" `
+          /sc once /st 00:00 /ru $taskUser /rp '{{ admin_password }}' /rl highest /f | Out-Null
+      schtasks /run /tn "InstallCEPCES" | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "schtasks /run InstallCEPCES failed (exit $LASTEXITCODE)" }
+
+      $maxWait = 600; $waited = 0
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 5; $waited += 5
+          $taskInfo = schtasks /query /tn "InstallCEPCES" /fo csv /nh 2>$null
+          if ($taskInfo -match "Ready") { break }
+      }
+      schtasks /delete /tn "InstallCEPCES" /f 2>$null
+
+      $log = Get-Content $logFile -ErrorAction SilentlyContinue
+      if ($log) { $Ansible.Result = $log -join "`n" }
+      $status = Get-Content $statusFile -ErrorAction SilentlyContinue
+
+      # Clean up temp files
+      Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue
+      Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+      Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
+
+      if ($status -ne "SUCCESS") { throw "CEP/CES installation failed. Log: $($log -join '; ')" }
+  no_log: true
+
+# --- Key Archival ---
+
+- name: Enable Key Archival
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Key Archival flag intentionally NOT set (see comment)' -Tag 'ca-services'
+      # KRAF_ENABLEARCHIVEALL must NOT be set without a registered KRA cert.
+      #
+      # Key Archival requires a registered KRA certificate. Enable this flag
+      # only AFTER:
+      #   1. Enrolling a KRA cert via the Key Recovery Agent template
+      #   2. Running `certutil -setca KRA <thumbprint>`
+      #   3. Bumping `certutil -setreg CA\KRACertCount 1`
+      #
+      # Without those, templates with CT_FLAG_REQUIRE_PRIVATE_KEY_ARCHIVAL
+      # fail enrollment with ESC_ARCHIVAL_NOT_ENABLED. Until the KRA
+      # enrollment + registration is automated in this role, leave the
+      # flag off so non-archival templates keep working.
+      #
+      # Was: certutil.exe -setreg CA\KRAFlags +KRAF_ENABLEARCHIVEALL
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+
+# --- IIS Restart ---
+
+- name: Restart IIS after CA services installation
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Restarting IIS' -Tag 'ca-services'
+      iisreset /restart
+      Write-PSFMessage -Level Host -Message 'IIS restarted' -Tag 'ca-services'
+      Wait-PSFMessage

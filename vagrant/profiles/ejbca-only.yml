@@ -1,0 +1,9 @@
+name: ejbca-only
+description: |
+  Pure EJBCA CE play, no AD. Useful for EJBCA training, ML-DSA
+  experiments, or testing EJBCA upgrades in isolation. scanner1
+  included so you can run nmap against ejbca1's TLS endpoints.
+
+components:
+  - ejbca1
+  - scanner1

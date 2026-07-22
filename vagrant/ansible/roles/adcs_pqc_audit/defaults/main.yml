@@ -1,0 +1,15 @@
+---
+# adcs_pqc_audit role defaults.
+#
+# OpenSearch ingest wiring for the audit JSON sidecar. Mirrors the
+# canonical observability endpoint used by filebeat/winlogbeat/cloudflare_pqc:
+# observe_tls nginx data port (TLS + HTTP Basic Auth → 127.0.0.1:9200 on
+# observe1). observe_ip / admin_password come from the Vagrantfile extra_vars
+# or generated group_vars; beats_* fall back to the same safety-net defaults
+# as the Beats roles so inventories without group_vars still resolve. The lab
+# CA isn't in the controller trust store, so ingest uses --insecure.
+adcs_pqc_audit_observe_ip: "{{ observe_ip | default('192.168.56.53') }}"
+adcs_pqc_audit_beats_tls_port: "{{ beats_tls_port | default(9244) }}"
+adcs_pqc_audit_opensearch_user: "{{ beats_basic_auth_user | default('beats') }}"
+adcs_pqc_audit_opensearch_pass: "{{ beats_basic_auth_password | default(admin_password) }}"
+adcs_pqc_audit_opensearch_insecure: true

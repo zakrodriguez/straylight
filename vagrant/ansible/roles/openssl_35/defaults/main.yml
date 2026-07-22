@@ -1,0 +1,4 @@
+---
+# OpenSSL 3.5 source-build role defaults
+openssl_35_version: "3.5.0"
+openssl_35_install_prefix: /opt/openssl-3.5

@@ -1,0 +1,126 @@
+---
+# Winlogbeat role: forward Windows Event Logs to OpenSearch
+# Uses local cache (C:\Software) when available, downloads from Elastic otherwise.
+
+- name: Skip winlogbeat if logging disabled
+  ansible.builtin.meta: end_role
+  when: not (logging_enabled | default(true) and winlogbeat_enabled | default(true))
+
+- name: Set Winlogbeat zip filename
+  ansible.builtin.set_fact:
+    winlogbeat_zip: "winlogbeat-{{ winlogbeat_version }}-windows-x86_64.zip"
+
+- name: Check if Winlogbeat is already installed
+  ansible.windows.win_stat:
+    path: 'C:\Program Files\Winlogbeat\winlogbeat.exe'
+  register: winlogbeat_exe
+
+- name: Create temp download directory
+  ansible.windows.win_file:
+    path: C:\tmp
+    state: directory
+  when: not winlogbeat_exe.stat.exists
+
+- name: Check for staged Winlogbeat ZIP in local software cache
+  ansible.windows.win_stat:
+    path: '{{ software_source }}\{{ winlogbeat_zip }}'
+  register: winlogbeat_local
+  when:
+    - not winlogbeat_exe.stat.exists
+    - software_source is defined
+
+- name: Copy Winlogbeat ZIP from local cache
+  ansible.windows.win_copy:
+    src: '{{ software_source }}\{{ winlogbeat_zip }}'
+    dest: 'C:\tmp\winlogbeat.zip'
+    remote_src: true
+  when:
+    - not winlogbeat_exe.stat.exists
+    - software_source is defined
+    - winlogbeat_local.stat.exists | default(false)
+
+# Checksum omitted: ansible.windows.win_get_url 3.5.0 has a string-comparison
+# bug — it never strips the "<algo>:" prefix before comparing the pinned hash
+# to the computed digest, so EVERY checksum (sha1/sha256/sha512) silently
+# mismatches with the unhelpful diagnostic
+#   "did not match 'sha1:<hex>', it was '<same-hex>'"
+# (literally identical hex on both sides). Verified empirically with all three
+# algorithms against the Elastic-CDN winlogbeat-8.17.0 artifact. HTTPS provides
+# transport integrity for the download path; the cache-hit path
+# (resources/software/winlogbeat-...zip) still anchors the bytes we expect.
+# Re-add the checksum once ansible.windows >= 3.6 is in use and the upstream
+# bug is fixed. Upstream SHA-512 for cross-check:
+# https://artifacts.elastic.co/downloads/beats/winlogbeat/winlogbeat-8.17.0-windows-x86_64.zip.sha512
+- name: Download Winlogbeat {{ winlogbeat_version }} from Elastic
+  ansible.windows.win_get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/winlogbeat/{{ winlogbeat_zip }}"
+    dest: 'C:\tmp\winlogbeat.zip'
+  when:
+    - not winlogbeat_exe.stat.exists
+    - software_source is not defined or not (winlogbeat_local.stat.exists | default(false))
+
+- name: Extract Winlogbeat
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Extracting Winlogbeat to C:\Program Files\Winlogbeat' -Tag 'winlogbeat'
+
+      $extractDir = 'C:\tmp\winlogbeat-extract'
+      if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+
+      Expand-Archive -Path 'C:\tmp\winlogbeat.zip' -DestinationPath $extractDir -Force
+
+      # The zip contains a versioned subdirectory — move its contents to final location
+      $inner = Get-ChildItem $extractDir | Select-Object -First 1
+      Move-Item -Path $inner.FullName -Destination 'C:\Program Files\Winlogbeat' -Force
+
+      Remove-Item $extractDir -Recurse -Force
+
+      Write-PSFMessage -Level Host -Message 'Winlogbeat extracted' -Tag 'winlogbeat'
+      Wait-PSFMessage
+  when: not winlogbeat_exe.stat.exists
+
+- name: Create Winlogbeat log directory
+  ansible.windows.win_file:
+    path: 'C:\ProgramData\Winlogbeat\logs'
+    state: directory
+
+- name: Deploy winlogbeat.yml configuration
+  ansible.windows.win_template:
+    src: winlogbeat.yml.j2
+    dest: 'C:\Program Files\Winlogbeat\winlogbeat.yml'
+  register: winlogbeat_config
+
+- name: Install Winlogbeat Windows service
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+
+      $svc = Get-Service -Name winlogbeat -ErrorAction SilentlyContinue
+      if ($svc) {
+          Write-PSFMessage -Level Host -Message 'Winlogbeat service already installed' -Tag 'winlogbeat'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+          return
+      }
+
+      Write-PSFMessage -Level Host -Message 'Installing Winlogbeat service' -Tag 'winlogbeat'
+      Push-Location 'C:\Program Files\Winlogbeat'
+      & .\install-service-winlogbeat.ps1
+      if ($LASTEXITCODE) { Pop-Location; throw "install-service-winlogbeat.ps1 failed (exit $LASTEXITCODE)" }
+      Pop-Location
+
+      Write-PSFMessage -Level Host -Message 'Winlogbeat service installed' -Tag 'winlogbeat'
+      Wait-PSFMessage
+
+- name: Ensure Winlogbeat service is running
+  ansible.windows.win_service:
+    name: winlogbeat
+    start_mode: auto
+    state: started
+
+- name: Restart Winlogbeat if config changed
+  ansible.windows.win_service:
+    name: winlogbeat
+    state: restarted
+  when: winlogbeat_config.changed

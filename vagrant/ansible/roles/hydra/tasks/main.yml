@@ -1,0 +1,84 @@
+---
+# Hydra role: deploy Ory Hydra OAuth 2.0 / OIDC server with AD login via LDAP
+
+- name: Create Hydra directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/hydra
+    - /opt/hydra/data/postgres
+    - /opt/hydra/consent-app
+    - /opt/hydra/consent-app/templates
+
+- name: Copy consent app files
+  ansible.builtin.copy:
+    src: "consent-app/{{ item }}"
+    dest: "/opt/hydra/consent-app/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - Dockerfile
+    - requirements.txt
+    - app.py
+    - templates/login.html
+  register: consent_files
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/hydra/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+  register: compose_config
+
+- name: Build and start Hydra containers
+  community.docker.docker_compose_v2:
+    project_src: /opt/hydra
+    state: present
+    build: "{{ 'always' if (consent_files.changed or compose_config.changed) else 'policy' }}"
+
+- name: Wait for Hydra to be ready
+  ansible.builtin.uri:
+    url: "http://localhost:4444/health/ready"
+    return_content: true
+  register: hydra_health
+  until: hydra_health.status == 200
+  retries: 60
+  delay: 5
+
+- name: Check if test OAuth client exists
+  ansible.builtin.uri:
+    url: "http://localhost:4445/admin/clients/test-client"
+    status_code: [200, 404]
+  register: hydra_client_check
+
+- name: Create test OAuth 2.0 client
+  ansible.builtin.uri:
+    url: "http://localhost:4445/admin/clients"
+    method: POST
+    body_format: json
+    body:
+      client_id: test-client
+      client_secret: test-secret
+      grant_types:
+        - authorization_code
+        - refresh_token
+        - client_credentials
+      response_types:
+        - code
+      scope: "openid email profile"
+      redirect_uris:
+        - "http://{{ hydra_ip }}:5555/callback"
+      token_endpoint_auth_method: client_secret_basic
+    status_code: 201
+  when: hydra_client_check.status == 404
+
+- name: Display Hydra status
+  ansible.builtin.debug:
+    msg: "Hydra OAuth 2.0 server ready at http://{{ hydra_ip }}:4444"

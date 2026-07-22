@@ -1,0 +1,39 @@
+---
+# Vault role: deploy HashiCorp Vault (dev mode) via Docker Compose
+
+- name: Create Vault directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/vault
+    - /opt/vault/data
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/vault/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start Vault container
+  community.docker.docker_compose_v2:
+    project_src: /opt/vault
+    state: present
+
+- name: Wait for Vault to be ready
+  ansible.builtin.uri:
+    url: "http://localhost:8200/v1/sys/health"
+    return_content: true
+  register: vault_health
+  until: vault_health.status is defined and vault_health.status == 200
+  retries: 30
+  delay: 10
+
+- name: Display Vault status
+  ansible.builtin.debug:
+    msg: "Vault ready at http://{{ apps_ip }}:8200 (root token: straylight-root-token)"

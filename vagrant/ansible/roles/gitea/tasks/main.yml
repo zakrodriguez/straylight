@@ -1,0 +1,39 @@
+---
+# Gitea role: deploy Gitea git server via Docker Compose
+
+- name: Create Gitea directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/gitea
+    - /opt/gitea/data
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/gitea/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start Gitea container
+  community.docker.docker_compose_v2:
+    project_src: /opt/gitea
+    state: present
+
+- name: Wait for Gitea to be ready
+  ansible.builtin.uri:
+    url: "http://localhost:3000/"
+    return_content: true
+  register: gitea_health
+  until: gitea_health.status == 200
+  retries: 30
+  delay: 10
+
+- name: Display Gitea status
+  ansible.builtin.debug:
+    msg: "Gitea ready at http://{{ apps_ip }}:3000"

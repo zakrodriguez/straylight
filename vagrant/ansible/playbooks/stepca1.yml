@@ -1,0 +1,22 @@
+---
+# STEPCA1 - Smallstep step-ca on Ubuntu/Docker
+# Deploys step-ca with auto-initialized root + intermediate CA and ACME provisioner
+- hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Include common_linux role
+      ansible.builtin.include_role:
+        name: common_linux
+
+    - name: Include docker_host role
+      ansible.builtin.include_role:
+        name: docker_host
+
+    - name: Include stepca role
+      ansible.builtin.include_role:
+        name: stepca
+
+    - name: Include filebeat role
+      ansible.builtin.include_role:
+        name: filebeat

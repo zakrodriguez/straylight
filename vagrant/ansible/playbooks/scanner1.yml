@@ -1,0 +1,42 @@
+---
+# SCANNER1 - CBOM Scanner Hub on Ubuntu/Docker
+# Deploys CBOM-Lens (network), CipherIQ suite (static, eBPF, passive), source repo clones
+- hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Include common_linux role
+      ansible.builtin.include_role:
+        name: common_linux
+
+    - name: Include docker_host role
+      ansible.builtin.include_role:
+        name: docker_host
+
+    - name: Include openssl_35 role
+      ansible.builtin.include_role:
+        name: openssl_35
+
+    - name: Include cbom_lens role
+      ansible.builtin.include_role:
+        name: cbom_lens
+
+    - name: Include cipheriq role
+      ansible.builtin.include_role:
+        name: cipheriq
+
+    - name: Include cbom_source_repos role
+      ansible.builtin.include_role:
+        name: cbom_source_repos
+
+    - name: Include filebeat role
+      ansible.builtin.include_role:
+        name: filebeat
+
+    - name: Include cloudflare_pqc role
+      ansible.builtin.include_role:
+        name: cloudflare_pqc
+
+    - name: Include cms_lab_linux role (CMS hands-on lab)
+      ansible.builtin.include_role:
+        name: cms_lab_linux

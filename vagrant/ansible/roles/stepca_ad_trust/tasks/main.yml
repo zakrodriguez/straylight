@@ -1,0 +1,127 @@
+---
+# Smallstep step-ca AD Trust role: download step-ca Root CA cert and publish to AD
+# Runs on DC1 after STEPCA1 is provisioned
+# Uses scheduled task for certutil -dspublish (WinRM double-hop workaround)
+#
+# NTAuth publish is OPT-IN — gated on `stepca_ad_trust_publish_ntauth` (default
+# false). Always-on RootCA publish is fine; NTAuthCA publish is the security
+# concern because step-ca's ACME provisioner (DOCKER_STEPCA_INIT_ACME=true)
+# lets any host on the lab network that can pass an HTTP-01 challenge mint a
+# cert. Putting that root in NTAuthCA turns "owns port 80" into "can forge
+# AD user-auth certs". Mirrors the `ejbca_ad_trust_publish_ntauth` pattern;
+# see defaults/main.yml for the full rationale.
+
+- name: Download step-ca Root CA certificate from roots.pem endpoint
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+      $certUrl = "https://{{ stepca_ip }}:9000/roots.pem"
+      $certFile = "C:\tmp\stepca-root-ca.cer"
+
+      Write-PSFMessage -Level Host -Message "Downloading step-ca Root CA cert from $certUrl" -Tag 'stepca-trust'
+
+      # Bypass self-signed TLS certificate validation
+      [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+      try {
+          $pem = (New-Object System.Net.WebClient).DownloadString($certUrl)
+      } catch {
+          Write-PSFMessage -Level Warning -Message "Failed to download step-ca Root CA cert: $_" -Tag 'stepca-trust'
+          Wait-PSFMessage
+          throw "Failed to download step-ca Root CA cert from $certUrl : $_"
+      } finally {
+          [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+      }
+
+      # Convert PEM to DER via .NET X509Certificate2
+      $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+          [System.Text.Encoding]::UTF8.GetBytes($pem)
+      )
+      [System.IO.File]::WriteAllBytes($certFile, $cert.Export(
+          [System.Security.Cryptography.X509Certificates.X509ContentType]::Cert
+      ))
+
+      if (-not (Test-Path $certFile)) {
+          Write-PSFMessage -Level Error -Message 'Certificate file not created' -Tag 'stepca-trust'
+          Wait-PSFMessage
+          throw "Certificate file not created at $certFile"
+      }
+
+      Write-PSFMessage -Level Host -Message "Downloaded cert: $($cert.Subject) (Thumbprint: $($cert.Thumbprint))" -Tag 'stepca-trust'
+      $Ansible.Result = "Downloaded cert: $($cert.Subject) (Thumbprint: $($cert.Thumbprint))"
+      Wait-PSFMessage
+  retries: 6
+  delay: 10
+  register: cert_download
+  until: cert_download is not failed
+
+- name: Publish step-ca Root CA cert to AD via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      $taskUser = "{{ lab_netbios }}\Administrator"
+
+      $scriptFile = "C:\tmp\publish-stepca-cert.ps1"
+      $logFile = "C:\tmp\publish-stepca-cert.log"
+      $statusFile = "C:\tmp\publish-stepca-cert-status.txt"
+
+      $wrapper = @"
+      {{ psf_init }}
+      try {
+          Write-PSFMessage -Level Host -Message 'Publishing step-ca Root CA cert to AD' -Tag 'stepca-trust'
+          `$certFile = "C:\tmp\stepca-root-ca.cer"
+
+          # Publish to Trusted Root CAs (NTAuth store for cert-based auth)
+          certutil.exe -dspublish -f `$certFile RootCA *> $logFile
+          if (`$LASTEXITCODE -ne 0) {
+              Write-PSFMessage -Level Error -Message 'certutil -dspublish RootCA failed' -Tag 'stepca-trust'
+              'FAILED' | Out-File $statusFile
+              Wait-PSFMessage
+              return
+          }
+
+          {% if stepca_ad_trust_publish_ntauth %}
+          # Publish to NTAuth store (enables certificate-based authentication).
+          # OPT-IN: gated on stepca_ad_trust_publish_ntauth (default false) —
+          # see defaults/main.yml for the lateral-movement rationale.
+          certutil.exe -dspublish -f `$certFile NTAuthCA *>> $logFile
+          if (`$LASTEXITCODE -ne 0) {
+              Write-PSFMessage -Level Error -Message 'certutil -dspublish NTAuthCA failed' -Tag 'stepca-trust'
+              'FAILED' | Out-File $statusFile
+              Wait-PSFMessage
+              return
+          }
+          {% else %}
+          # Skipping NTAuth publish — stepca_ad_trust_publish_ntauth=false (default).
+          # step-ca's ACME provisioner makes NTAuthCA trust unsafe by default.
+          {% endif %}
+
+          Write-PSFMessage -Level Host -Message 'step-ca Root CA cert published to AD' -Tag 'stepca-trust'
+          'SUCCESS' | Out-File $statusFile
+      } catch {
+          Write-PSFMessage -Level Error -Message 'step-ca cert publish failed' -ErrorRecord `$_ -Tag 'stepca-trust'
+          `$_.Exception.Message | Out-File $logFile -Append
+          'FAILED' | Out-File $statusFile
+      }
+      Wait-PSFMessage
+      "@
+      $wrapper | Out-File -FilePath $scriptFile -Encoding ASCII -Force
+      Remove-Item $statusFile -ErrorAction SilentlyContinue
+
+      # Shared schtasks lifecycle (create/run/poll/delete/read-back/cleanup).
+      {{ schtask_admin_init }}
+      $log = Invoke-StraylightAdminScheduledTask `
+          -TaskName "PublishStepCACert" -ScriptFile $scriptFile `
+          -TaskUser $taskUser -TaskPassword '{{ admin_password }}' `
+          -LogFile $logFile -StatusFile $statusFile -MaxWaitSeconds 60 `
+          -FailureMessage "step-ca cert publish failed"
+      if ($log) { $Ansible.Result = $log -join "`n" }
+  no_log: true
+
+- name: Force Group Policy update
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Forcing Group Policy update' -Tag 'stepca-trust'
+      gpupdate /force 2>&1 | Out-Null
+      $Ansible.Changed = $false
+      Wait-PSFMessage

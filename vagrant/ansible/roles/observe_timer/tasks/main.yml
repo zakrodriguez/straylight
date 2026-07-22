@@ -1,0 +1,39 @@
+---
+# observe_timer — reusable systemd timer + oneshot service + optional ingest
+# hook for observability probes. The calling role stages the probe
+# and runs it once at provision time; this role owns the recurring execution.
+
+- name: Validate required observe_timer variables
+  ansible.builtin.assert:
+    that:
+      - observe_timer_name is defined and observe_timer_name | length > 0
+      - observe_timer_description is defined and observe_timer_description | length > 0
+      - observe_timer_exec_start is defined and observe_timer_exec_start | length > 0
+    fail_msg: >-
+      observe_timer requires observe_timer_name, observe_timer_description and
+      observe_timer_exec_start to be set by the calling role.
+
+- name: "Deploy systemd oneshot service for {{ observe_timer_name }}"
+  ansible.builtin.template:
+    src: timer.service.j2
+    dest: "/etc/systemd/system/{{ observe_timer_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  register: observe_timer_service
+
+- name: "Deploy systemd timer for {{ observe_timer_name }}"
+  ansible.builtin.template:
+    src: timer.timer.j2
+    dest: "/etc/systemd/system/{{ observe_timer_name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  register: observe_timer_timer
+
+- name: "Enable and start timer for {{ observe_timer_name }}"
+  ansible.builtin.systemd:
+    name: "{{ observe_timer_name }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true

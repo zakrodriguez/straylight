@@ -1,0 +1,42 @@
+---
+# WinRM connection defaults for all hosts
+ansible_connection: winrm
+ansible_winrm_transport: basic
+ansible_winrm_scheme: http
+ansible_port: 5985
+ansible_user: vagrant
+ansible_password: vagrant
+
+# Increase operation timeout for long-running tasks (CA install, RSAT, etc.)
+ansible_winrm_operation_timeout_sec: 600
+ansible_winrm_read_timeout_sec: 660
+
+# PSFramework logging init (dot-source this in scripts and scheduled task wrappers)
+psf_init: '. C:\Users\Public\Logs\straylight\Initialize-PSFLogging.ps1'
+
+# Shared admin-scheduled-task helper (dot-source inside a win_powershell block
+# to get Invoke-StraylightAdminScheduledTask). Staged by the win_scheduled_task
+# role; see roles/README.md "Windows identity model".
+schtask_admin_init: '. C:\Users\Public\Logs\straylight\Invoke-StraylightAdminScheduledTask.ps1'
+
+# Timezone
+lab_timezone: "Central Standard Time"
+lab_timezone_linux: "America/Chicago"
+
+# PowerShell 7
+pwsh_version: "7.4.7"
+
+# NOTE: lab_static_hosts is defined in roles/common_linux/defaults/main.yml
+# because the Vagrantfile's ansible.extra_vars takes precedence over group_vars
+# and group_vars isn't read by all Vagrant ansible invocations consistently.
+
+# Beats → OpenSearch ingest now goes through observe_tls nginx on :9244
+# (TLS-terminating reverse proxy with HTTP Basic Auth, proxying to
+# 127.0.0.1:9200 on observe1 — the docker beats-proxy/opensearch stack).
+# Centralized here so opensearch_stack (htpasswd) and filebeat/winlogbeat/
+# filebeat_iis (output.elasticsearch credentials) share one canonical value.
+# Override by setting beats_basic_auth_user / beats_basic_auth_password as
+# extra_vars (Vagrantfile-level), e.g. for a dedicated vaulted credential.
+beats_basic_auth_user: beats
+beats_basic_auth_password: "{{ admin_password }}"
+beats_tls_port: 9244

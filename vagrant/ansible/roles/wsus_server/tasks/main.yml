@@ -1,0 +1,759 @@
+---
+# WSUS Server role: post-install configuration, content restore, GPO creation
+# Requires: UpdateServices feature pre-installed in playbook
+# Uses scheduled task pattern for elevation (same as enterprise_ca/manage roles)
+
+# Step 0: Set content path based on whether a dedicated data disk is present
+- name: Set WSUS content path
+  ansible.builtin.set_fact:
+    wsus_content_path: "{{ 'D:\\WSUS' if (wsus_content_disk | default(false)) else 'C:\\WSUS' }}"
+
+# Step 0b: Initialize dedicated data disk (D:) if configured
+- name: Initialize WSUS content disk (D:)
+  ansible.windows.win_powershell:
+    script: |
+      $scriptPath = "C:\tmp\wsus-disk-init.ps1"
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+
+      $script = @'
+      {{ psf_init }}
+      try {
+          Write-PSFMessage -Level Host -Message 'Starting WSUS disk initialization' -Tag 'wsus-server'
+          $rawDisk = Get-Disk | Where-Object { $_.PartitionStyle -eq 'RAW' -and $_.Number -ne 0 }
+          if (-not $rawDisk) {
+              Write-PSFMessage -Level Warning -Message 'No RAW disk found' -Tag 'wsus-server'
+              'NO_RAW_DISK' | Out-File C:\tmp\wsus-disk-init-status.txt
+              Wait-PSFMessage
+              return
+          }
+          Initialize-Disk -Number $rawDisk.Number -PartitionStyle GPT -Confirm:$false
+          $part = New-Partition -DiskNumber $rawDisk.Number -UseMaximumSize -DriveLetter D
+          Format-Volume -DriveLetter D -FileSystem NTFS -NewFileSystemLabel "WSUS Data" -Confirm:$false
+          Write-PSFMessage -Level Host -Message 'WSUS disk initialized successfully' -Tag 'wsus-server'
+          'SUCCESS' | Out-File C:\tmp\wsus-disk-init-status.txt
+      } catch {
+          Write-PSFMessage -Level Error -Message 'WSUS disk initialization failed' -ErrorRecord $_ -Tag 'wsus-server'
+          $_.Exception.Message | Out-File C:\tmp\wsus-disk-init.log -Append
+          'FAILED' | Out-File C:\tmp\wsus-disk-init-status.txt
+      }
+      Wait-PSFMessage
+      '@
+      Set-Content -Path $scriptPath -Value $script -Encoding ASCII
+
+      # Check if D: already exists
+      if (Test-Path D:\) {
+          $Ansible.Changed = $false
+          $Ansible.Result = "D: drive already initialized"
+          return
+      }
+
+      Remove-Item C:\tmp\wsus-disk-init-status.txt -ErrorAction SilentlyContinue
+
+      schtasks /Create /TN "WsusDiskInit" `
+          /TR "powershell.exe -ExecutionPolicy Bypass -File $scriptPath" `
+          /SC ONCE /ST 00:00 /RU SYSTEM /F | Out-Null
+      schtasks /Run /TN "WsusDiskInit" | Out-Null
+
+      $maxWait = 120
+      $waited = 0
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 5
+          $waited += 5
+          $taskInfo = schtasks /Query /TN "WsusDiskInit" /FO CSV /NH 2>$null
+          if ($taskInfo -match "Ready") { break }
+      }
+
+      schtasks /Delete /TN "WsusDiskInit" /F 2>$null
+      Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
+
+      $status = Get-Content C:\tmp\wsus-disk-init-status.txt -ErrorAction SilentlyContinue
+      if ($status -eq "NO_RAW_DISK") {
+          throw "No RAW disk found for WSUS data disk. Is the VDI attached?"
+      }
+      if ($status -ne "SUCCESS") {
+          $log = Get-Content C:\tmp\wsus-disk-init.log -ErrorAction SilentlyContinue
+          throw "Disk init failed: $($log -join '; ')"
+      }
+      $Ansible.Result = "D: drive initialized successfully"
+  when: wsus_content_disk | default(false)
+
+# Step 1: Create WSUS content directory
+- name: Create WSUS content directory
+  ansible.windows.win_file:
+    path: "{{ wsus_content_path }}"
+    state: directory
+
+# Step 2: Run wsusutil postinstall via scheduled task
+- name: Check if WSUS is already initialized
+  ansible.windows.win_stat:
+    path: "{{ wsus_content_path }}\\WsusContent"
+  register: wsus_content_dir
+
+- name: Initialize WSUS via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      $contentDir = '{{ wsus_content_path }}'
+      $scriptPath = "C:\tmp\wsus-postinstall.ps1"
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+
+      $script = @"
+      {{ psf_init }}
+      try {
+          Write-PSFMessage -Level Host -Message 'Starting WSUS postinstall' -Tag 'wsus-server'
+          & "C:\Program Files\Update Services\Tools\wsusutil.exe" postinstall CONTENT_DIR=$contentDir *> C:\tmp\wsus-postinstall.log
+          Write-PSFMessage -Level Host -Message 'WSUS postinstall succeeded' -Tag 'wsus-server'
+          'SUCCESS' | Out-File C:\tmp\wsus-postinstall-status.txt
+      } catch {
+          Write-PSFMessage -Level Error -Message 'WSUS postinstall failed' -ErrorRecord `$_ -Tag 'wsus-server'
+          `$_.Exception.Message | Out-File C:\tmp\wsus-postinstall.log -Append
+          'FAILED' | Out-File C:\tmp\wsus-postinstall-status.txt
+      }
+      Wait-PSFMessage
+      "@
+      Set-Content -Path $scriptPath -Value $script -Encoding ASCII
+
+      Remove-Item C:\tmp\wsus-postinstall-status.txt -ErrorAction SilentlyContinue
+
+      schtasks /Create /TN "WsusPostInstall" `
+          /TR "powershell.exe -ExecutionPolicy Bypass -File $scriptPath" `
+          /SC ONCE /ST 00:00 /RU SYSTEM /F | Out-Null
+      schtasks /Run /TN "WsusPostInstall" | Out-Null
+
+      # Wait for task to complete (up to 10 min — WID database init can be slow)
+      $maxWait = 600
+      $waited = 0
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 10
+          $waited += 10
+          $taskInfo = schtasks /Query /TN "WsusPostInstall" /FO CSV /NH 2>$null
+          if ($taskInfo -match "Ready") { break }
+      }
+
+      schtasks /Delete /TN "WsusPostInstall" /F 2>$null
+      Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
+
+      $status = Get-Content C:\tmp\wsus-postinstall-status.txt -ErrorAction SilentlyContinue
+      $log = Get-Content C:\tmp\wsus-postinstall.log -ErrorAction SilentlyContinue
+      if ($log) { $Ansible.Result = $log -join "`n" }
+
+      if ($status -ne "SUCCESS") {
+          throw "WSUS postinstall failed. Log: $($log -join '; ')"
+      }
+  when: not wsus_content_dir.stat.exists
+
+# Step 3: Wait for WsusService
+- name: Wait for WSUS service to start
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $svc = Get-Service WsusService -ErrorAction SilentlyContinue
+      if (-not $svc -or $svc.Status -ne 'Running') {
+          Write-PSFMessage -Level Warning -Message 'WsusService is not running yet' -Tag 'wsus-server'
+          Wait-PSFMessage
+          throw "WsusService is not running"
+      }
+      Write-PSFMessage -Level Host -Message 'WsusService is running' -Tag 'wsus-server'
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  retries: 12
+  delay: 10
+  register: wsus_svc_ready
+  until: wsus_svc_ready is not failed
+
+# Step 3b: Wait for the VBox software-cache share to rewire after the
+# UpdateServices feature install reboot. Without this, the cache stat
+# tasks below race the VBoxService → \\vboxsvr remount and silently
+# get stat.exists=false, which makes the restore block fall through to
+# a full 30–45 min catalog sync (the whole thing the cache exists to avoid).
+- name: Wait for software cache mount (C:\Software) to be visible
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $probe = 'C:\Software\wsus-cache'
+      $deadline = (Get-Date).AddSeconds(60)
+      while ((Get-Date) -lt $deadline) {
+          if (Test-Path $probe -ErrorAction SilentlyContinue) {
+              Write-PSFMessage -Level Host -Message "Software cache mount visible at $probe" -Tag 'wsus-server'
+              $Ansible.Changed = $false
+              $Ansible.Result = 'mounted'
+              Wait-PSFMessage
+              return
+          }
+          Start-Sleep -Seconds 2
+      }
+      Write-PSFMessage -Level Warning -Message "Software cache mount ($probe) not visible after 60s — restore will be skipped, falling through to fresh catalog sync" -Tag 'wsus-server'
+      $Ansible.Changed = $false
+      $Ansible.Result = 'absent'
+      Wait-PSFMessage
+  when: software_source is defined
+  register: wsus_cache_mount
+
+# Step 4: Restore WsusContent working copy from the golden master cache
+- name: Check for cached WsusContent (golden master)
+  ansible.windows.win_stat:
+    path: 'C:\Software\wsus-cache\WsusContent'
+  register: wsus_cache_content
+  when:
+    - software_source is defined
+    - wsus_cache_restore | default(true)
+
+- name: Check if local content store is fresh (empty)
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $items = @(Get-ChildItem -Path '{{ wsus_content_path }}\WsusContent' -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 2)
+      $Ansible.Changed = $false
+      $Ansible.Result = if ($items.Count -le 1) { "empty" } else { "populated" }
+      Wait-PSFMessage
+  register: wsus_content_check
+  when: wsus_cache_content.stat.exists | default(false)
+
+- name: Restore WsusContent from cache (robocopy /MIR)
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Restoring WsusContent from golden master cache via robocopy' -Tag 'wsus-server'
+      $result = robocopy "C:\Software\wsus-cache\WsusContent" "{{ wsus_content_path }}\WsusContent" /MIR /R:3 /W:5 /NP /NFL /NDL
+      if ($LASTEXITCODE -gt 7) {
+          Write-PSFMessage -Level Error -Message "Robocopy failed with exit code $LASTEXITCODE" -Tag 'wsus-server'
+          Wait-PSFMessage
+          throw "Robocopy failed with exit code $LASTEXITCODE"
+      }
+      Write-PSFMessage -Level Host -Message 'WsusContent restored from cache' -Tag 'wsus-server'
+      $Ansible.Changed = $true
+      Wait-PSFMessage
+  when:
+    - wsus_cache_content.stat.exists | default(false)
+    - wsus_content_check.result is defined and wsus_content_check.result == "empty"
+
+# Step 5a: Configure WSUS base settings and run initial catalog sync
+- name: Configure WSUS base settings
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Configuring WSUS base settings (sync source, language)' -Tag 'wsus-server'
+      [reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration") | Out-Null
+      $wsus = [Microsoft.UpdateServices.Administration.AdminProxy]::GetUpdateServer("localhost", $false, 8530)
+      $config = $wsus.GetConfiguration()
+
+      # Sync from Microsoft Update
+      $config.SyncFromMicrosoftUpdate = $true
+
+      # Languages: English only
+      $config.AllUpdateLanguagesEnabled = $false
+      $config.SetEnabledUpdateLanguages(@("en"))
+      $config.Save()
+      Write-PSFMessage -Level Host -Message 'WSUS base settings configured' -Tag 'wsus-server'
+      Wait-PSFMessage
+
+# SUSDB catalog cache.
+# Catalog sync against Microsoft Update takes 30-45 min on cold-builds. If a
+# previous build successfully synced and saved SUSDB.mdf to the cache dir, we
+# can restore it here and skip the slow sync entirely. Saves ~30-40 min.
+# The cache lives at C:\Software\wsus-cache\ (mounted from host's
+# vagrant/resources/software/wsus-cache/ via VBox synced folder).
+- name: Check for cached SUSDB (WSUS catalog database)
+  ansible.windows.win_stat:
+    path: 'C:\Software\wsus-cache\SUSDB.mdf'
+  register: wsus_cache_susdb
+  when: software_source is defined
+
+- name: Restore SUSDB from cache (skip catalog sync)
+  when:
+    - software_source is defined
+    - wsus_cache_restore | default(true)
+    - wsus_cache_susdb.stat.exists | default(false)
+  block:
+    - name: Stop WSUS + WID services
+      ansible.windows.win_service:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - WsusService
+        - W3SVC
+        - 'MSSQL$MICROSOFT##WID'
+      register: services_stopped
+
+    - name: Brief pause for SQL Server to release SUSDB locks
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Restore SUSDB.mdf from cache
+      ansible.windows.win_copy:
+        src: 'C:\Software\wsus-cache\SUSDB.mdf'
+        dest: 'C:\Windows\WID\Data\SUSDB.mdf'
+        remote_src: true
+        force: true
+
+    - name: Restore SUSDB_log.ldf from cache
+      ansible.windows.win_copy:
+        src: 'C:\Software\wsus-cache\SUSDB_log.ldf'
+        dest: 'C:\Windows\WID\Data\SUSDB_log.ldf'
+        remote_src: true
+        force: true
+
+    - name: Start WID + WSUS services
+      ansible.windows.win_service:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - 'MSSQL$MICROSOFT##WID'
+        - W3SVC
+        - WsusService
+
+    - name: Refresh WSUS server identity after SUSDB restore
+      # SUSDB carries the original server's ID. wsusutil postinstall fixes up
+      # server-side references so WSUS works correctly with the restored database.
+      # Idempotent — safe to run repeatedly.
+      ansible.windows.win_powershell:
+        script: |
+          {{ psf_init }}
+          $wsusutil = "$env:ProgramFiles\Update Services\Tools\wsusutil.exe"
+          if (Test-Path $wsusutil) {
+              & $wsusutil postinstall 2>&1 | Out-String | Write-PSFMessage -Level Host -Tag 'wsus-server'
+              if ($LASTEXITCODE -ne 0) {
+                  Write-PSFMessage -Level Warning -Message "wsusutil postinstall exit=$LASTEXITCODE — restore may not have refreshed cleanly" -Tag 'wsus-server'
+              } else {
+                  Write-PSFMessage -Level Host -Message 'WSUS server refreshed after SUSDB restore — catalog ready' -Tag 'wsus-server'
+              }
+          } else {
+              Write-PSFMessage -Level Warning -Message "wsusutil not found at $wsusutil" -Tag 'wsus-server'
+          }
+          Wait-PSFMessage
+  rescue:
+    - name: Cache restore failed — clean up + fall through to fresh sync
+      # If anything in the restore block failed, restart services and let the
+      # catalog sync task below run normally. The cached files may be corrupt
+      # or stale; move them aside (not deleted) so they stay recoverable in case
+      # the failure was transient (e.g. a service-stop timeout).
+      ansible.windows.win_powershell:
+        script: |
+          {{ psf_init }}
+          Write-PSFMessage -Level Warning -Message "SUSDB cache restore failed — falling back to fresh catalog sync. Moving the cached master aside (not deleting) so it stays recoverable." -Tag 'wsus-server'
+          foreach ($f in 'SUSDB.mdf','SUSDB_log.ldf') {
+              $p = "C:\Software\wsus-cache\$f"
+              if (Test-Path $p) { Move-Item $p "$p.corrupt" -Force -ErrorAction SilentlyContinue }
+          }
+          Start-Service 'MSSQL$MICROSOFT##WID' -ErrorAction SilentlyContinue
+          Start-Service W3SVC -ErrorAction SilentlyContinue
+          Start-Service WsusService -ErrorAction SilentlyContinue
+          Wait-PSFMessage
+
+# Step 5b: Run catalog sync to populate product list (needed before products can be selected)
+# Only the Categories phase is needed (~15 min). The Updates phase (~110K items, 4+ hours)
+# is wasted work since we re-sync with only selected products afterward.
+- name: Run catalog sync for product list
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      [reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration") | Out-Null
+      $wsus = [Microsoft.UpdateServices.Administration.AdminProxy]::GetUpdateServer("localhost", $false, 8530)
+
+      # Check if the product catalog has been downloaded (single PK lookup by GUID)
+      $win11Guid = [Guid]'72e7624a-5b00-45d2-b92f-e561c0a6a160'
+      try {
+          $hasWindows11 = $wsus.GetUpdateCategory($win11Guid)
+      } catch {
+          $hasWindows11 = $null
+      }
+      if ($hasWindows11) {
+          $catCount = $wsus.GetUpdateCategories().Count
+          Write-PSFMessage -Level Host -Message "Product catalog already available ($catCount categories)" -Tag 'wsus-server'
+          $Ansible.Changed = $false
+          $Ansible.Result = "Product catalog already available ($catCount categories)"
+          Wait-PSFMessage
+          return
+      }
+
+      # Start sync to download category catalog
+      Write-PSFMessage -Level Host -Message 'Starting catalog sync for product list' -Tag 'wsus-server'
+      $sub = $wsus.GetSubscription()
+      $sub.StartSynchronization()
+      $Ansible.Changed = $true
+
+      # Poll for the product catalog to be populated (up to 30 min).
+      # Primary success: the "Windows 11" GUID appears (lets the next task
+      # find it by GUID without a name scan).
+      # Secondary success: sync ends with a healthy category count (>= 300).
+      # The Win 11 GUID can be missing on partial catalog returns (a full
+      # category count but the Win 11 GUID absent — possibly upstream
+      # catalog reorganization).
+      # When that happens we still trust the partial sync and let the
+      # downstream wsus_products task find Win 11 by name.
+      $maxWait = 1800
+      $waited = 0
+      $hasWindows11 = $null
+      $minHealthyCount = 300
+      $minHealthyCount_force = $true
+      $finalCount = 0
+      $finalStatus = $null
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 30
+          $waited += 30
+
+          try {
+              $hasWindows11 = $wsus.GetUpdateCategory($win11Guid)
+          } catch {
+              $hasWindows11 = $null
+          }
+          if ($hasWindows11) {
+              Write-PSFMessage -Level Host -Message "Product catalog populated after $waited seconds (Win 11 GUID found)" -Tag 'wsus-server'
+              $finalStatus = $sub.GetSynchronizationStatus()
+              if ($finalStatus -ne [Microsoft.UpdateServices.Administration.SynchronizationStatus]::NotProcessing) {
+                  $sub.StopSynchronization()
+              }
+              break
+          }
+          # If sync has finished but Win 11 GUID didn't appear, fall through
+          # to the post-loop checks rather than waiting out the full 30 min.
+          $finalStatus = $sub.GetSynchronizationStatus()
+          if ($finalStatus -eq [Microsoft.UpdateServices.Administration.SynchronizationStatus]::NotProcessing -and $waited -ge 60) {
+              Write-PSFMessage -Level Warning -Message "Sync reported NotProcessing at $waited s without Win 11 GUID — evaluating partial catalog" -Tag 'wsus-server'
+              break
+          }
+      }
+
+      $finalCount = $wsus.GetUpdateCategories().Count
+      $finalStatus = $sub.GetSynchronizationStatus()
+      if ($finalStatus -ne [Microsoft.UpdateServices.Administration.SynchronizationStatus]::NotProcessing) {
+          $sub.StopSynchronization()
+      }
+
+      if ($hasWindows11) {
+          $Ansible.Result = "Catalog sync complete — $finalCount categories (Win 11 GUID present)"
+      } elseif ($finalCount -ge $minHealthyCount) {
+          Write-PSFMessage -Level Warning -Message "Win 11 GUID missing but catalog has $finalCount categories (>= $minHealthyCount) — continuing; wsus_products will resolve Win 11 by name" -Tag 'wsus-server'
+          $Ansible.Result = "Catalog sync partial — $finalCount categories (Win 11 GUID not yet present, will resolve by name)"
+      } else {
+          Write-PSFMessage -Level Error -Message "Catalog sync failed: only $finalCount categories synced (need >= $minHealthyCount). Check WSUS connectivity to MS Update endpoint." -Tag 'wsus-server'
+          Wait-PSFMessage
+          throw "Catalog sync incomplete: only $finalCount categories returned (need >= $minHealthyCount). Likely transient MS Update API issue or WSUS proxy/firewall — retry the wsus_server role."
+      }
+      Wait-PSFMessage
+
+# Floor guard: only capture SUSDB if the working catalog DB is non-trivially
+# populated. An empty/failed WID SUSDB.mdf is single-digit MB; a synced one is
+# tens of MB (~45 MB observed) — 20 MB cleanly excludes a failed stub without
+# risking a silent no-op. Prevents a failed/empty build from clobbering the master.
+- name: Floor-check working SUSDB before capture
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $mdf = 'C:\Windows\WID\Data\SUSDB.mdf'
+      $ok = (Test-Path $mdf) -and ((Get-Item $mdf).Length -ge 20MB)
+      $Ansible.Changed = $false
+      $Ansible.Result = if ($ok) { "ok" } else { "skip" }
+      if (-not $ok) { Write-PSFMessage -Level Warning -Message "SUSDB below floor — skipping cache capture" -Tag 'wsus-server' }
+      Wait-PSFMessage
+  register: susdb_floor
+  when:
+    - software_source is defined
+    - wsus_cache_capture | default(true)
+
+# Save freshly-synced SUSDB to cache for next cold-build (~30 min savings).
+# Refreshes on every build (gated by wsus_cache_capture + floor guard).
+# Idempotent overwrite — safe to run when cache already exists.
+- name: Save SUSDB catalog to cache (for next cold-build)
+  when:
+    - software_source is defined
+    - wsus_cache_capture | default(true)
+    - susdb_floor.result | default('') == "ok"
+  block:
+    - name: Stop WID briefly to snapshot SUSDB
+      ansible.windows.win_service:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - WsusService
+        - W3SVC
+        - 'MSSQL$MICROSOFT##WID'
+
+    - name: Brief pause for SQL Server to release SUSDB locks
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Create wsus-cache directory in software cache
+      ansible.windows.win_file:
+        path: 'C:\Software\wsus-cache'
+        state: directory
+
+    - name: Copy SUSDB.mdf to cache
+      ansible.windows.win_copy:
+        src: 'C:\Windows\WID\Data\SUSDB.mdf'
+        dest: 'C:\Software\wsus-cache\SUSDB.mdf'
+        remote_src: true
+        force: true
+
+    - name: Copy SUSDB_log.ldf to cache
+      ansible.windows.win_copy:
+        src: 'C:\Windows\WID\Data\SUSDB_log.ldf'
+        dest: 'C:\Software\wsus-cache\SUSDB_log.ldf'
+        remote_src: true
+        force: true
+
+    - name: Restart WID + WSUS services
+      ansible.windows.win_service:
+        name: "{{ item }}"
+        state: started
+      loop:
+        - 'MSSQL$MICROSOFT##WID'
+        - W3SVC
+        - WsusService
+  rescue:
+    - name: Cache save failed — log and continue (not fatal)
+      ansible.windows.win_powershell:
+        script: |
+          {{ psf_init }}
+          Write-PSFMessage -Level Warning -Message "Failed to save SUSDB cache (cold-build continues normally; next build will sync again). Restarting services." -Tag 'wsus-server'
+          Start-Service 'MSSQL$MICROSOFT##WID' -ErrorAction SilentlyContinue
+          Start-Service W3SVC -ErrorAction SilentlyContinue
+          Start-Service WsusService -ErrorAction SilentlyContinue
+          Wait-PSFMessage
+
+# Step 5c: Select products and classifications (requires catalog)
+- name: Configure WSUS products and classifications
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Configuring WSUS products and classifications' -Tag 'wsus-server'
+      [reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration") | Out-Null
+      $wsus = [Microsoft.UpdateServices.Administration.AdminProxy]::GetUpdateServer("localhost", $false, 8530)
+      $sub = $wsus.GetSubscription()
+
+      # Stop any running sync — Save() doesn't persist while syncing
+      if ($sub.GetSynchronizationStatus() -ne [Microsoft.UpdateServices.Administration.SynchronizationStatus]::NotProcessing) {
+          $sub.StopSynchronization()
+          Start-Sleep -Seconds 10
+      }
+
+      # Products by GUID (title matching is unreliable — hits parent ProductFamily)
+      # Windows 11: 72e7624a-5b00-45d2-b92f-e561c0a6a160
+      # Microsoft Server operating system-21H2 (= Server 2022): 71718f13-7324-4b0f-8f9e-2ca9dc978e53
+      $allProducts = $wsus.GetUpdateCategories()
+      $targetProductIds = @(
+          "72e7624a-5b00-45d2-b92f-e561c0a6a160",
+          "71718f13-7324-4b0f-8f9e-2ca9dc978e53"
+      )
+      $productCollection = New-Object Microsoft.UpdateServices.Administration.UpdateCategoryCollection
+      foreach ($product in $allProducts) {
+          if ($targetProductIds -contains $product.Id.ToString()) {
+              $productCollection.Add($product)
+          }
+      }
+
+      # Fallback to title match for missing GUIDs (e.g. when catalog sync returned
+      # partial result — Win 11 GUID missing but other Win 11 entries present).
+      # Title match: an exact `Title -eq` can miss because the MS Update catalog
+      # uses titles like "Windows 11" but also "Windows 11 Client, version 23H2
+      # and later, Servicing Drivers" and similar variants. Use substring
+      # (`-like '*X*'`) to catch any reasonable variant. Filter out sub-products
+      # by excluding titles with slashes (those are usually `Windows/Updates`-style
+      # children).
+      if ($productCollection.Count -lt $targetProductIds.Count) {
+          $matchedIds = @($productCollection | ForEach-Object { $_.Id.ToString() })
+          $missingHints = @{}
+          $missingHints["72e7624a-5b00-45d2-b92f-e561c0a6a160"] = @('Windows 11', '*Windows 11*')
+          $missingHints["71718f13-7324-4b0f-8f9e-2ca9dc978e53"] = @('Microsoft Server operating system-21H2', '*Server operating system*21H2*')
+          foreach ($guid in $targetProductIds) {
+              if ($matchedIds -notcontains $guid) {
+                  $exactTitle, $fuzzyTitle = $missingHints[$guid]
+                  $candidates = $allProducts | Where-Object {
+                      ($_.Title -eq $exactTitle) -or
+                      (($_.Title -like $fuzzyTitle) -and ($_.Title -notlike '*/*'))
+                  } | Select-Object -First 1
+                  if ($candidates) {
+                      Write-PSFMessage -Level Warning -Message "Resolved $exactTitle by title fuzzy-match: '$($candidates.Title)' ($($candidates.Id)) — upstream catalog GUID may have rotated" -Tag 'wsus-server'
+                      $productCollection.Add($candidates)
+                  } else {
+                      Write-PSFMessage -Level Warning -Message "Could not resolve product '$exactTitle' by GUID or title — skipping. The first 10 candidate titles in catalog containing 'Windows' or 'Server': $((($allProducts | Where-Object { $_.Title -match 'Windows|Server' } | Select-Object -First 10 | ForEach-Object { $_.Title }) -join '; '))" -Tag 'wsus-server'
+                  }
+              }
+          }
+      }
+
+      # Don't throw if NO products matched. WSUS is not on the
+      # CA / PKI critical path — if the upstream catalog has reorganized too
+      # heavily for our matching to work, log + degrade rather than fail. The
+      # WSUS server will still be running and operational; product configuration
+      # is just empty and can be set manually via the WSUS console.
+      if ($productCollection.Count -eq 0) {
+          Write-PSFMessage -Level Warning -Message 'No matching products found in catalog by GUID or fuzzy title — WSUS will be deployed without product selection. Configure products manually via the WSUS console if needed.' -Tag 'wsus-server'
+          Wait-PSFMessage
+          $Ansible.Changed = $false
+          $Ansible.Result = "No products selected (catalog matching exhausted) — degraded WSUS deploy"
+          return
+      }
+
+      $sub.SetUpdateCategories($productCollection)
+
+      # Classifications by GUID (stable across locales)
+      # Critical Updates: e6cf1350-c01b-414d-a61f-263d14d133b4
+      # Security Updates: 0fa1201d-4330-4fa8-8ae9-b877473b6441
+      # Update Rollups:   28bc880e-0592-4cbf-8f95-c79b17911d5f
+      $allClassifications = $wsus.GetUpdateClassifications()
+      $targetClassIds = @(
+          "e6cf1350-c01b-414d-a61f-263d14d133b4",
+          "0fa1201d-4330-4fa8-8ae9-b877473b6441",
+          "28bc880e-0592-4cbf-8f95-c79b17911d5f"
+      )
+      $classCollection = New-Object Microsoft.UpdateServices.Administration.UpdateClassificationCollection
+      foreach ($class in $allClassifications) {
+          if ($targetClassIds -contains $class.Id.ToString()) {
+              $classCollection.Add($class)
+          }
+      }
+      $sub.SetUpdateClassifications($classCollection)
+
+      $sub.Save()
+      Write-PSFMessage -Level Host -Message "Selected $($productCollection.Count) products, $($classCollection.Count) classifications" -Tag 'wsus-server'
+      $Ansible.Changed = $true
+      $Ansible.Result = "Selected $($productCollection.Count) products, $($classCollection.Count) classifications"
+      Wait-PSFMessage
+
+# Step 6: Create auto-approval rule
+- name: Create auto-approval rule for critical and security updates
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      [reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration") | Out-Null
+      $wsus = [Microsoft.UpdateServices.Administration.AdminProxy]::GetUpdateServer("localhost", $false, 8530)
+
+      $ruleName = "Auto Approve Critical and Security"
+      $existingRules = $wsus.GetInstallApprovalRules()
+      $rule = $existingRules | Where-Object { $_.Name -eq $ruleName }
+
+      if ($rule) {
+          Write-PSFMessage -Level Host -Message "Auto-approval rule '$ruleName' already exists" -Tag 'wsus-server'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+          return
+      }
+
+      Write-PSFMessage -Level Host -Message "Creating auto-approval rule '$ruleName'" -Tag 'wsus-server'
+      $rule = $wsus.CreateInstallApprovalRule($ruleName)
+
+      # Set classifications by GUID
+      $allClassifications = $wsus.GetUpdateClassifications()
+      $targetClassIds = @(
+          "e6cf1350-c01b-414d-a61f-263d14d133b4",  # Critical Updates
+          "0fa1201d-4330-4fa8-8ae9-b877473b6441"   # Security Updates
+      )
+      $classCollection = New-Object Microsoft.UpdateServices.Administration.UpdateClassificationCollection
+      foreach ($class in $allClassifications) {
+          if ($targetClassIds -contains $class.Id.ToString()) {
+              $classCollection.Add($class)
+          }
+      }
+      $rule.SetUpdateClassifications($classCollection)
+
+      # Apply to All Computers group
+      $allComputers = $wsus.GetComputerTargetGroups() | Where-Object { $_.Name -eq "All Computers" }
+      $groupCollection = New-Object Microsoft.UpdateServices.Administration.ComputerTargetGroupCollection
+      $groupCollection.Add($allComputers)
+      $rule.SetComputerTargetGroups($groupCollection)
+
+      $rule.Enabled = $true
+      $rule.Save()
+      Write-PSFMessage -Level Host -Message 'Auto-approval rule created and enabled' -Tag 'wsus-server'
+      $Ansible.Changed = $true
+      Wait-PSFMessage
+
+# Step 7: Create WSUS GPO and DNS record on DC1
+- name: Create WSUS GPO and DNS record on DC1
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Creating WSUS GPO and DNS record on DC1' -Tag 'wsus-server'
+      $dcFqdn = "DC1.{{ lab_domain }}"
+      $wsusIp = '{{ wsus_ip }}'
+      $domain = '{{ lab_domain }}'
+      $wsusUrl = "http://wsus.${domain}:8530"
+
+      $cred = New-Object System.Management.Automation.PSCredential(
+          '{{ lab_netbios }}\Administrator',
+          (ConvertTo-SecureString '{{ admin_password }}' -AsPlainText -Force)
+      )
+
+      Invoke-Command -ComputerName $dcFqdn -Credential $cred -ErrorAction Stop -ArgumentList $wsusUrl, $wsusIp, $domain -ScriptBlock {
+          param($wsusUrl, $wsusIp, $domain)
+
+          Import-Module GroupPolicy
+          Import-Module DnsServer
+
+          $gpoName = "WSUS - Windows Update Configuration"
+
+          # Create GPO if it doesn't exist
+          $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
+          if (-not $gpo) {
+              $gpo = New-GPO -Name $gpoName
+              $gpo | New-GPLink -Target (Get-ADDomain).DistinguishedName -LinkEnabled Yes
+          }
+
+          # Configure Windows Update registry keys via GPO
+          $gpoId = "{" + $gpo.Id.ToString() + "}"
+
+          # WUServer
+          Set-GPRegistryValue -Name $gpoName -Key "HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate" `
+              -ValueName "WUServer" -Type String -Value $wsusUrl
+
+          # WUStatusServer
+          Set-GPRegistryValue -Name $gpoName -Key "HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate" `
+              -ValueName "WUStatusServer" -Type String -Value $wsusUrl
+
+          # UseWUServer
+          Set-GPRegistryValue -Name $gpoName -Key "HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" `
+              -ValueName "UseWUServer" -Type DWord -Value 1
+
+          # AUOptions = 4 (Auto download and schedule install)
+          Set-GPRegistryValue -Name $gpoName -Key "HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" `
+              -ValueName "AUOptions" -Type DWord -Value 4
+
+          # NoAutoUpdate = 0
+          Set-GPRegistryValue -Name $gpoName -Key "HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate\AU" `
+              -ValueName "NoAutoUpdate" -Type DWord -Value 0
+
+          # Create DNS A record for wsus
+          $zoneName = $domain
+          $existing = Get-DnsServerResourceRecord -ZoneName $zoneName -Name "wsus" -RRType A -ErrorAction SilentlyContinue
+          if (-not $existing) {
+              Add-DnsServerResourceRecordA -ZoneName $zoneName -Name "wsus" -IPv4Address $wsusIp
+          }
+      }
+      Write-PSFMessage -Level Host -Message 'WSUS GPO and DNS record created' -Tag 'wsus-server'
+      Wait-PSFMessage
+
+# Step 8: Trigger product sync (non-blocking) to download update metadata
+- name: Trigger WSUS product synchronization
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      [reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration") | Out-Null
+      $wsus = [Microsoft.UpdateServices.Administration.AdminProxy]::GetUpdateServer("localhost", $false, 8530)
+      $sub = $wsus.GetSubscription()
+
+      # Only start if not already syncing
+      $status = $sub.GetSynchronizationStatus()
+      if ($status -eq [Microsoft.UpdateServices.Administration.SynchronizationStatus]::NotProcessing) {
+          Write-PSFMessage -Level Host -Message 'Starting WSUS product synchronization (non-blocking)' -Tag 'wsus-server'
+          $sub.StartSynchronization()
+          $Ansible.Changed = $true
+          $Ansible.Result = "Product sync started (non-blocking). Downloads update metadata for selected products."
+      } else {
+          Write-PSFMessage -Level Host -Message 'WSUS synchronization already in progress' -Tag 'wsus-server'
+          $Ansible.Changed = $false
+          $Ansible.Result = "Synchronization already in progress."
+      }
+      Wait-PSFMessage
+
+# Step 9: Clean up superseded/obsolete updates to reclaim disk space
+- name: Run WSUS cleanup
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Running WSUS cleanup (decline superseded, clean obsolete, compress)' -Tag 'wsus-server'
+      $result = Invoke-WsusServerCleanup -DeclineSupersededUpdates `
+          -CleanupObsoleteUpdates -CleanupUnneededContentFiles -CompressUpdates
+      Write-PSFMessage -Level Host -Message "WSUS cleanup complete: $result" -Tag 'wsus-server'
+      $Ansible.Result = $result
+      $Ansible.Changed = $true
+      Wait-PSFMessage

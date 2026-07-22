@@ -1,0 +1,17 @@
+---
+# step-ca AD Trust - Publish step-ca Root CA certificate to Active Directory
+# Run after STEPCA1 is provisioned: vagrant provision dc1 --provision-with stepca-trust
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Stage shared scheduled-task helper
+      ansible.builtin.include_role:
+        name: win_scheduled_task
+
+    - name: Include stepca_ad_trust role
+      ansible.builtin.include_role:
+        name: stepca_ad_trust

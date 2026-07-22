@@ -1,0 +1,73 @@
+---
+# shared_folder_repair role
+#
+# Vagrant mounts the host's `resources/software/` shared folder at C:\Software
+# via `mklink /D C:\Software \\vboxsvr\C:_Software` during `vagrant up`. The
+# symlink survives reboots, but the underlying `\\vboxsvr` UNC enumeration does
+# NOT — on Windows guests, after a reboot (domain join, KB install, etc.) the
+# symlink is still present (`(Get-Item).Length = 0` reported as a working
+# directory) but `Get-ChildItem` returns empty and `Test-Path C:\Software\<file>`
+# returns false for any cached file. Cache-first roles (windows_kb_install,
+# winlogbeat, sysmon, sysinternals) then fall through to internet downloads.
+#
+# This role detects the broken state and repairs it by tearing down the stale
+# symlink and re-running the same `mklink` command vagrant's mount script uses,
+# preceded by `net use \\vboxsvr` to wake the UNC resolver. Idempotent: on a
+# healthy share it short-circuits in <1s.
+#
+# Call after any reboot point in a playbook (domain_join post-reboot,
+# windows_kb_install post-3010-reboot). Safe to call defensively anywhere.
+
+- name: Verify C:\Software shared folder is reachable, repair if symlink went stale
+  ansible.windows.win_powershell:
+    script: |
+      $mount = '{{ software_source | default("C:\\Software") }}'
+      $unc   = '\\vboxsvr\C:_Software'
+
+      function Test-ShareHealthy {
+          param([string]$path)
+          if (-not (Test-Path $path)) { return $false }
+          try {
+              $items = Get-ChildItem -Path $path -ErrorAction Stop -Force | Select-Object -First 1
+              return ($items.Count -gt 0)
+          } catch {
+              return $false
+          }
+      }
+
+      if (Test-ShareHealthy -path $mount) {
+          $Ansible.Changed = $false
+          $Ansible.Result  = "Shared folder healthy at $mount"
+          return
+      }
+
+      Write-Warning "Shared folder at $mount is stale; repairing..."
+
+      # Tear down the stale symlink (cmd.exe rd handles directory-symlinks
+      # that Remove-Item refuses to touch).
+      if (Test-Path $mount) {
+          cmd.exe /c rd "$mount" 2>&1 | Out-Null
+          if (Test-Path $mount) {
+              Remove-Item -Path $mount -Force -Recurse -ErrorAction SilentlyContinue
+          }
+      }
+
+      # Wake UNC resolver. `net use \\vboxsvr` returns an error code on success
+      # for VBox shares (no driver letter to display), so we ignore the exit code.
+      & net use $unc 2>&1 | Out-Null
+
+      # Recreate the symlink — mirrors vagrant's mount_volume.ps1.
+      cmd.exe /c mklink /D "$mount" "$unc" | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+          throw "mklink failed: exit $LASTEXITCODE (mount=$mount, unc=$unc)"
+      }
+
+      # Give VBoxService a moment to bind the share, then verify.
+      Start-Sleep -Seconds 2
+      if (-not (Test-ShareHealthy -path $mount)) {
+          throw "Shared folder still empty after mklink repair (mount=$mount, unc=$unc)"
+      }
+
+      $count = (Get-ChildItem -Path $mount -Force).Count
+      $Ansible.Result = "Repaired stale symlink at $mount ($count files visible)"
+  when: software_source is defined and software_source != ""

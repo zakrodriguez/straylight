@@ -1,0 +1,20 @@
+services:
+  vault:
+    image: hashicorp/vault:{{ vault_tag }}
+    container_name: vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: straylight-root-token
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - /opt/vault/data:/vault/file
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider http://localhost:8200/v1/sys/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped

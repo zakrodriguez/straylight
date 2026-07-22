@@ -1,0 +1,10 @@
+---
+# pqc-ejbca.yml — Create ML-DSA-65 PQC CAs and a chimera (hybrid) CA on EJBCA 9.3+
+# Assumes EJBCA CE is already running (run ejbca1.yml first if not)
+- hosts: ejbca
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Include ejbca_pqc role
+      ansible.builtin.include_role:
+        name: ejbca_pqc

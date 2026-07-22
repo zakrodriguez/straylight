@@ -1,0 +1,53 @@
+---
+# pqc-migrate-posture.yml — Phase 5/5 of the PQC migration orchestrator.
+# Runs the CBOM scanner sweep in --rescan-only mode (Phase 1 baseline +
+# Phase 2 re-provision are skipped — the orchestrator's prior phases
+# already did all the provisioning, so we only need a fresh rescan to
+# reflect the migrated state). Verifies the posture JSON files were
+# updated. Must run after Foundation/TLS/SSH/GPG.
+#
+# Standalone usage:
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-migrate-posture.yml
+
+- name: Phase 5/5 banner
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "═══ Phase 5/5: Posture (CBOM scanner sweep) ═══"
+
+    - name: Posture — run the CBOM scanner sweep
+      ansible.builtin.shell: |
+        cd "{{ playbook_dir }}/../.."
+        bash scripts/pqc-remediate.sh --rescan-only 2>&1
+      register: sweep
+      changed_when: false
+
+    - name: Posture — print sweep tail
+      ansible.builtin.debug:
+        msg: "{{ sweep.stdout_lines[-10:] }}"
+
+    - name: Posture — sweep exited 0
+      ansible.builtin.assert:
+        that: sweep.rc == 0
+        fail_msg: "FAIL: scripts/pqc-remediate.sh exited with rc={{ sweep.rc }}"
+        success_msg: "  Sweep exited 0"
+
+    - name: Posture — posture JSON files were updated within last 5 min
+      ansible.builtin.shell: |
+        cd "{{ playbook_dir }}/../.."
+        # Find any *.json under cbom-output modified within the last 5 min.
+        # Want at least one file (proves the sweep wrote outputs).
+        count=$(find cbom-output -maxdepth 2 -name '*.json' -mmin -5 -type f 2>/dev/null | wc -l)
+        echo "  Fresh JSON files (mtime < 5 min): $count"
+        [ "$count" -gt 0 ] || {
+          echo "FAIL: no cbom-output/*.json files updated in the last 5 minutes"; exit 1;
+        }
+      changed_when: false
+
+- name: Phase 5 summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "Phase 5/5 (Posture) complete"

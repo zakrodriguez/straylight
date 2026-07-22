@@ -1,0 +1,79 @@
+---
+# nginx_pqc_demo role — minimal nginx TLS listener presenting a caller-supplied
+# cert. Used to put a chimera-issued cert on the wire so nmap-network detects
+# the alt-sig OIDs in the cert chain.
+
+- name: Validate required cert/key paths are provided
+  ansible.builtin.assert:
+    that:
+      - nginx_pqc_cert_path is defined
+      - nginx_pqc_key_path is defined
+    fail_msg: >-
+      nginx_pqc_demo requires nginx_pqc_cert_path and nginx_pqc_key_path
+      to be set by the caller (no defaults; see role's defaults/main.yml).
+
+- name: Ensure compose dir + cert subdir
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ nginx_pqc_compose_dir }}"
+    - "{{ nginx_pqc_compose_dir }}/cert"
+
+- name: Stage cert
+  ansible.builtin.copy:
+    src: "{{ nginx_pqc_cert_path }}"
+    dest: "{{ nginx_pqc_compose_dir }}/cert/server.crt"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart nginx_pqc_demo
+
+- name: Stage key
+  ansible.builtin.copy:
+    src: "{{ nginx_pqc_key_path }}"
+    dest: "{{ nginx_pqc_compose_dir }}/cert/server.key"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  notify: restart nginx_pqc_demo
+
+- name: Render nginx.conf
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: "{{ nginx_pqc_compose_dir }}/nginx.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart nginx_pqc_demo
+
+- name: Render docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ nginx_pqc_compose_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart nginx_pqc_demo
+
+- name: Bring up nginx PQC demo container
+  community.docker.docker_compose_v2:
+    project_src: "{{ nginx_pqc_compose_dir }}"
+    state: present
+
+- name: Wait for nginx to listen
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ nginx_pqc_port }}"
+    timeout: 30
+
+- name: Verify health endpoint returns 200
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ nginx_pqc_port }}/"
+    validate_certs: false
+    status_code: 200

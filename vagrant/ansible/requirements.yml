@@ -1,0 +1,15 @@
+---
+# Collections pinned to the known-good tested set (the versions currently
+# installed on the build host). Exact pins prevent cold-build drift from
+# always pulling the latest release. Bump deliberately + re-validate.
+collections:
+  - name: ansible.windows
+    version: "3.5.0"
+  - name: community.windows
+    version: "3.1.0"
+  - name: microsoft.ad
+    version: "1.10.0"
+  - name: community.docker
+    version: "5.2.0"
+  - name: chocolatey.chocolatey
+    version: "1.6.0"

@@ -1,0 +1,21 @@
+---
+# cms_lab_windows role: stages CMS (RFC 5652) hands-on lab on manage1.
+# Companion to cms_lab_linux on scanner1.
+
+cms_lab_win_root: 'C:\cms-lab'
+
+cms_lab_win_self_rsa_subject: "CN=cms-lab-manage1-self-rsa, O={{ lab_netbios }}"
+cms_lab_win_self_ecdsa_subject: "CN=cms-lab-manage1-self-ecdsa, O={{ lab_netbios }}"
+
+# AD CS CSR enrollment templates. Canonical CA host / config / template strings
+# live in vagrant/ansible/vars/cms_lab_ca.yml (single source of truth, shared
+# with cms_lab_linux); main.yml include_vars-loads it before these aliases
+# resolve. The bare *_template name is the classical CA, the *_pqc_* name the PQC CA.
+cms_lab_win_ca_template: "{{ cms_lab_template_classical }}"
+cms_lab_win_ca_config: "{{ cms_lab_ca_config_classical }}"
+
+cms_lab_win_pqc_template: "{{ cms_lab_template_pqc }}"
+cms_lab_win_pqc_config: "{{ cms_lab_ca_config_pqc }}"
+
+# PFX password for lab certs (lab-only — not a secret).
+cms_lab_win_pfx_password: labpass

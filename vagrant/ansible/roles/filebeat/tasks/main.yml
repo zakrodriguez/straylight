@@ -1,0 +1,124 @@
+---
+# Filebeat role: forward Docker container logs and syslog to OpenSearch
+# Uses local cache (/software) when available, downloads from Elastic otherwise.
+
+- name: Skip filebeat if logging disabled
+  ansible.builtin.meta: end_role
+  when: not (logging_enabled | default(true) and filebeat_enabled | default(true))
+
+- name: Set Filebeat tarball filename
+  ansible.builtin.set_fact:
+    filebeat_tarball: "filebeat-{{ filebeat_version }}-linux-x86_64.tar.gz"
+
+- name: Check if Filebeat is already installed
+  ansible.builtin.stat:
+    path: /opt/filebeat/filebeat
+  register: filebeat_exe
+
+- name: Check for staged Filebeat tarball in local software cache
+  ansible.builtin.stat:
+    path: '{{ software_source_linux }}/{{ filebeat_tarball }}'
+  register: filebeat_local
+  when:
+    - not filebeat_exe.stat.exists
+    - software_source_linux is defined
+
+- name: Copy Filebeat tarball from local cache
+  ansible.builtin.copy:
+    src: '{{ software_source_linux }}/{{ filebeat_tarball }}'
+    dest: '/tmp/{{ filebeat_tarball }}'
+    remote_src: true
+    mode: "0644"
+  when:
+    - not filebeat_exe.stat.exists
+    - software_source_linux is defined
+    - filebeat_local.stat.exists | default(false)
+
+# SHA512 from https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.17.0-linux-x86_64.tar.gz.sha512 — update when bumping filebeat version
+- name: Download Filebeat {{ filebeat_version }} from Elastic
+  ansible.builtin.get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/filebeat/{{ filebeat_tarball }}"
+    dest: '/tmp/{{ filebeat_tarball }}'
+    mode: "0644"
+    timeout: 60
+    checksum: "sha512:1e7c9d8107a5db5f6361313b6ff08729866b4927cb9e23c518b4163147ded66b2b842204b0dc3df4e5cdeacd889a5417c903e979487e215f33ba7d023feb0617"
+  retries: 3
+  delay: 15
+  register: filebeat_dl
+  until: filebeat_dl is succeeded
+  when:
+    - not filebeat_exe.stat.exists
+    - software_source_linux is not defined or not (filebeat_local.stat.exists | default(false))
+
+- name: Create /opt/filebeat directory
+  ansible.builtin.file:
+    path: /opt/filebeat
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not filebeat_exe.stat.exists
+
+- name: Extract Filebeat tarball
+  ansible.builtin.unarchive:
+    src: '/tmp/{{ filebeat_tarball }}'
+    dest: /opt/filebeat
+    remote_src: true
+    extra_opts: ['--strip-components=1']
+  when: not filebeat_exe.stat.exists
+
+- name: Deploy filebeat.yml configuration
+  ansible.builtin.template:
+    src: filebeat.yml.j2
+    dest: /opt/filebeat/filebeat.yml
+    owner: root
+    group: root
+    mode: "0644"
+  register: filebeat_config
+
+- name: Create /var/log/filebeat directory
+  ansible.builtin.file:
+    path: /var/log/filebeat
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy filebeat systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/filebeat.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Filebeat Log Shipper
+      After=docker.service
+      Wants=docker.service
+
+      [Service]
+      Type=simple
+      ExecStart=/opt/filebeat/filebeat -e -c /opt/filebeat/filebeat.yml
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+  register: filebeat_unit
+
+- name: Reload systemd if unit changed
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: filebeat_unit.changed
+
+- name: Enable and start filebeat service
+  ansible.builtin.systemd:
+    name: filebeat
+    enabled: true
+    state: started
+
+- name: Restart filebeat if config changed
+  ansible.builtin.systemd:
+    name: filebeat
+    state: restarted
+  when: filebeat_config.changed and not filebeat_unit.changed

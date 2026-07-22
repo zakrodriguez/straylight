@@ -1,0 +1,48 @@
+---
+# SQL Server install defaults.
+# To bump to SQL Server 2025 when chocolatey/SSEI URLs stabilize, override
+# sql_server_version + sql_server_ssei_url at the playbook level.
+
+# SQL Server edition + version
+sql_server_edition: "Developer"          # Developer is free, full-featured
+sql_server_version: "2022"               # 2022 is the well-tested baseline;
+                                         # bump to "2025" when SSEI bootstrapper
+                                         # for 2025 is stable on the lab host
+
+# SSEI bootstrapper URL — Microsoft's "download and install" stub.
+# 2022 Developer: https://go.microsoft.com/fwlink/?linkid=2215158
+# Updated periodically; if download 404s, fetch fresh URL from
+# https://www.microsoft.com/en-us/sql-server/sql-server-downloads
+sql_server_ssei_url: "https://go.microsoft.com/fwlink/?linkid=2215158"
+
+# Instance configuration
+sql_instance_name: "MSSQLSERVER"          # Default instance
+sql_features: "SQLENGINE"                 # Minimum for cert/TLS labs;
+                                          # add "SQLENGINE,FullText,Conn,SDK"
+                                          # for a fuller surface if needed
+
+# Service accounts (must exist on the domain — created by domain_controller role)
+sql_engine_account: "{{ lab_netbios }}\\svc-sql"
+sql_engine_password: "{{ svc_password }}"
+
+# Authentication
+sql_security_mode: "SQL"                  # Mixed-mode auth (SQL + Windows)
+sql_sa_password: "{{ admin_password }}"   # Lab-only SA password — reuses admin pw
+
+# Admins — these accounts get sysadmin role on the new instance
+sql_sysadmin_accounts:
+  - "{{ lab_netbios }}\\Domain Admins"
+  - "{{ lab_netbios }}\\Administrator"
+
+# Network
+sql_tcp_enabled: true
+sql_tcp_port: 1433
+sql_browser_enabled: false                # Default instance — no browser needed
+
+# Install paths
+sql_install_dir: 'C:\Program Files\Microsoft SQL Server'
+sql_data_dir: 'C:\SQLData'
+sql_log_dir: 'C:\SQLLogs'
+
+# Working directory for installer artifacts
+sql_install_workdir: 'C:\sql-install'

@@ -1,0 +1,2 @@
+# Internalized Chocolatey packages — cached locally, not committed
+*.nupkg

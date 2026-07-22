@@ -1,0 +1,347 @@
+---
+# EJBCA role: deploy EJBCA CE via Docker Compose, create CA hierarchy, configure SCEP
+
+- name: Create EJBCA data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/ejbca
+    - /opt/ejbca/data
+    - /opt/ejbca/data/mariadb
+
+- name: Create EJBCA export directory (writable by container user)
+  ansible.builtin.file:
+    path: /opt/ejbca/data/export
+    state: directory
+    owner: root
+    group: root
+    mode: "0777"
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/ejbca/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start EJBCA containers
+  community.docker.docker_compose_v2:
+    project_src: /opt/ejbca
+    state: present
+
+- name: Wait for EJBCA to be ready
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca listcas
+  register: ejbca_ready
+  until: ejbca_ready.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+# =========================================================================
+# Root CA
+# =========================================================================
+
+- name: Check if Root CA exists
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca listcas
+  register: ca_list
+  changed_when: false
+
+- name: Check existing crypto tokens
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken list
+  register: token_list
+  changed_when: false
+
+- name: Create Root CA crypto token
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken create
+      --token "{{ ejbca_root_ca_name }}-CryptoToken"
+      --pin "{{ ejbca_token_password }}"
+      --type SoftCryptoToken
+      --autoactivate true
+  when:
+    - ejbca_root_ca_name not in ca_list.stdout
+    - (ejbca_root_ca_name ~ '-CryptoToken') not in token_list.stdout
+
+- name: Generate Root CA signing key
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "{{ ejbca_root_ca_name }}-CryptoToken"
+      --alias signKey
+      --keyspec 4096
+  register: root_signkey_result
+  failed_when: root_signkey_result.rc != 0 and 'is in use' not in root_signkey_result.stdout
+  when: ejbca_root_ca_name not in ca_list.stdout
+
+- name: Generate Root CA default key
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "{{ ejbca_root_ca_name }}-CryptoToken"
+      --alias defaultKey
+      --keyspec 4096
+  register: root_defaultkey_result
+  failed_when: root_defaultkey_result.rc != 0 and 'is in use' not in root_defaultkey_result.stdout
+  when: ejbca_root_ca_name not in ca_list.stdout
+
+- name: Generate Root CA test key
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "{{ ejbca_root_ca_name }}-CryptoToken"
+      --alias testKey
+      --keyspec 1024
+  register: root_testkey_result
+  failed_when: root_testkey_result.rc != 0 and 'is in use' not in root_testkey_result.stdout
+  when: ejbca_root_ca_name not in ca_list.stdout
+
+- name: Write Root CA token properties file
+  ansible.builtin.copy:
+    dest: /opt/ejbca/data/export/rootca-token.properties
+    content: |
+      certSignKey signKey
+      crlSignKey signKey
+      defaultKey defaultKey
+      testKey testKey
+    mode: "0644"
+  when: ejbca_root_ca_name not in ca_list.stdout
+
+- name: Initialize Root CA
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca init
+      --caname "{{ ejbca_root_ca_name }}"
+      --dn "CN={{ ejbca_root_ca_name }},O={{ ejbca_organization }}"
+      --tokenName "{{ ejbca_root_ca_name }}-CryptoToken"
+      --tokenPass "{{ ejbca_token_password }}"
+      --keyspec 4096
+      --keytype RSA
+      -v 3650
+      --policy null
+      -s SHA256WithRSA
+      --tokenprop /mnt/export/rootca-token.properties
+  when: ejbca_root_ca_name not in ca_list.stdout
+
+# =========================================================================
+# Issuing CA
+# =========================================================================
+
+- name: Create Issuing CA crypto token
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken create
+      --token "{{ ejbca_issuing_ca_name }}-CryptoToken"
+      --pin "{{ ejbca_token_password }}"
+      --type SoftCryptoToken
+      --autoactivate true
+  when:
+    - ejbca_two_tier | default(true)
+    - ejbca_issuing_ca_name not in ca_list.stdout
+    - (ejbca_issuing_ca_name ~ '-CryptoToken') not in token_list.stdout
+
+- name: Generate Issuing CA signing key
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "{{ ejbca_issuing_ca_name }}-CryptoToken"
+      --alias signKey
+      --keyspec 4096
+  register: issue_signkey_result
+  failed_when: issue_signkey_result.rc != 0 and 'is in use' not in issue_signkey_result.stdout
+  when:
+    - ejbca_two_tier | default(true)
+    - ejbca_issuing_ca_name not in ca_list.stdout
+
+- name: Generate Issuing CA default key
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "{{ ejbca_issuing_ca_name }}-CryptoToken"
+      --alias defaultKey
+      --keyspec 4096
+  register: issue_defaultkey_result
+  failed_when: issue_defaultkey_result.rc != 0 and 'is in use' not in issue_defaultkey_result.stdout
+  when:
+    - ejbca_two_tier | default(true)
+    - ejbca_issuing_ca_name not in ca_list.stdout
+
+- name: Generate Issuing CA test key
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh cryptotoken generatekey
+      --token "{{ ejbca_issuing_ca_name }}-CryptoToken"
+      --alias testKey
+      --keyspec 1024
+  register: issue_testkey_result
+  failed_when: issue_testkey_result.rc != 0 and 'is in use' not in issue_testkey_result.stdout
+  when:
+    - ejbca_two_tier | default(true)
+    - ejbca_issuing_ca_name not in ca_list.stdout
+
+- name: Get Root CA ID for signing
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca info
+      --caname "{{ ejbca_root_ca_name }}"
+      | grep -oP 'CA ID:\s*\K[-0-9]+'
+  register: root_ca_id
+  changed_when: false
+  when:
+    - ejbca_two_tier | default(true)
+    - ejbca_issuing_ca_name not in ca_list.stdout
+
+- name: Write Issuing CA token properties file
+  ansible.builtin.copy:
+    dest: /opt/ejbca/data/export/issueca-token.properties
+    content: |
+      certSignKey signKey
+      crlSignKey signKey
+      defaultKey defaultKey
+      testKey testKey
+    mode: "0644"
+  when:
+    - ejbca_two_tier | default(true)
+    - ejbca_issuing_ca_name not in ca_list.stdout
+
+- name: Initialize Issuing CA (signed by Root)
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca init
+      --caname "{{ ejbca_issuing_ca_name }}"
+      --dn "CN={{ ejbca_issuing_ca_name }},O={{ ejbca_organization }}"
+      --tokenName "{{ ejbca_issuing_ca_name }}-CryptoToken"
+      --tokenPass "{{ ejbca_token_password }}"
+      --keyspec 4096
+      --keytype RSA
+      -v 1825
+      --policy null
+      -s SHA256WithRSA
+      --tokenprop /mnt/export/issueca-token.properties
+      --signedby {{ root_ca_id.stdout }}
+  when:
+    - ejbca_two_tier | default(true)
+    - ejbca_issuing_ca_name not in ca_list.stdout
+
+# =========================================================================
+# SCEP Configuration
+# =========================================================================
+
+- name: Configure SCEP alias
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh config scep addalias
+      --alias scep
+  register: scep_result
+  changed_when: "'already exists' not in (scep_result.stdout | default(''))"
+  failed_when: scep_result.rc != 0 and 'already exists' not in (scep_result.stdout | default(''))
+
+- name: Set SCEP operational mode to CA RA mode
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh config scep updatealias
+      --alias scep
+      --key operationmode
+      --value ra
+  register: scep_mode_result
+  changed_when: false
+  failed_when: false
+
+- name: Warn if SCEP operational-mode update returned non-zero (CE limitation vs real failure)
+  # `failed_when: false` above tolerates EJBCA CE not supporting RA-mode SCEP,
+  # but silent failure hides real problems. Surface rc + stderr so a downstream
+  # SCEP enrollment failure isn't a complete mystery.
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: SCEP updatealias returned rc={{ scep_mode_result.rc }};
+      stderr={{ scep_mode_result.stderr | default('') | trim }};
+      verify manually if SCEP enrollments fail.
+  when: scep_mode_result.rc != 0
+
+# =========================================================================
+# EST Configuration (graceful fallback if not supported in CE)
+# =========================================================================
+
+- name: Configure EST alias
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh config est addalias
+      --alias est
+  register: est_result
+  changed_when: "'already exists' not in (est_result.stdout | default(''))"
+  failed_when: false
+
+- name: EST configuration result
+  # EJBCA CE genuinely doesn't ship EST — the expected CE failure pattern is a
+  # stderr/stdout containing "not supported" or an EnterpriseEditionException.
+  # Anything else is a real failure that should be visible (not hidden by the
+  # tolerant failed_when above) so a downstream EST enrollment failure can be
+  # traced back here.
+  ansible.builtin.debug:
+    msg: >-
+      EST configuration
+      {{ 'succeeded' if est_result.rc == 0
+         else ('not available in CE edition (expected)'
+               if ('not supported' in (est_result.stderr | default('') | lower)
+                   or 'enterprise' in (est_result.stderr | default('') | lower)
+                   or 'not supported' in (est_result.stdout | default('') | lower))
+               else ('WARNING: returned rc=' ~ est_result.rc
+                     ~ ' with unexpected output — verify manually if EST enrollments fail.'
+                     ~ ' stderr=' ~ (est_result.stderr | default('') | trim))) }}
+
+# =========================================================================
+# Export Root CA certificate and generate CRLs
+# =========================================================================
+
+- name: Export Root CA certificate (PEM) inside container
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca getcacert
+      --caname "{{ ejbca_root_ca_name }}"
+      -f /tmp/ejbca-root-ca.pem
+  changed_when: false
+
+- name: Copy Root CA PEM cert to host
+  ansible.builtin.command:
+    cmd: docker cp ejbca-ce:/tmp/ejbca-root-ca.pem /opt/ejbca/data/export/ejbca-root-ca.pem
+  changed_when: false
+
+- name: Convert Root CA cert to DER format on host
+  ansible.builtin.command:
+    cmd: >-
+      openssl x509 -in /opt/ejbca/data/export/ejbca-root-ca.pem
+      -outform DER -out /opt/ejbca/data/export/ejbca-root-ca.der
+  changed_when: false
+
+- name: Generate Root CA CRL
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca createcrl
+      --caname "{{ ejbca_root_ca_name }}"
+  changed_when: false
+
+- name: Generate Issuing CA CRL
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca createcrl
+      --caname "{{ ejbca_issuing_ca_name }}"
+  changed_when: false
+  when: ejbca_two_tier | default(true)
+
+- name: Verify CA hierarchy
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca listcas
+  register: final_ca_list
+  changed_when: false
+
+- name: Display CA list
+  ansible.builtin.debug:
+    var: final_ca_list.stdout_lines

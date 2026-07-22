@@ -1,0 +1,7 @@
+Cryptographic Message Syntax lab — sample plaintext.
+
+This file is the canonical input for sign/encrypt exercises. Its bytes
+are identical across the Linux and Windows roles so interop checks
+produce byte-identical artifacts up to the signature/MAC layer.
+
+Do not edit. Determinism matters here.

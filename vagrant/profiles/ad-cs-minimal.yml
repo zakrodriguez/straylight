@@ -1,0 +1,25 @@
+name: ad-cs-minimal
+description: |
+  Smallest viable AD CS demo. Three Server Core VMs sized down to 1 GB /
+  1 vCPU each. For smoke-testing "does AD CS issue a cert?" without
+  16 GB of host RAM. ~3 GB total. Boot in ~30 min from scratch.
+
+  web1 is required because the enterprise_ca role uses it as the SMB
+  share for CRL/AIA distribution — the CA install fails to publish its
+  initial CRL without it.
+
+components:
+  - dc1
+  - ca1
+  - web1
+
+resources:
+  dc1:
+    memory: 1024
+    cpus: 1
+  ca1:
+    memory: 1024
+    cpus: 1
+  web1:
+    memory: 1024
+    cpus: 1

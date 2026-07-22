@@ -1,0 +1,193 @@
+---
+# Tomcat role: Eclipse Temurin JDK + Apache Tomcat on Windows
+# Installs JDK via MSI, Tomcat from zip, registers Tomcat as a Windows service
+
+- name: Create temp download directory
+  ansible.windows.win_file:
+    path: C:\tmp
+    state: directory
+
+# ── Eclipse Temurin JDK ────────────────────────────────────────────────
+
+- name: Check if Temurin JDK is already installed
+  ansible.windows.win_stat:
+    path: '{{ temurin_install_dir }}\bin\java.exe'
+  register: java_exe
+
+- name: Check for staged Temurin JDK MSI in local software cache
+  ansible.windows.win_stat:
+    path: '{{ software_source }}\{{ temurin_msi }}'
+  register: temurin_local
+  when:
+    - not java_exe.stat.exists
+    - software_source is defined
+
+- name: Copy Temurin JDK MSI from local cache
+  ansible.windows.win_copy:
+    src: '{{ software_source }}\{{ temurin_msi }}'
+    dest: 'C:\tmp\temurin-jdk.msi'
+    remote_src: true
+  when:
+    - not java_exe.stat.exists
+    - software_source is defined
+    - temurin_local.stat.exists | default(false)
+
+# SHA256 from https://api.adoptium.net/v3/assets/feature_releases/17/ga (jdk-17.0.19+10 MSI); update when bumping temurin_major_version or when Adoptium publishes a new 17.x GA
+- name: Download Eclipse Temurin {{ temurin_major_version }} JDK MSI
+  ansible.windows.win_get_url:
+    url: "https://api.adoptium.net/v3/installer/latest/{{ temurin_major_version }}/ga/windows/x64/jdk/hotspot/normal/eclipse"
+    dest: 'C:\tmp\temurin-jdk.msi'
+    follow_redirects: all
+    checksum: "sha256:ccd97a7e313381a84e3567ffe10ad562884e399cc1fb1b4c5fa417de49efac78"
+  when:
+    - not java_exe.stat.exists
+    - software_source is not defined or not (temurin_local.stat.exists | default(false))
+
+- name: Install Eclipse Temurin {{ temurin_major_version }} JDK
+  ansible.windows.win_package:
+    path: 'C:\tmp\temurin-jdk.msi'
+    arguments: 'ADDLOCAL=FeatureMain,FeatureJavaHome,FeatureEnvironment INSTALLDIR={{ temurin_install_dir }}'
+    state: present
+  when: not java_exe.stat.exists
+
+# ── Apache Tomcat ──────────────────────────────────────────────────────
+
+- name: Check if Tomcat is already installed
+  ansible.windows.win_stat:
+    path: '{{ tomcat_install_dir }}\bin\catalina.bat'
+  register: tomcat_bat
+
+- name: Check for staged Tomcat ZIP in local software cache
+  ansible.windows.win_stat:
+    path: '{{ software_source }}\{{ tomcat_zip }}'
+  register: tomcat_local
+  when:
+    - not tomcat_bat.stat.exists
+    - software_source is defined
+
+- name: Copy Tomcat ZIP from local cache
+  ansible.windows.win_copy:
+    src: '{{ software_source }}\{{ tomcat_zip }}'
+    dest: 'C:\tmp\apache-tomcat.zip'
+    remote_src: true
+  when:
+    - not tomcat_bat.stat.exists
+    - software_source is defined
+    - tomcat_local.stat.exists | default(false)
+
+# Checksum omitted: ansible.windows.win_get_url 3.5.0 has a string-comparison
+# bug that mismatches every checksum value (sha1/sha256/sha512) because the
+# "<algo>:" prefix never gets stripped before comparison. See the matching
+# comment in roles/winlogbeat/tasks/main.yml for the full rationale and
+# reproduction. HTTPS covers transport; cache-hit path still byte-anchored.
+# Re-add the checksum once ansible.windows >= 3.6 is in use.
+# Upstream SHA-512 for cross-check:
+# https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.34/bin/apache-tomcat-10.1.34-windows-x64.zip.sha512
+- name: Download Apache Tomcat {{ tomcat_version }}
+  ansible.windows.win_get_url:
+    url: "https://archive.apache.org/dist/tomcat/tomcat-{{ tomcat_major_version }}/v{{ tomcat_version }}/bin/apache-tomcat-{{ tomcat_version }}-windows-x64.zip"
+    dest: 'C:\tmp\apache-tomcat.zip'
+  when:
+    - not tomcat_bat.stat.exists
+    - software_source is not defined or not (tomcat_local.stat.exists | default(false))
+
+- name: Extract Apache Tomcat to {{ tomcat_install_dir }}
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      if (Test-Path '{{ tomcat_install_dir }}\bin\catalina.bat') {
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+          return
+      }
+
+      Write-PSFMessage -Level Host -Message 'Extracting Apache Tomcat to {{ tomcat_install_dir }}' -Tag 'tomcat'
+
+      $extractDir = 'C:\tmp\tomcat-extract'
+      if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+
+      Expand-Archive -Path 'C:\tmp\apache-tomcat.zip' -DestinationPath $extractDir -Force
+
+      $tomcatDir = Get-ChildItem $extractDir -Directory | Select-Object -First 1
+      if (-not $tomcatDir) { throw "No directory found after extraction" }
+
+      if (Test-Path '{{ tomcat_install_dir }}') { Remove-Item '{{ tomcat_install_dir }}' -Recurse -Force }
+      Move-Item $tomcatDir.FullName '{{ tomcat_install_dir }}'
+
+      Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+      Write-PSFMessage -Level Host -Message 'Apache Tomcat extracted' -Tag 'tomcat'
+      Wait-PSFMessage
+  when: not tomcat_bat.stat.exists
+
+# ── Environment + Service ─────────────────────────────────────────────
+
+- name: Set CATALINA_HOME system environment variable
+  ansible.windows.win_environment:
+    name: CATALINA_HOME
+    value: '{{ tomcat_install_dir }}'
+    level: machine
+    state: present
+
+- name: Install Tomcat as Windows service
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $svc = Get-Service -Name '{{ tomcat_service_name }}' -ErrorAction SilentlyContinue
+      if ($svc) {
+          Write-PSFMessage -Level Host -Message 'Tomcat service already installed' -Tag 'tomcat'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+          return
+      }
+
+      Write-PSFMessage -Level Host -Message 'Installing Tomcat as Windows service' -Tag 'tomcat'
+      $env:JAVA_HOME = '{{ temurin_install_dir }}'
+      $env:CATALINA_HOME = '{{ tomcat_install_dir }}'
+      & '{{ tomcat_install_dir }}\bin\service.bat' install
+      if ($LASTEXITCODE -ne 0) {
+          Write-PSFMessage -Level Error -Message "Tomcat service installation failed (exit code $LASTEXITCODE)" -Tag 'tomcat'
+          Wait-PSFMessage
+          throw "Tomcat service installation failed (exit code $LASTEXITCODE)"
+      }
+      Write-PSFMessage -Level Host -Message 'Tomcat service installed' -Tag 'tomcat'
+      Wait-PSFMessage
+
+# ── Firewall ──────────────────────────────────────────────────────────
+
+- name: Open firewall port for Tomcat HTTP ({{ tomcat_http_port }})
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $rule = Get-NetFirewallRule -DisplayName "Tomcat-HTTP" -ErrorAction SilentlyContinue
+      if (-not $rule) {
+          Write-PSFMessage -Level Host -Message 'Creating firewall rule Tomcat-HTTP (port {{ tomcat_http_port }})' -Tag 'tomcat'
+          New-NetFirewallRule -DisplayName "Tomcat-HTTP" `
+              -Direction Inbound -Protocol TCP -LocalPort {{ tomcat_http_port }} `
+              -Action Allow -Profile Any -Enabled True | Out-Null
+      } else {
+          $Ansible.Changed = $false
+      }
+      Wait-PSFMessage
+
+- name: Open firewall port for Tomcat HTTPS ({{ tomcat_https_port }})
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $rule = Get-NetFirewallRule -DisplayName "Tomcat-HTTPS" -ErrorAction SilentlyContinue
+      if (-not $rule) {
+          Write-PSFMessage -Level Host -Message 'Creating firewall rule Tomcat-HTTPS (port {{ tomcat_https_port }})' -Tag 'tomcat'
+          New-NetFirewallRule -DisplayName "Tomcat-HTTPS" `
+              -Direction Inbound -Protocol TCP -LocalPort {{ tomcat_https_port }} `
+              -Action Allow -Profile Any -Enabled True | Out-Null
+      } else {
+          $Ansible.Changed = $false
+      }
+      Wait-PSFMessage
+
+# ── Start service ────────────────────────────────────────────────────
+
+- name: Ensure Tomcat service is running
+  ansible.windows.win_service:
+    name: '{{ tomcat_service_name }}'
+    start_mode: auto
+    state: started

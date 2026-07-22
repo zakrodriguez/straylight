@@ -1,0 +1,43 @@
+---
+# Replace nginx default site with the acme_client site.
+
+- name: Ensure /var/www/html exists
+  ansible.builtin.file:
+    path: /var/www/html
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Ensure /etc/nginx/ssl directory exists for the walkthrough
+  ansible.builtin.file:
+    path: /etc/nginx/ssl
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy acme_client nginx site
+  ansible.builtin.template:
+    src: nginx-acme.conf.j2
+    dest: /etc/nginx/sites-available/acme
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload nginx
+
+- name: Disable default nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: reload nginx
+
+- name: Enable acme_client nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/acme
+    dest: /etc/nginx/sites-enabled/acme
+    state: link
+  notify: reload nginx
+
+- name: Reload nginx now if config changed
+  ansible.builtin.meta: flush_handlers

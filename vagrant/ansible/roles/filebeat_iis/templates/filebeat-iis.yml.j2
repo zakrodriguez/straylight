@@ -1,0 +1,42 @@
+filebeat.inputs:
+  - type: filestream
+    id: iis-access
+    paths:
+      - C:\inetpub\logs\LogFiles\W3SVC*\*.log
+    exclude_lines: ['^#']
+
+output.elasticsearch:
+  hosts: ["https://{{ observe_ip }}:{{ beats_tls_port | default(9244) }}"]
+  username: "{{ beats_basic_auth_user }}"
+  password: "{{ beats_basic_auth_password }}"
+  # `certificate` mode: verify chain (step-ca root in Windows trust via
+  # stepca_ad_trust GPO), skip hostname (Beats connect via IP).
+  ssl.verification_mode: certificate
+  # Date-suffixed index so the server-side ISM policy (opensearch_stack role)
+  # can age out whole daily indices instead of one fixed-name index growing
+  # unbounded on the single-node cluster. Field types are locked by
+  # the `straylight-logs` index template, which also auto-attaches the
+  # retention policy on index creation.
+  index: "logs-windows-%{+yyyy.MM.dd}"
+  allow_older_versions: true
+  pipeline: ""
+
+# Index template + ISM policy are managed server-side by the opensearch_stack
+# role (single source of truth), not pushed per-Beat. A custom non-default
+# index name also requires ilm disabled.
+setup.ilm.enabled: false
+setup.template.enabled: false
+
+fields:
+  lab_source: "{{ log_prefix }}-{{ inventory_hostname | upper }}"
+  lab_domain: "{{ lab_domain }}"
+  log_type: "iis-access"
+
+fields_under_root: true
+
+logging.level: warning
+logging.to_files: true
+logging.files:
+  path: C:\ProgramData\Filebeat\logs
+  name: filebeat
+  keepfiles: 3

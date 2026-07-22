@@ -1,0 +1,19 @@
+---
+# acme_client role: install nginx + ACME clients (step CLI, acme.sh) and seed
+# the step-ca root cert into the system trust store. Issues no certs of its
+# own — that is the learner's job in docs/walkthroughs/labs/acme1-*-walkthrough.md.
+
+- name: Install OS packages
+  ansible.builtin.import_tasks: packages.yml
+
+- name: Configure nginx site
+  ansible.builtin.import_tasks: nginx_site.yml
+
+- name: Install step-ca root cert into system trust store
+  ansible.builtin.import_tasks: trust.yml
+
+- name: Install step CLI
+  ansible.builtin.import_tasks: step_cli.yml
+
+- name: Install acme.sh
+  ansible.builtin.import_tasks: acme_sh.yml

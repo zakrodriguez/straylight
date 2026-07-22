@@ -1,0 +1,15 @@
+lab: sample-lab
+profile: core
+parameters:
+  CA: "ISSUECA.yourlab.local\\YOURLAB-Issuing-CA"
+normalizers:
+  latency: { pattern: '\d+ ms', placeholder: '<MS>' }
+steps:
+  - step: ping
+    host: manage1
+    command: "certutil -config $CA -ping"
+    rc: 0
+    expect: ['interface is alive']
+    strict: false
+    captured: |
+      Server interface is alive (<MS>)

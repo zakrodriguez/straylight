@@ -1,0 +1,79 @@
+---
+# CipherIQ role: deploy cbom-generator, crypto-tracer (eBPF), and pqc-flow (passive sniffer)
+# Three GPL-3 tools from CipherIQ for cryptographic inventory and monitoring.
+# Repos are SHA-pinned (below); clone and build steps are non-fatal so a repo
+# that ships without a top-level Dockerfile is skipped rather than failing the run.
+
+- name: Create CipherIQ directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/cipheriq
+    - /opt/cipheriq/output
+
+# Pinned to HEAD (HEAD as of 2026-05-26) — update via 'git ls-remote' when bumping
+- name: Clone CipherIQ repositories
+  ansible.builtin.git:
+    repo: "https://github.com/CipherIQ/{{ item }}.git"
+    dest: "/opt/cipheriq/{{ item }}"
+    depth: 1
+    update: false
+    version: "{{ {'cbom-generator': '884528070a2f447c11784c2f1bb953072dac30a5', 'crypto-tracer': 'a6fddf180714b2a11b2f75e356f5be9719809367', 'pqc-flow': '959913124d69f6b98910dafe462c267f3093b4cf'}[item] }}"
+  loop:
+    - cbom-generator
+    - crypto-tracer
+    - pqc-flow
+  ignore_errors: true
+  register: cipheriq_clones
+
+# Compose templates use `build:` which requires a Dockerfile at the build
+# context root. Each upstream repo's layout is independent and any of them
+# may ship without a top-level Dockerfile — when that happens the `docker
+# compose up` step fails with "Dockerfile: no such file or directory".
+# Filter to repos that both cloned successfully AND have a Dockerfile, then
+# template only those into compose.
+- name: Check Dockerfile presence per cloned repo
+  ansible.builtin.stat:
+    path: "/opt/cipheriq/{{ item.item }}/Dockerfile"
+  loop: "{{ cipheriq_clones.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  register: cipheriq_dockerfiles
+  when: not (item.failed | default(false))
+
+- name: Compute list of buildable services
+  ansible.builtin.set_fact:
+    cipheriq_valid_services: >-
+      {{ cipheriq_dockerfiles.results
+         | selectattr('skipped', 'undefined')
+         | selectattr('stat.exists', 'equalto', true)
+         | map(attribute='item.item')
+         | list }}
+
+- name: Deploy CipherIQ docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/cipheriq/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+  when: cipheriq_valid_services | length > 0
+
+- name: Start CipherIQ containers
+  community.docker.docker_compose_v2:
+    project_src: /opt/cipheriq
+    state: present
+  register: cipheriq_compose
+  ignore_errors: true
+  when: cipheriq_valid_services | length > 0
+
+- name: Display CipherIQ status
+  ansible.builtin.debug:
+    msg: >-
+      CipherIQ suite: {{ cipheriq_valid_services | join(', ') | default('no buildable repos', true) }}.
+      Skipped (no Dockerfile or clone failed): {{ ['cbom-generator', 'crypto-tracer', 'pqc-flow'] | difference(cipheriq_valid_services) | join(', ') | default('none', true) }}.
+      {{ 'Docker Compose: ' ~ (cipheriq_compose.msg | default('skipped')) if cipheriq_compose is defined else '' }}

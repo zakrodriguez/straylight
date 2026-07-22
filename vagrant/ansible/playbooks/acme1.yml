@@ -1,0 +1,52 @@
+---
+# acme1 — ACME learning sandbox
+# Phase 1 of the ACME deployment effort: step CLI + acme.sh against step-ca.
+# The role bootstraps prerequisites; cert issuance is the learner's job in
+# the acme1-*-walkthrough.md guides under docs/walkthroughs/labs/.
+
+- hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Include common_linux role
+      ansible.builtin.include_role:
+        name: common_linux
+
+    - name: Include acme_client role
+      ansible.builtin.include_role:
+        name: acme_client
+
+    # AD DNS A records for the walkthrough identifiers.
+    # Delegated to dc1 because that's where AD DNS lives. Idempotent:
+    # checks for an existing record with the right IP, replaces stale ones.
+    # Skipped on Linux-only profiles (e.g. pqc-linux) where dc1 isn't in the
+    # active inventory — common_linux writes a static /etc/hosts fallback
+    # so *.lab_domain still resolves on those profiles.
+    - name: Add A records for acme1 walkthrough identifiers
+      when: "'dc1' in groups['all']"
+      delegate_to: dc1
+      become: false  # sudo is not supported on Windows; WinRM user has admin rights
+      vars:
+        ansible_python_interpreter: "{{ omit }}"  # delegate is Windows
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $zone = '{{ lab_domain }}'
+          $names = @('acme1', 'step.acme1', 'sh.acme1', 'cb.acme1', 'alpn.acme1')
+          $ip = '{{ ip_address }}'
+          $changed = $false
+          foreach ($n in $names) {
+              $existing = Get-DnsServerResourceRecord -ZoneName $zone -Name $n -RRType A -ErrorAction SilentlyContinue |
+                  Where-Object { $_.RecordData.IPv4Address.IPAddressToString -eq $ip }
+              if (-not $existing) {
+                  # Remove any stale A record under this name first (idempotent)
+                  Get-DnsServerResourceRecord -ZoneName $zone -Name $n -RRType A -ErrorAction SilentlyContinue |
+                      ForEach-Object { Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $_ -Force }
+                  Add-DnsServerResourceRecordA -ZoneName $zone -Name $n -IPv4Address $ip -TimeToLive 01:00:00
+                  Write-Output "added: $n.$zone -> $ip"
+                  $changed = $true
+              } else {
+                  Write-Output "exists: $n.$zone -> $ip"
+              }
+          }
+          $Ansible.Changed = $changed

@@ -1,0 +1,5 @@
+TASK [domain_controller : Create PKI admin groups] *****************************
+changed: [dc1] => (item={'name': 'PKI Admins'})
+
+TASK [domain_controller : Create Autoenrollment GPO] ***************************
+changed: [dc1]

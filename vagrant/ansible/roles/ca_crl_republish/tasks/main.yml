@@ -1,0 +1,56 @@
+---
+# Scheduled CRL republish on an ONLINE issuing CA.
+#
+# Both issuing CAs (classical YOURLAB-Issuing-CA and YOURLAB-PQC-Issuing-CA)
+# carried 26-week CRLs as a cold-start cushion — but that long validity was
+# quietly doing the job of republish automation for the HTTP CDP on web1. The
+# provision-time publish_ca_artifacts copy only runs once; nothing refreshed the
+# web1 copy afterwards. This role drops a republish script + a daily SYSTEM
+# scheduled task so the CDP copy stays current independent of the CRL base
+# period. Offline standalone roots do NOT include this (their CRL is long-lived
+# by design and they're powered off post-signing).
+
+- name: Ensure lab script dir exists
+  ansible.windows.win_file:
+    path: C:\ProgramData\straylight
+    state: directory
+
+- name: Drop CRL republish script
+  ansible.windows.win_template:
+    src: republish-crl.ps1.j2
+    dest: C:\ProgramData\straylight\republish-crl.ps1
+
+- name: Register daily CRL republish scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+          -Argument '-ExecutionPolicy Bypass -NonInteractive -File C:\ProgramData\straylight\republish-crl.ps1'
+      $trigger = New-ScheduledTaskTrigger -Daily -At {{ republish_time }}
+      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+      Register-ScheduledTask -TaskName '{{ republish_task_name }}' -Action $action -Trigger $trigger `
+          -Principal $principal -Force | Out-Null
+      Write-PSFMessage -Level Host -Message 'Registered daily CRL republish task {{ republish_task_name }} at {{ republish_time }}' -Tag 'crl-republish'
+      $Ansible.Changed = $true
+      Wait-PSFMessage
+
+# Run it once now so the web1 CDP has a fresh copy immediately (and to surface
+# any auth/path error at provision time rather than silently at 02:00).
+- name: Run CRL republish once now
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Start-ScheduledTask -TaskName '{{ republish_task_name }}'
+      $t = 0
+      while ($t -lt 120) {
+          Start-Sleep -Seconds 5; $t += 5
+          if ((Get-ScheduledTask -TaskName '{{ republish_task_name }}').State -eq 'Ready') { break }
+      }
+      $info = Get-ScheduledTaskInfo -TaskName '{{ republish_task_name }}'
+      if ($info.LastTaskResult -ne 0) {
+          Write-PSFMessage -Level Warning -Message "CRL republish task last result: $($info.LastTaskResult)" -Tag 'crl-republish'
+      } else {
+          Write-PSFMessage -Level Host -Message 'Initial CRL republish completed (result 0)' -Tag 'crl-republish'
+      }
+      $Ansible.Changed = $false
+      Wait-PSFMessage

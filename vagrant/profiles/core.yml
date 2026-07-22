@@ -1,0 +1,12 @@
+name: core
+description: |
+  Default lab. Four VMs covering the most-used surfaces — DC, AD CS,
+  IIS, and an admin workstation. Matches the no-arg `up.sh` behavior
+  prior to the composable-lab refactor. Backwards-compatible default
+  for users who don't set LAB_PROFILE.
+
+components:
+  - dc1
+  - manage1
+  - web1
+  - ca1

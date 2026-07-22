@@ -1,0 +1,28 @@
+name: full
+description: |
+  Nearly everything — 18 VMs: every classical-stack VM in the lab.
+  Backstop profile, equivalent to the prior `up.sh --all` behavior.
+  Excludes the parallel ML-DSA AD CS pair (rootca-pqc + issueca-pqc),
+  which only the pqc-* profiles build. Heavy resource footprint
+  (~77 GB RAM total at VM_DEFAULTS, no per-VM overrides) — requires a
+  96 GB+ host. Only build this if you need every surface at once.
+
+components:
+  - dc1
+  - dc2
+  - rootca
+  - issueca
+  - ca1
+  - web1
+  - manage1
+  - client1
+  - tomcat1
+  - wsus1
+  - ejbca1
+  - stepca1
+  - hydra1
+  - observe1
+  - acme1
+  - scanner1
+  - apps1
+  - sqlhost1

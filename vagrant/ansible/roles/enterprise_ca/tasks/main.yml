@@ -1,0 +1,201 @@
+---
+# Enterprise CA role: ADCS installation and configuration
+#
+# Identity model: CA install runs in an explicit domain-admin scheduled task
+# (needs a user TGT to write the CA into AD). See roles/README.md
+# "Windows identity model" for why and the canonical pattern.
+
+- name: Install ADCS-Cert-Authority feature
+  ansible.windows.win_feature:
+    name: ADCS-Cert-Authority
+    include_management_tools: true
+    state: present
+
+- name: Deploy CAPolicy.inf
+  ansible.windows.win_template:
+    src: CAPolicy.inf.j2
+    dest: C:\Windows\CAPolicy.inf
+
+- name: Check if CA service is already running
+  ansible.windows.win_service_info:
+    name: CertSvc
+  register: certsvc_info
+  failed_when: false
+  changed_when: false
+
+- name: Install Enterprise CA via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      # Build the install command
+      $installCmd = "Install-AdcsCertificationAuthority" +
+          " -CAType {{ ca_type }}" +
+          " -CACommonName '{{ ca_common_name }}'" +
+          " -KeyLength {{ ca_key_length }}" +
+          " -HashAlgorithmName {{ ca_hash_algorithm }}" +
+          " -ValidityPeriod {{ ca_validity_period }}" +
+          " -ValidityPeriodUnits {{ ca_validity_period_units }}" +
+          " -CryptoProviderName '{{ ca_crypto_provider | default('RSA#Microsoft Software Key Storage Provider') }}'" +
+          " -OverwriteExistingCAinDS" +
+          " -OverwriteExistingKey" +
+          " -Force" +
+          " -ErrorAction Stop"
+
+      $taskUser = "{{ lab_netbios }}\Administrator"
+
+      # Write install script to a temp file
+      $scriptFile = "C:\tmp\install-ca.ps1"
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+
+      $wrapperScript = @"
+      {{ psf_init }}
+      try {
+          Write-PSFMessage -Level Host -Message 'Starting Enterprise CA installation' -Tag 'enterprise-ca'
+          $installCmd | Out-File C:\tmp\ca-install.log
+          Write-PSFMessage -Level Host -Message 'Enterprise CA installation succeeded' -Tag 'enterprise-ca'
+          'SUCCESS' | Out-File C:\tmp\ca-install-status.txt
+      } catch {
+          Write-PSFMessage -Level Error -Message 'Enterprise CA installation failed' -ErrorRecord `$_ -Tag 'enterprise-ca'
+          `$_.Exception.Message | Out-File C:\tmp\ca-install.log
+          'FAILED' | Out-File C:\tmp\ca-install-status.txt
+      }
+      Wait-PSFMessage
+      "@
+      $wrapperScript | Out-File -FilePath $scriptFile -Encoding ASCII -Force
+
+      Remove-Item C:\tmp\ca-install-status.txt -ErrorAction SilentlyContinue
+
+      schtasks /create /tn "InstallEnterpriseCA" `
+          /tr "powershell.exe -ExecutionPolicy Bypass -File $scriptFile" `
+          /sc once /st 00:00 /ru $taskUser /rp '{{ admin_password }}' /rl highest /f | Out-Null
+
+      schtasks /run /tn "InstallEnterpriseCA" | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "schtasks /run InstallEnterpriseCA failed (exit $LASTEXITCODE)" }
+
+      # Wait for task to complete (up to 10 min)
+      $maxWait = 600
+      $waited = 0
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 5
+          $waited += 5
+          $taskInfo = schtasks /query /tn "InstallEnterpriseCA" /fo csv /nh 2>$null
+          if ($taskInfo -match "Ready") { break }
+      }
+
+      schtasks /delete /tn "InstallEnterpriseCA" /f 2>$null
+
+      # Check result
+      $status = Get-Content C:\tmp\ca-install-status.txt -ErrorAction SilentlyContinue
+      $log = Get-Content C:\tmp\ca-install.log -ErrorAction SilentlyContinue
+      if ($log) { $Ansible.Result = $log -join "`n" }
+
+      # Clean up temp files (may contain credentials via schtasks /rp)
+      Remove-Item C:\tmp\install-ca.ps1 -Force -ErrorAction SilentlyContinue
+      Remove-Item C:\tmp\ca-install.log -Force -ErrorAction SilentlyContinue
+      Remove-Item C:\tmp\ca-install-status.txt -Force -ErrorAction SilentlyContinue
+
+      if ($status -ne "SUCCESS") {
+          throw "Enterprise CA installation failed. Log: $($log -join '; ')"
+      }
+  # `no_log: true` is deliberately NOT set here: the install payload uses a
+  # scheduled task with the credentials passed via `/rp` (not via Ansible
+  # variables interpolated into the script), so the script body itself doesn't
+  # contain secrets. Hiding output costs hours of guessing on cold-build failures.
+  when: certsvc_info.services is not defined or certsvc_info.services | length == 0 or certsvc_info.services[0].state != 'started'
+
+- name: Wait for CA service to be ready
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $svc = Get-Service CertSvc -ErrorAction SilentlyContinue
+      if (-not $svc -or $svc.Status -ne 'Running') {
+          Write-PSFMessage -Level Warning -Message 'CertSvc is not running yet' -Tag 'enterprise-ca'
+          Wait-PSFMessage
+          throw "CertSvc is not running"
+      }
+      Write-PSFMessage -Level Host -Message 'CertSvc is running' -Tag 'enterprise-ca'
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  retries: 12
+  delay: 10
+  register: ca_svc_ready
+  until: ca_svc_ready is not failed
+
+- name: Configure CDP and AIA
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Configuring CDP and AIA extensions' -Tag 'enterprise-ca'
+
+      # Remove default CDP entries
+      Get-CACRLDistributionPoint | ForEach-Object {
+          Remove-CACRLDistributionPoint -Uri $_.Uri -Force
+      }
+
+      # Add local CDP (required for certsrv.msc)
+      Add-CACRLDistributionPoint -Uri "C:\Windows\System32\CertSrv\CertEnroll\%3%8%9.crl" -PublishToServer -PublishDeltaToServer -Force
+
+      # Add HTTP CDP
+      {% if crl_url is defined %}
+      Write-PSFMessage -Level Host -Message 'Adding HTTP CDP: {{ crl_url }}' -Tag 'enterprise-ca'
+      $cdpUri = "{{ crl_url }}/%3%8%9.crl"
+      Add-CACRLDistributionPoint -Uri $cdpUri -AddToCertificateCDP -AddToFreshestCrl -Force
+      {% endif %}
+
+      # Remove default AIA entries
+      Get-CAAuthorityInformationAccess | ForEach-Object {
+          Remove-CAAuthorityInformationAccess -Uri $_.Uri -Force
+      }
+
+      # Add HTTP AIA
+      {% if aia_url is defined %}
+      Write-PSFMessage -Level Host -Message 'Adding HTTP AIA: {{ aia_url }}' -Tag 'enterprise-ca'
+      $aiaUri = "{{ aia_url }}/%3%4.crt"
+      Add-CAAuthorityInformationAccess -Uri $aiaUri -AddToCertificateAia -Force
+      {% endif %}
+
+      Write-PSFMessage -Level Host -Message 'CDP and AIA configured' -Tag 'enterprise-ca'
+      Wait-PSFMessage
+
+- name: Configure CA registry settings
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Configuring CA registry (audit, validity)' -Tag 'enterprise-ca'
+      certutil.exe -setreg CA\AuditFilter 127
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\AuditFilter failed (exit $LASTEXITCODE)" }
+      certutil.exe -setreg CA\ValidityPeriodUnits 2
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\ValidityPeriodUnits failed (exit $LASTEXITCODE)" }
+      certutil.exe -setreg CA\ValidityPeriod "Years"
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\ValidityPeriod failed (exit $LASTEXITCODE)" }
+      Write-PSFMessage -Level Host -Message 'CA registry settings configured' -Tag 'enterprise-ca'
+      Wait-PSFMessage
+
+- name: Restart CA service and publish CRL
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Restarting CertSvc and publishing CRL' -Tag 'enterprise-ca'
+      Restart-Service CertSvc -ErrorAction Stop
+      # Wait for CertSvc RPC endpoint to be ready after restart
+      $maxWait = 60; $waited = 0
+      while ($waited -lt $maxWait) {
+          $svc = Get-Service CertSvc
+          if ($svc.Status -eq 'Running') {
+              $crlTest = certutil.exe -crl 2>&1
+              if ($LASTEXITCODE -eq 0) { break }
+          }
+          Start-Sleep -Seconds 5; $waited += 5
+      }
+      if ($LASTEXITCODE -ne 0) { throw "certutil -crl failed after ${waited}s (exit $LASTEXITCODE)" }
+      Write-PSFMessage -Level Host -Message "CRL published (after ${waited}s)" -Tag 'enterprise-ca'
+      Wait-PSFMessage
+
+- name: Publish CA artifacts (cert + CRL) to WEB1
+  ansible.builtin.include_role:
+    name: publish_ca_artifacts
+  vars:
+    publish_tag: enterprise-ca
+
+- name: Schedule daily CRL republish (online one-tier CA)
+  ansible.builtin.include_role:
+    name: ca_crl_republish

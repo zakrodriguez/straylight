@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: hydra-postgres
+    environment:
+      POSTGRES_USER: hydra
+      POSTGRES_PASSWORD: {{ hydra_db_password }}
+      POSTGRES_DB: hydra
+    volumes:
+      - /opt/hydra/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hydra"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  hydra-migrate:
+    image: oryd/hydra:{{ hydra_image_tag }}
+    container_name: hydra-migrate
+    command: migrate sql -e --yes
+    environment:
+      DSN: postgres://hydra:{{ hydra_db_password }}@postgres:5432/hydra?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  hydra:
+    image: oryd/hydra:{{ hydra_image_tag }}
+    container_name: hydra
+    command: serve all --dev
+    ports:
+      - "4444:4444"
+      - "127.0.0.1:4445:4445"
+    environment:
+      DSN: postgres://hydra:{{ hydra_db_password }}@postgres:5432/hydra?sslmode=disable
+      URLS_SELF_ISSUER: http://{{ hydra_ip }}:4444
+      URLS_LOGIN: http://{{ hydra_ip }}:3000/login
+      URLS_CONSENT: http://{{ hydra_ip }}:3000/consent
+      SECRETS_SYSTEM: {{ hydra_system_secret }}
+    depends_on:
+      hydra-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:4444/health/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  consent:
+    build: /opt/hydra/consent-app
+    container_name: hydra-consent
+    ports:
+      - "3000:3000"
+    environment:
+      HYDRA_ADMIN_URL: http://hydra:4445
+      LDAP_URL: ldaps://{{ dc_ip }}:636
+      LDAP_DOMAIN: {{ lab_netbios }}
+      LDAP_BASE_DN: {{ domain_dn }}
+    depends_on:
+      hydra:
+        condition: service_healthy
+    restart: unless-stopped

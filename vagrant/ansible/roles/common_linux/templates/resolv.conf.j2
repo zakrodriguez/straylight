@@ -1,0 +1,6 @@
+# Managed by Ansible — lab DNS configuration
+{% if 'dc1' in groups['all'] %}
+nameserver {{ dc_ip }}
+{% endif %}
+nameserver 8.8.8.8
+search {{ lab_domain }}

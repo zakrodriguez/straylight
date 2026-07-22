@@ -1,0 +1,38 @@
+---
+# cms_lab_windows entry point. Stages C:\cms-lab\ on manage1.
+# Companion to cms_lab_linux on scanner1; same exercise set, PowerShell + .NET tooling.
+
+- name: Skip cms_lab_windows when classical or PQC issuing CA absent from inventory
+  ansible.builtin.meta: end_role
+  when: >
+    'issueca' not in groups['all'] or
+    'issueca-pqc' not in groups['all']
+
+- name: Load shared CMS-lab CA enrollment targets (single source of truth)
+  ansible.builtin.include_vars: "{{ playbook_dir }}/../vars/cms_lab_ca.yml"
+
+- name: Create cms-lab directory tree on manage1
+  ansible.windows.win_file:
+    path: "{{ cms_lab_win_root }}\\{{ item }}"
+    state: directory
+  loop:
+    - certs
+    - inputs
+    - scripts
+    - outputs
+
+- name: Generate + enroll lab certs
+  ansible.builtin.import_tasks: certs.yml
+
+- name: Stage sample inputs (byte-identical to scanner1 side)
+  ansible.windows.win_copy:
+    src: "inputs/{{ item }}"
+    dest: "{{ cms_lab_win_root }}\\inputs\\{{ item }}"
+  loop:
+    - hello.txt
+    - recipients.list
+
+- name: Stage helper scripts (PowerShell)
+  ansible.windows.win_copy:
+    src: "scripts/"
+    dest: "{{ cms_lab_win_root }}\\scripts\\"

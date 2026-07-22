@@ -1,0 +1,4 @@
+# CMS EnvelopedData recipient list — used in Exercises 5, 6, 10.
+# Format: <nickname> <cert-path-relative-to-cms_lab_root>
+recipient-rsa     certs/self-rsa.crt
+recipient-ecdsa   certs/self-ecdsa.crt

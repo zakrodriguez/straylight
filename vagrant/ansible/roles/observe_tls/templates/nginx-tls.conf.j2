@@ -1,0 +1,92 @@
+# Managed by Ansible (observe_tls role). Do not edit by hand.
+
+# HTTP-01 webroot (port 80) — used by step-ca during ACME validation.
+# Also redirects everything else to HTTPS once the cert is in place.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name observe1.yourlab.local _;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+
+{% if observe_tls_cert_present | default(false) %}
+    location / {
+        return 301 https://$host$request_uri;
+    }
+{% else %}
+    location / {
+        # Cert not yet issued — return a friendly placeholder
+        return 200 "observe_tls: cert pending\n";
+        default_type text/plain;
+    }
+{% endif %}
+}
+
+{% if observe_tls_cert_present | default(false) %}
+# TLS-terminating reverse proxy (port 443) — fronts OpenSearch Dashboards.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name observe1.yourlab.local;
+
+    ssl_certificate     /etc/nginx/ssl/observe1.crt;
+    ssl_certificate_key /etc/nginx/ssl/observe1.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # OSD is a single-page app with WebSocket activity for live tail logs
+    # — disable proxy_buffering for clean SSE/WS, set HTTP/1.1 for upgrade.
+    location / {
+        proxy_pass http://127.0.0.1:5601;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_buffering    off;
+        proxy_read_timeout 300s;
+    }
+}
+
+# Dedicated Beats data port — TLS + HTTP Basic Auth front for the docker
+# beats-proxy on 127.0.0.1:9200 (which is itself the Beats-8.x compat shim
+# for opensearch:9200 inside the docker network). Auth credentials live in
+# /etc/nginx/.beats-htpasswd (bcrypt hash, managed by observe_tls/tasks/nginx.yml).
+# Reuses the same ACME-issued wildcard observe1.yourlab.local cert as :443.
+server {
+    listen {{ beats_tls_port | default(9244) }} ssl;
+    listen [::]:{{ beats_tls_port | default(9244) }} ssl;
+    server_name observe1.yourlab.local;
+
+    ssl_certificate     /etc/nginx/ssl/observe1.crt;
+    ssl_certificate_key /etc/nginx/ssl/observe1.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    auth_basic           "Beats ingest";
+    auth_basic_user_file /etc/nginx/.beats-htpasswd;
+
+    # Beats agents POST bulk indexing requests that can exceed nginx's default
+    # 1m client_max_body_size — match the docker beats-proxy's 50m ceiling.
+    client_max_body_size 50m;
+
+    location / {
+        proxy_pass http://127.0.0.1:9200;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        # Beats won't ever connect with an Authorization header itself — strip
+        # any inbound one so our auth_basic line is the sole source of truth.
+        proxy_set_header   Authorization     $http_authorization;
+        proxy_buffering         off;
+        proxy_request_buffering off;
+        proxy_read_timeout      300s;
+    }
+}
+{% endif %}

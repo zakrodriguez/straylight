@@ -1,0 +1,39 @@
+# Vagrantfile shipped inside the PUBLISH-MODE .box (PACKER_BUILD_FOR_PUBLISH=1).
+#
+# The image was built with sysprep /generalize /oobe — on the consumer's first
+# `vagrant up` the box runs the Windows OOBE setup flow, which forces the
+# consumer to set their own Administrator password before Windows is usable.
+# The single-use password baked into publish-unattend.xml lives in the Packer
+# build log only and is NOT a valid login after OOBE completes.
+#
+# Consumer responsibility: complete OOBE interactively (or supply your own
+# Autounattend.xml via an attached floppy/ISO), set the local Administrator
+# password, then uncomment + populate the winrm.password line below so Vagrant
+# can talk to the box.
+Vagrant.configure("2") do |config|
+  config.vm.communicator = "winrm"
+  config.vm.boot_timeout = 600
+  config.vm.graceful_halt_timeout = 600
+
+  config.winrm.username = "vagrant"
+  # winrm.password intentionally NOT set — this box was sysprep-generalized
+  # for publishing. Set this after completing first-boot OOBE setup.
+  # config.winrm.password = "<set after first-boot OOBE>"
+  config.winrm.transport = :plaintext
+  config.winrm.basic_auth_only = true
+  config.winrm.timeout = 1800
+  config.winrm.retry_limit = 30
+  config.winrm.retry_delay = 10
+
+  config.vm.guest = :windows
+
+  config.vm.provider :virtualbox do |vb|
+    vb.gui = true   # consumer needs the console to walk through OOBE on first boot
+    vb.customize ["modifyvm", :id, "--memory", "4096"]
+    vb.customize ["modifyvm", :id, "--cpus", "2"]
+    vb.customize ["modifyvm", :id, "--vram", "32"]
+    vb.customize ["modifyvm", :id, "--clipboard-mode", "bidirectional"]
+    vb.customize ["modifyvm", :id, "--draganddrop", "bidirectional"]
+    vb.customize ["modifyvm", :id, "--audio-driver", "none"]
+  end
+end

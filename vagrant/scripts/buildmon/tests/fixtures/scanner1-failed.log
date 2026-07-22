@@ -1,0 +1,5 @@
+TASK [cms_lab_linux : Submit CSR] **********************************************
+fatal: [scanner1]: FAILED! => {"msg": "boom"}
+
+PLAY RECAP *********************************************************************
+scanner1                   : ok=40   changed=12   unreachable=0    failed=1

@@ -1,0 +1,15 @@
+---
+# Static hostname → IP map used as a fallback when no dc1 in the active
+# profile (no AD DNS). Consumed by:
+#   - common_linux/tasks/main.yml — writes /etc/hosts entries on every Linux VM
+#   - stepca/templates/docker-compose.yml.j2 — extra_hosts in the step-ca
+#     container so it can resolve ACME challenge targets without AD DNS
+#
+# The REAL value is rendered into the generated per-profile
+# inventory/<profile>/group_vars/all.yml by lib/render_inventory.rb, derived
+# from topology.yml (the VM source of truth) plus LAB_STATIC_HOST_ALIASES for
+# non-VM walkthrough vhosts (step./sh./cb./alpn.acme1). That generated map is a
+# superset of the hand-kept literal and wins over this default. This empty
+# default is only a safety net for inventories that don't surface the generated
+# group_vars (the consuming tasks/templates skip cleanly on an empty list).
+lab_static_hosts: []

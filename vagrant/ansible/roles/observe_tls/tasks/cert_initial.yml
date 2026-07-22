@@ -1,0 +1,108 @@
+---
+# Initial cert issuance + nginx TLS finalization.
+# Idempotent: skipped entirely if /etc/nginx/ssl/observe1.crt already exists.
+
+- name: Compute step-ca root fingerprint from trust-store cert
+  ansible.builtin.command:
+    cmd: >
+      openssl x509
+      -in /usr/local/share/ca-certificates/stepca-root.crt
+      -noout -fingerprint -sha256
+  register: stepca_root_fp_raw
+  changed_when: false
+
+- name: Extract bare hex fingerprint
+  ansible.builtin.set_fact:
+    stepca_root_fingerprint: >-
+      {{ stepca_root_fp_raw.stdout
+         | regex_replace('^.*Fingerprint=', '')
+         | regex_replace(':', '')
+         | lower }}
+
+- name: Bootstrap step CLI for root (needed for unattended renewal under systemd)
+  ansible.builtin.command:
+    cmd: >
+      step ca bootstrap
+      --ca-url https://{{ stepca_ip }}:9000
+      --fingerprint {{ stepca_root_fingerprint }}
+      --force
+  args:
+    creates: /root/.step/config/defaults.json
+
+- name: Wait for observe1.yourlab.local to resolve (DNS propagation)
+  ansible.builtin.command:
+    cmd: getent hosts observe1.yourlab.local
+  register: observe1_dns_check
+  retries: 15
+  delay: 4
+  until: observe1_dns_check.rc == 0
+  changed_when: false
+
+- name: Stat existing cert (drives re-issue decision)
+  ansible.builtin.stat:
+    path: /etc/nginx/ssl/observe1.crt
+  register: observe_tls_existing_cert
+
+# `creates:` alone is wrong here: a stale/expired cert on disk would make
+# the issue task skip, leaving nginx serving an expired leaf. Check the
+# cert's validity window instead and re-issue if missing or near-expiry.
+- name: Check existing cert validity (>8h remaining)
+  ansible.builtin.command:
+    cmd: openssl x509 -checkend 28800 -noout -in /etc/nginx/ssl/observe1.crt
+  register: observe_tls_cert_valid
+  failed_when: false
+  changed_when: false
+  when: observe_tls_existing_cert.stat.exists
+
+- name: Remove stale cert/key before re-issue
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/nginx/ssl/observe1.crt
+    - /etc/nginx/ssl/observe1.key
+  when:
+    - observe_tls_existing_cert.stat.exists
+    - observe_tls_cert_valid.rc != 0
+
+- name: Issue cert via ACME HTTP-01 (when missing or expired-soon)
+  ansible.builtin.command:
+    cmd: >
+      step ca certificate
+      --provisioner acme
+      --webroot /var/www/html
+      observe1.yourlab.local
+      /etc/nginx/ssl/observe1.crt
+      /etc/nginx/ssl/observe1.key
+  when: >
+    not observe_tls_existing_cert.stat.exists
+    or observe_tls_cert_valid.rc != 0
+
+- name: Set ownership/mode on the cert and key
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/nginx/ssl/observe1.crt, mode: "0644" }
+    - { path: /etc/nginx/ssl/observe1.key, mode: "0600" }
+
+- name: Re-stat cert (now exists; drives template conditional)
+  ansible.builtin.stat:
+    path: /etc/nginx/ssl/observe1.crt
+  register: observe_tls_cert_stat_post
+
+- name: Re-deploy nginx config with TLS server block enabled
+  ansible.builtin.template:
+    src: nginx-tls.conf.j2
+    dest: /etc/nginx/sites-available/observe-tls
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    observe_tls_cert_present: "{{ observe_tls_cert_stat_post.stat.exists }}"
+  notify: reload observe_tls nginx
+
+- name: Reload nginx now to bring up port 443
+  ansible.builtin.meta: flush_handlers

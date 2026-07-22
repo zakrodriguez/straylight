@@ -1,0 +1,3 @@
+name="straylight-core-dc1"
+VMState="running"
+VMStateChangeTime="2026-07-01T20:30:00.000000000"

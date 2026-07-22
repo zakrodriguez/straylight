@@ -1,0 +1,148 @@
+# vagrant/topology.yml
+#
+# AUTHORITATIVE VM table. Every consumer (Ruby/Vagrantfile, bash/scripts,
+# Ansible/inventory) derives VM identity + dependencies from this file.
+# Do NOT restate VM facts anywhere else; every consumer derives them here.
+#
+# Field contract:
+#   octet         (req)  last IP octet; full IP = "<network>.<octet>". unique.
+#   os            (req)  windows|linux. drives transport + vm_windows/vm_linux.
+#   box           (req for windows; linux defaults to ubuntu) logical box id.
+#   cpus / memory (opt)  per-VM resource override; else class default.
+#   groups        (req)  Ansible inventory groups this VM joins.
+#   depends_on    (req, may be [])  VMs that must be BUILT first (boot order).
+#   requires_ready(opt)  capability tags that must be satisfied at runtime
+#                        before this VM's play proceeds (readiness gate).
+#   provides      (opt)  capability tags this VM satisfies once ready.
+network: "192.168.56"   # Base/start prefix. Each lab is allocated a host-only
+                        # /24 dynamically from here UPWARD by lib/lab_network.rb
+                        # (lowest free 3rd octet, skipping subnets of running
+                        # labs). Not pinned per profile. VBox default /21 covers
+                        # .56-.63; beyond that widen /etc/vbox/networks.conf.
+
+vms:
+  dc1:
+    octet: 10
+    os: windows
+    box: win_server_core
+    groups: [windows, domain_controllers]
+    depends_on: []
+    provides: [domain, dns]
+  dc2:
+    octet: 11
+    os: windows
+    box: win_server_core
+    groups: [windows, domain_controllers]
+    depends_on: [dc1]
+    provides: [domain]
+  rootca:
+    octet: 20
+    os: windows
+    box: win_server_core
+    groups: [windows, ca, standalone_ca, adcs]
+    depends_on: [dc1]
+    provides: [root_ca_cert]
+  issueca:
+    octet: 21
+    os: windows
+    box: win_server_core
+    groups: [windows, ca, enterprise_ca, adcs]
+    depends_on: [rootca, web1]
+    requires_ready: [root_ca_cert, cdp_aia]
+    provides: [issuing_ca_cert]
+  ca1:
+    octet: 22
+    os: windows
+    box: win_server_core
+    groups: [windows, ca, enterprise_ca, adcs]
+    depends_on: [dc1]
+    provides: [issuing_ca_cert]
+  rootca-pqc:
+    octet: 25
+    os: windows
+    box: win_server_core
+    groups: [windows, ca, standalone_ca, adcs]
+    depends_on: [dc1]
+    provides: [root_ca_cert_pqc]
+  issueca-pqc:
+    octet: 26
+    os: windows
+    box: win_server_core
+    groups: [windows, ca, enterprise_ca, adcs]
+    depends_on: [rootca-pqc, web1]
+    requires_ready: [root_ca_cert_pqc, cdp_aia]
+    provides: [issuing_ca_cert_pqc]
+  web1:
+    octet: 30
+    os: windows
+    box: win_server_core
+    groups: [windows, iis]
+    depends_on: [dc1]
+    provides: [cdp_aia]
+  manage1:
+    octet: 101
+    os: windows
+    box: win_server_core
+    groups: [windows]
+    depends_on: [dc1]
+  client1:
+    octet: 100
+    os: windows
+    box: win_client
+    groups: [windows]
+    depends_on: [dc1]
+  tomcat1:
+    octet: 60
+    os: windows
+    box: win_server_core
+    groups: [windows]
+    depends_on: [dc1]
+  wsus1:
+    octet: 40
+    os: windows
+    box: win_server_core
+    groups: [windows]
+    depends_on: [dc1]
+  ejbca1:
+    octet: 50
+    os: linux
+    groups: [linux, ejbca, linux_pqc_targets, pqc_pure_leaf_endpoints]
+    depends_on: []
+  stepca1:
+    octet: 51
+    os: linux
+    groups: [linux, stepca, linux_pqc_targets, pqc_pure_leaf_endpoints]
+    depends_on: []
+    provides: [acme]
+  hydra1:
+    octet: 52
+    os: linux
+    groups: [linux, linux_pqc_targets, pqc_pure_leaf_endpoints]
+    depends_on: [stepca1]
+  observe1:
+    octet: 53
+    os: linux
+    groups: [linux, linux_pqc_targets, pqc_pure_leaf_endpoints, pqc_mtls_targets]
+    depends_on: [dc1, stepca1]
+    requires_ready: [dns, acme]
+  scanner1:
+    octet: 54
+    os: linux
+    groups: [linux, pqc_mtls_clients]
+    depends_on: []
+  apps1:
+    octet: 55
+    os: linux
+    groups: [linux]
+    depends_on: []
+  acme1:
+    octet: 70
+    os: linux
+    groups: [linux]
+    depends_on: [stepca1]
+  sqlhost1:
+    octet: 80
+    os: windows
+    box: win_server_core
+    groups: [windows]
+    depends_on: [dc1]

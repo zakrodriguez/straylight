@@ -1,0 +1,74 @@
+---
+services:
+
+  opensearch:
+    image: opensearchproject/opensearch:{{ opensearch_tag }}
+    container_name: opensearch
+    environment:
+      - discovery.type=single-node
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=admin
+      - compatibility.override_main_response_version=true
+      - OPENSEARCH_JAVA_OPTS=-Xms4g -Xmx4g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - /opt/opensearch/data/opensearch:/usr/share/opensearch/data
+    expose:
+      - "9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  # Nginx reverse proxy — intercepts /_license and /_xpack for Beats 8.x
+  beats-proxy:
+    image: nginx:alpine
+    container_name: beats-proxy
+    volumes:
+      - /opt/opensearch/nginx-beats-compat.conf:/etc/nginx/conf.d/default.conf:ro
+    # Bind only on loopback: external Beats traffic now flows through the
+    # observe_tls nginx data port (:9244, TLS + HTTP Basic Auth) which proxies
+    # to 127.0.0.1:9200 → docker beats-proxy on 9201 → opensearch:9200.
+    # Closes plaintext-on-LAN OpenSearch ingest. CBOM tooling on the host
+    # now also goes through :9244 (see scripts/cbom-pipeline.sh).
+    ports:
+      - "127.0.0.1:9200:9201"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9201/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:{{ opensearch_tag }}
+    container_name: opensearch-dashboards
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    # Bind only on loopback: external access flows through the observe_tls
+    # nginx (host-side, listening on :443) which proxies to 127.0.0.1:5601.
+    # Prevents plaintext Dashboards from being reachable on the LAN.
+    ports:
+      - "127.0.0.1:5601:5601"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601/api/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped

@@ -1,0 +1,16 @@
+---
+# openssl_pqc_demo role defaults.
+#
+# CERT CONTRACT (shared convention with nginx_pqc_demo — see roles/README.md
+# "PQC demo cert contract"):
+#   The caller MUST supply the leaf cert + key via *_cert_path / *_key_path.
+#   These are required and have NO defaults (the role asserts them).
+#
+# openssl_pqc_demo ADDITIONALLY needs the issuing + root CA PEMs to build the
+# verification chain for `s_server -CAfile` and the loopback handshake probe.
+# By contract these live alongside the leaf cert (same directory) under the
+# fixed EJBCA-PQC names below; override the two *_ca_path vars if they live
+# elsewhere. The role asserts they exist rather than failing opaquely mid-run.
+openssl_pqc_issuing_ca_path: "{{ openssl_pqc_cert_path | dirname }}/ejbca-pqc-issuing-ca.pem"
+openssl_pqc_root_ca_path: "{{ openssl_pqc_cert_path | dirname }}/ejbca-pqc-root-ca.pem"
+openssl_pqc_chain_path: "{{ openssl_pqc_cert_path | dirname }}/ejbca-pqc-chain.pem"

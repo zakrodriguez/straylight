@@ -1,0 +1,49 @@
+# ansible-lint config for straylight
+# https://ansible.readthedocs.io/projects/lint/configuration/
+
+# Production profile: catches real correctness + idempotency issues.
+# Keeping warnings non-fatal per project policy (errors-only blocking).
+profile: production
+
+exclude_paths:
+  - vagrant/.vagrant/
+  - vagrant/.vagrant-*/
+  - vagrant/logs/
+  - vagrant/cbom-output/
+  - vagrant/cbom-export/
+  - vagrant/cbom-toolkit/
+  - vagrant/resources/
+  - .planning/
+  - packer/
+
+# Rules to skip globally — pre-existing patterns that aren't worth churning
+# over for v1.0. Each represents stylistic consistency rather than correctness;
+# we may incrementally tighten in follow-up releases.
+skip_list:
+  - yaml[line-length]            # task names + descriptions often exceed
+  - yaml[document-start]         # many task files lack `---`; consistency follow-up
+  - yaml[truthy]                 # Ansible idioms use yes/no extensively
+  - yaml[colons]                 # pre-existing `key:  val` alignment spacing (ansible-lint 26.6 newly enforces)
+  - yaml[commas]                 # pre-existing extra space around commas (ansible-lint 26.6 newly enforces)
+  - name[casing]                 # legacy roles mix sentence + Title Case
+  - name[play]                   # several playbooks have unnamed top-level plays
+  - name[missing]                # many debug/inline tasks lack a name
+  - name[template]               # some task names put a `{{ var }}` mid-string, not at the end
+  - var-naming[no-role-prefix]   # vars predate role-prefix convention; rename in follow-up
+  - schema[meta]                 # role meta files lack galaxy_info; not publishing roles standalone
+  - fqcn[action-core]            # many tasks use bare module names (debug, set_fact, etc.)
+  - fqcn[canonical]              # same family, different rule name
+  - jinja[spacing]               # inline expressions sometimes lack spaces around vars
+  - no-free-form                 # legacy shell/command tasks use free-form style
+
+# Treat these as warnings, not errors, even on `production` profile.
+warn_list:
+  - command-instead-of-shell
+  - command-instead-of-module   # certutil/openssl/docker/step have no ansible module equivalent
+  - risky-shell-pipe
+  - no-changed-when
+  - no-handler
+  - ignore-errors               # used deliberately on idempotency/probe checks; visible but non-blocking
+
+# Use the bundled Ansible Galaxy collections.
+use_default_rules: true

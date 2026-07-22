@@ -1,0 +1,322 @@
+---
+# Common role: static IP configuration and WinRM hardening
+
+- name: Detect Windows installation type
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Result = (Get-ComputerInfo -Property WindowsInstallationType).WindowsInstallationType
+  register: _common_install_type
+  changed_when: false
+
+- name: Set is_server_core host fact
+  ansible.builtin.set_fact:
+    is_server_core: "{{ (_common_install_type.result | default('')) == 'Server Core' }}"
+
+- name: Set system timezone
+  ansible.windows.win_timezone:
+    timezone: "{{ lab_timezone }}"
+
+- name: Configure network (static IP, DNS, disable NAT DNS registration)
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $targetPrefix = '{{ ip_address }}'.Split('.')[0..2] -join '.'
+      $changed = $false
+
+      # Enumerate all adapters once
+      $allAdapters = Get-NetIPConfiguration | Where-Object { $_.NetAdapter.Status -eq 'Up' }
+
+      # Prefer adapter already on the target /24
+      $adapter = $allAdapters |
+          Where-Object { $_.IPv4Address.IPAddress -like "$targetPrefix.*" } |
+          Select-Object -First 1
+
+      # Fallback: adapter without a default gateway (host-only)
+      if (-not $adapter) {
+          $adapter = $allAdapters |
+              Where-Object { -not $_.IPv4DefaultGateway } |
+              Select-Object -First 1
+      }
+
+      if (-not $adapter) {
+          Write-PSFMessage -Level Error -Message 'No suitable network adapter found for static IP' -Tag 'common'
+          Wait-PSFMessage
+          throw "No suitable network adapter found for static IP configuration"
+      }
+
+      $adapterIndex = $adapter.InterfaceIndex
+
+      # 1. Set static IP
+      $existing = Get-NetIPAddress -InterfaceIndex $adapterIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+          Where-Object { $_.IPAddress -eq '{{ ip_address }}' }
+
+      if (-not $existing) {
+          Write-PSFMessage -Level Host -Message 'Setting static IP {{ ip_address }}' -Tag 'common'
+          Get-NetIPAddress -InterfaceIndex $adapterIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+              Where-Object { $_.IPAddress -ne '{{ ip_address }}' } |
+              ForEach-Object { Remove-NetIPAddress -InterfaceIndex $adapterIndex -IPAddress $_.IPAddress -Confirm:$false -ErrorAction SilentlyContinue }
+          Set-NetIPInterface -InterfaceIndex $adapterIndex -Dhcp Disabled -ErrorAction SilentlyContinue
+          New-NetIPAddress -InterfaceIndex $adapterIndex -IPAddress '{{ ip_address }}' -PrefixLength 24 -ErrorAction Stop
+          $changed = $true
+      } else {
+          Write-PSFMessage -Level Host -Message 'Static IP {{ ip_address }} already configured' -Tag 'common'
+      }
+
+      # 2. Configure DNS
+      {% if dns_servers is defined %}
+      $dnsServers = @({% for s in dns_servers %}'{{ s }}'{% if not loop.last %}, {% endif %}{% endfor %})
+      $currentDns = (Get-DnsClientServerAddress -InterfaceIndex $adapterIndex -AddressFamily IPv4).ServerAddresses
+      $dnsMatch = ($currentDns -and $currentDns.Count -eq $dnsServers.Count)
+      if ($dnsMatch) {
+          for ($i = 0; $i -lt $dnsServers.Count; $i++) {
+              if ($currentDns[$i] -ne $dnsServers[$i]) { $dnsMatch = $false; break }
+          }
+      }
+      if (-not $dnsMatch) {
+          Write-PSFMessage -Level Host -Message "Setting DNS servers on adapter $($adapter.InterfaceAlias) (Index $adapterIndex): $($dnsServers -join ', ')" -Tag 'common'
+          Set-DnsClientServerAddress -InterfaceIndex $adapterIndex -ServerAddresses $dnsServers -ErrorAction Stop
+
+          # Verify DNS was actually set (Set-DnsClientServerAddress can fail silently on some adapters)
+          $verify = (Get-DnsClientServerAddress -InterfaceIndex $adapterIndex -AddressFamily IPv4).ServerAddresses
+          if (-not $verify -or $verify.Count -eq 0) {
+              Write-PSFMessage -Level Warning -Message "DNS verification failed — retrying with netsh" -Tag 'common'
+              $primary = $dnsServers[0]
+              netsh interface ipv4 set dnsservers name="$($adapter.InterfaceAlias)" static $primary primary validate=no
+              for ($i = 1; $i -lt $dnsServers.Count; $i++) {
+                  netsh interface ipv4 add dnsservers name="$($adapter.InterfaceAlias)" $($dnsServers[$i]) index=$($i+1) validate=no
+              }
+              $verify2 = (Get-DnsClientServerAddress -InterfaceIndex $adapterIndex -AddressFamily IPv4).ServerAddresses
+              if (-not $verify2 -or $verify2.Count -eq 0) {
+                  Wait-PSFMessage
+                  throw "Failed to set DNS servers on $($adapter.InterfaceAlias) after retry"
+              }
+              Write-PSFMessage -Level Host -Message "DNS set via netsh fallback: $($verify2 -join ', ')" -Tag 'common'
+          } else {
+              Write-PSFMessage -Level Host -Message "DNS verified: $($verify -join ', ')" -Tag 'common'
+          }
+          $changed = $true
+      } else {
+          Write-PSFMessage -Level Host -Message "DNS already correct: $($currentDns -join ', ')" -Tag 'common'
+      }
+      {% endif %}
+
+      # 3. Disable DNS registration on NAT adapters
+      $natAdapters = $allAdapters |
+          Where-Object { $_.IPv4DefaultGateway } |
+          Where-Object { -not ($_.IPv4Address.IPAddress -like "$targetPrefix.*") }
+      foreach ($nat in $natAdapters) {
+          $dns = Get-DnsClient -InterfaceIndex $nat.InterfaceIndex
+          if ($dns.RegisterThisConnectionsAddress) {
+              Write-PSFMessage -Level Host -Message "Disabling DNS registration on NAT adapter $($nat.InterfaceAlias)" -Tag 'common'
+              Set-DnsClient -InterfaceIndex $nat.InterfaceIndex -RegisterThisConnectionsAddress $false
+              $changed = $true
+          }
+      }
+
+      $Ansible.Changed = $changed
+      Wait-PSFMessage
+
+- name: Ensure WinRM service starts automatically
+  ansible.windows.win_service:
+    name: WinRM
+    start_mode: auto
+
+- name: Enable WinRM Basic auth
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $current = (Get-Item WSMan:\localhost\Service\Auth\Basic).Value
+      if ($current -ne 'true') {
+          Write-PSFMessage -Level Host -Message 'Enabling WinRM Basic auth' -Tag 'common'
+          Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true
+          $Ansible.Changed = $true
+      } else {
+          $Ansible.Changed = $false
+      }
+      Wait-PSFMessage
+
+- name: Allow WinRM unencrypted traffic
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $current = (Get-Item WSMan:\localhost\Service\AllowUnencrypted).Value
+      if ($current -ne 'true') {
+          Write-PSFMessage -Level Host -Message 'Allowing WinRM unencrypted traffic' -Tag 'common'
+          Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true
+          $Ansible.Changed = $true
+      } else {
+          $Ansible.Changed = $false
+      }
+      Wait-PSFMessage
+
+- name: Ensure WinRM firewall rule for all profiles
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $rule = Get-NetFirewallRule -DisplayName "WinRM-Vagrant" -ErrorAction SilentlyContinue
+      if (-not $rule) {
+          Write-PSFMessage -Level Host -Message 'Creating WinRM firewall rule for all profiles' -Tag 'common'
+          New-NetFirewallRule -DisplayName "WinRM-Vagrant" `
+              -Direction Inbound -Protocol TCP -LocalPort 5985 `
+              -Action Allow -Profile Any -Enabled True | Out-Null
+      } else {
+          $Ansible.Changed = $false
+      }
+      Wait-PSFMessage
+
+- name: Check if PowerShell 7 is already installed
+  ansible.windows.win_stat:
+    path: 'C:\Program Files\PowerShell\7\pwsh.exe'
+  register: pwsh_installed
+
+# PS7 install: install PowerShell 7 directly from the local software cache, with
+# no pre-install reboot.
+#
+# Why no reboot: on Server 2025, rebooting to clear the post-boot installer mutex
+# caused new races (WMI, synced-folder unmount, ProgramData stage tasks silently
+# no-op'ing, Temp cleanup). Every layer added to bridge the reboot exposed another
+# race or silent failure — pre-stage tasks could report `ok` while nothing landed
+# on disk, then the install failed with "file cannot be reached".
+#
+# Instead, the MSI mutex probe alone waits for Server 2025's post-boot installer
+# activity to finish. No reboot means the synced folder C:\Software stays mounted
+# and the install runs directly from the cache — simpler, fewer moving parts.
+
+- name: Check for staged PowerShell 7 MSI in local software cache
+  ansible.windows.win_stat:
+    path: '{{ software_source }}\PowerShell-{{ pwsh_version }}-win-x64.msi'
+  register: pwsh_local
+  when:
+    - not pwsh_installed.stat.exists
+    - software_source is defined
+
+# Wait for the global MSI execute mutex to be free. Server 2025's post-boot
+# installer chain (Defender platform updates, .NET runtime patching, etc.)
+# holds Global\_MSIExecute for 30s-3min on freshly-booted machines. Probe
+# until released. 60 × 10s = 10 min ceiling — healthy boot exits in ~30-90s.
+- name: Wait for MSI execute mutex to be free (clears Server 2025 post-boot installer hold)
+  ansible.windows.win_powershell:
+    script: |
+      $mutex = $null
+      try {
+          $mutex = [System.Threading.Mutex]::OpenExisting('Global\_MSIExecute')
+          if (-not $mutex.WaitOne(1000, $false)) {
+              throw "MSI mutex held by another installer (poll again)"
+          }
+          $mutex.ReleaseMutex()
+      } catch [System.Threading.WaitHandleCannotBeOpenedException] {
+          # No installer running at all — mutex doesn't exist. We're clear.
+      } finally {
+          if ($mutex) { $mutex.Dispose() }
+      }
+  register: msi_mutex_wait
+  until: msi_mutex_wait is not failed
+  retries: 60
+  delay: 10
+  changed_when: false
+  when: not pwsh_installed.stat.exists
+
+- name: Install PowerShell 7 from local cache
+  ansible.windows.win_package:
+    path: '{{ software_source }}\PowerShell-{{ pwsh_version }}-win-x64.msi'
+    product_id: auto
+    arguments: /quiet ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1 ADD_FILE_CONTEXT_MENU_RUNPOWERSHELL=1 ENABLE_PSREMOTING=0 REGISTER_MANIFEST=1 USE_MU=0 ENABLE_MU=0
+    state: present
+  register: pwsh_install
+  until: pwsh_install is not failed
+  # Belt + suspenders: if 1618 fires anyway (micro-race between mutex
+  # probe success and msiexec launch), retry up to 5x with 30s backoff.
+  retries: 5
+  delay: 30
+  when:
+    - not pwsh_installed.stat.exists
+    - software_source is defined
+    - pwsh_local.stat.exists | default(false)
+
+- name: Install PowerShell 7 from GitHub
+  ansible.windows.win_package:
+    path: "https://github.com/PowerShell/PowerShell/releases/download/v{{ pwsh_version }}/PowerShell-{{ pwsh_version }}-win-x64.msi"
+    product_id: auto
+    arguments: /quiet ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1 ADD_FILE_CONTEXT_MENU_RUNPOWERSHELL=1 ENABLE_PSREMOTING=0 REGISTER_MANIFEST=1 USE_MU=0 ENABLE_MU=0
+    state: present
+  when:
+    - not pwsh_installed.stat.exists
+    - software_source is not defined or not (pwsh_local.stat.exists | default(false))
+
+- name: Configure Explorer settings for all user profiles
+  when: not is_server_core
+  ansible.windows.win_powershell:
+    script: |
+      $settings = @{
+          HideFileExt                  = 0   # Show file extensions
+          Hidden                       = 1   # Show hidden files
+          ShowSuperHidden              = 1   # Show protected OS files
+          LaunchTo                     = 3   # Open to Downloads
+          SharingWizardOn              = 0   # Disable sharing wizard
+          NavPaneExpandToCurrentFolder = 1   # Expand nav pane to current folder
+      }
+      $subPath = 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+      $changed = $false
+
+      # --- Default User hive (new profiles) ---
+      $defaultHive = 'C:\Users\Default\NTUSER.DAT'
+      reg load 'HKU\DefaultUser' $defaultHive 2>$null | Out-Null
+      foreach ($name in $settings.Keys) {
+          $current = reg query "HKU\DefaultUser\$subPath" /v $name 2>$null
+          $hexVal = '0x{0:x}' -f $settings[$name]
+          if ($current -notmatch "\s$hexVal\s*$") {
+              reg add "HKU\DefaultUser\$subPath" /v $name /t REG_DWORD /d $settings[$name] /f | Out-Null
+              $changed = $true
+          }
+      }
+      reg unload 'HKU\DefaultUser' | Out-Null
+
+      # --- Existing user profiles ---
+      $profiles = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\*' |
+          Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.ProfileImagePath }
+
+      foreach ($profile in $profiles) {
+          $sid = $profile.PSChildName
+          $hivePath = Join-Path $profile.ProfileImagePath 'NTUSER.DAT'
+          $loaded = Test-Path "Registry::HKU\$sid"
+          if (-not $loaded) {
+              if (-not (Test-Path $hivePath)) { continue }
+              reg load "HKU\$sid" $hivePath 2>$null | Out-Null
+          }
+          $regPath = "Registry::HKU\$sid\$subPath"
+          if (-not (Test-Path $regPath)) {
+              New-Item -Path $regPath -Force | Out-Null
+          }
+          foreach ($name in $settings.Keys) {
+              $current = Get-ItemProperty -Path $regPath -Name $name -ErrorAction SilentlyContinue
+              if (-not $current -or $current.$name -ne $settings[$name]) {
+                  Set-ItemProperty -Path $regPath -Name $name -Value $settings[$name] -Type DWord
+                  $changed = $true
+              }
+          }
+          if (-not $loaded) {
+              [gc]::Collect()
+              reg unload "HKU\$sid" | Out-Null
+          }
+      }
+
+      $Ansible.Changed = $changed
+
+- name: Deploy tpl() template alias helper to PowerShell profile
+  ansible.windows.win_copy:
+    dest: C:\Windows\System32\WindowsPowerShell\v1.0\profile.ps1
+    content: |
+      # straylight — certificate template alias lookup
+      # Usage: tpl enterprise-admin → Straylight-EnterpriseAdmin-8H-ECDHP384-SHA384-v1
+      function tpl($k) {
+          $aliases = Get-Content 'C:\Software\template-aliases.json' -Raw | ConvertFrom-Json
+          $aliases.$k
+      }
+
+- name: Set local Administrator password
+  ansible.windows.win_user:
+    name: Administrator
+    password: "{{ admin_password }}"
+    state: present
+    update_password: always
+    account_disabled: false

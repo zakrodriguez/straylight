@@ -1,0 +1,67 @@
+---
+# Install Smallstep step CLI from upstream .deb package.
+# We pin a specific version so the walkthrough's annotated --verbose output
+# stays in sync with what the learner actually sees.
+
+- name: Set step CLI version
+  ansible.builtin.set_fact:
+    step_cli_version: "0.28.3"
+    step_cli_deb: "step-cli_0.28.3_amd64.deb"
+
+- name: Check if step CLI is already at the pinned version
+  ansible.builtin.command:
+    cmd: step version
+  register: step_version_check
+  failed_when: false
+  changed_when: false
+
+- name: Check for staged step CLI deb in local software cache
+  ansible.builtin.stat:
+    path: "{{ software_source_linux }}/{{ step_cli_deb }}"
+  register: step_cli_local
+  when:
+    - step_version_check.rc != 0 or step_cli_version not in step_version_check.stdout
+    - software_source_linux is defined
+
+- name: Copy step CLI deb from local cache
+  ansible.builtin.copy:
+    src: "{{ software_source_linux }}/{{ step_cli_deb }}"
+    dest: "/tmp/{{ step_cli_deb }}"
+    remote_src: true
+    mode: "0644"
+  when:
+    - step_version_check.rc != 0 or step_cli_version not in step_version_check.stdout
+    - software_source_linux is defined
+    - step_cli_local.stat.exists | default(false)
+
+- name: Download step CLI deb from upstream
+  # SHA256 from https://github.com/smallstep/cli/releases/download/v0.28.3/checksums.txt
+  ansible.builtin.get_url:
+    url: "https://github.com/smallstep/cli/releases/download/v{{ step_cli_version }}/step-cli_{{ step_cli_version }}-1_amd64.deb"
+    dest: "/tmp/{{ step_cli_deb }}"
+    mode: "0644"
+    checksum: "sha256:fa3511aeafd91569ec2bc3244d21cacf3b5b83e7d8eaa78e0e3b4d87ebd5189f"
+  when:
+    - step_version_check.rc != 0 or step_cli_version not in step_version_check.stdout
+    - software_source_linux is not defined or not (step_cli_local.stat.exists | default(false))
+
+- name: Install step CLI deb
+  ansible.builtin.apt:
+    deb: "/tmp/{{ step_cli_deb }}"
+    state: present
+  when: step_version_check.rc != 0 or step_cli_version not in step_version_check.stdout
+
+- name: Remove deb file
+  ansible.builtin.file:
+    path: "/tmp/{{ step_cli_deb }}"
+    state: absent
+
+- name: Verify step CLI is callable
+  ansible.builtin.command:
+    cmd: step version
+  register: step_version_post
+  changed_when: false
+
+- name: Show step CLI version
+  ansible.builtin.debug:
+    var: step_version_post.stdout_lines

@@ -1,0 +1,19 @@
+---
+chimera_profile_name: ENDUSER-Chimera
+chimera_ee_profile_name: EE-Chimera
+chimera_source_cert_profile: ENDUSER
+chimera_ca_name: EJBCA-Chimera-Root-CA
+# ejbca_ip comes from the Vagrantfile extra_vars / generated group_vars.
+# :8443 here is the EJBCA *admin UI* port (distinct from ejbca1:8444
+# pure-PQC and observe1:8443 chimera nginx — see ejbca-pqc-port-truth).
+chimera_admin_port: 8443
+chimera_admin_url: "https://{{ ejbca_ip }}:{{ chimera_admin_port }}"
+chimera_playwright_image: "mcr.microsoft.com/playwright/python:v1.48.0-noble"
+chimera_work_dir: /tmp/chimera-profile-work
+chimera_dry_run: false
+# WildFly truststore on the EJBCA container — empty by default, must trust EJBCA-Issuing-CA
+# for client cert auth to the admin UI to work. See vagrant/docs/ejbca-chimera-setup.md.
+chimera_wildfly_truststore: /opt/keyfactor/wildfly-35.0.1.Final/standalone/configuration/truststore.jks
+chimera_wildfly_reload_cli: /opt/keyfactor/wildfly-35.0.1.Final/bin/jboss-cli.sh
+# standalone.xml path — used to extract the truststore password (no separate .passwd file in CE 9.3.7)
+chimera_wildfly_standalone_xml: /opt/keyfactor/wildfly-35.0.1.Final/standalone/configuration/standalone.xml

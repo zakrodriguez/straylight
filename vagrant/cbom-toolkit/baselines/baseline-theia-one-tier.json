@@ -1,0 +1,30 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:19d86e5b-b0bd-41d1-8e62-e90912c534a8",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-04-13T17:42:57Z",
+    "tools": {
+      "services": [
+        {
+          "provider": {
+            "name": "IBM"
+          },
+          "name": "cbomkit-theia",
+          "version": "edge",
+          "services": [
+            {
+              "name": "Secret Detection Plugin"
+            },
+            {
+              "name": "Certificate File Plugin"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "components": null
+}

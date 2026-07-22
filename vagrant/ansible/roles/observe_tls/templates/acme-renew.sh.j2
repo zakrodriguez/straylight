@@ -1,0 +1,57 @@
+#!/bin/bash
+# Managed by Ansible (observe_tls role). Do not edit by hand.
+# Runs every 4h via acme-renew.timer. Two paths:
+#   - Cert valid: `step ca renew` if <8h remain, reload nginx on change.
+#   - Cert expired/missing: re-issue from scratch via ACME HTTP-01,
+#     because `step ca renew` is mTLS-bound and rejects expired certs.
+
+set -uo pipefail   # NOT -e; we handle exit codes explicitly below.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CERT=/etc/nginx/ssl/observe1.crt
+KEY=/etc/nginx/ssl/observe1.key
+DOMAIN=observe1.yourlab.local
+
+reissue_via_acme() {
+    rm -f "$CERT" "$KEY"
+    if step ca certificate --provisioner acme --webroot /var/www/html "$DOMAIN" "$CERT" "$KEY"; then
+        chown root:root "$CERT" "$KEY"
+        chmod 644 "$CERT"
+        chmod 600 "$KEY"
+        systemctl reload nginx
+        logger -t acme-renew "re-issued via ACME + reloaded nginx (cert=$CERT)"
+        return 0
+    fi
+    logger -t acme-renew "ACME re-issue failed (cert=$CERT)"
+    return 1
+}
+
+# If cert is missing or already expired, `step ca renew` cannot recover
+# (it requires the cert as mTLS client). Re-issue from scratch instead.
+if [[ ! -s "$CERT" ]] || ! openssl x509 -checkend 0 -noout -in "$CERT" 2>/dev/null; then
+    reissue_via_acme
+    exit $?
+fi
+
+# Capture mtime before the renew attempt. step ca renew returns 0 both when
+# it successfully renews AND when it short-circuits because --expires-in
+# isn't satisfied yet, so we can't distinguish the two from the exit code
+# alone — compare mtimes instead.
+mtime_before=$(stat -c %Y "$CERT" 2>/dev/null || echo 0)
+
+step ca renew --expires-in 8h --force "$CERT" "$KEY"
+rc=$?
+
+if [[ $rc -ne 0 ]]; then
+    logger -t acme-renew "step ca renew failed (exit $rc, cert=$CERT)"
+    exit 1
+fi
+
+mtime_after=$(stat -c %Y "$CERT" 2>/dev/null || echo 0)
+
+if [[ "$mtime_after" != "$mtime_before" ]]; then
+    systemctl reload nginx
+    logger -t acme-renew "renewed + reloaded nginx (cert=$CERT)"
+else
+    logger -t acme-renew "renew check OK; cert unchanged (>8h until expiry)"
+fi

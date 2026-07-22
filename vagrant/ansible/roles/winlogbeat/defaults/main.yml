@@ -1,0 +1,10 @@
+---
+winlogbeat_version: "8.17.0"
+
+# Beats -> OpenSearch HTTP Basic Auth credentials. Canonical values live in
+# vagrant/ansible/group_vars/all.yml; re-declared here as a safety net for
+# inventories that don't surface group_vars (e.g. per-profile generated
+# inventory subdirs), mirroring opensearch_stack/defaults/main.yml.
+beats_basic_auth_user: beats
+beats_basic_auth_password: "{{ admin_password }}"
+beats_tls_port: 9244

@@ -1,0 +1,25 @@
+[Version]
+Signature="$Windows NT$"
+
+[NewRequest]
+; RSA-2048 machine cert request for the cms-lab classical enrollment.
+; The template ({{ cms_lab_win_ca_template }}) is an AD-bound enterprise
+; template (msPKI-Certificate-Name-Flag = SUBJECT_ALT_REQUIRE_DNS,
+; ENROLLEE_SUPPLIES_SUBJECT unset = ESC1-safe), so the CA ignores this
+; placeholder Subject and builds the DNS SAN from the requesting machine's
+; AD object. Provider/KeySpec mirror the template's pKIDefaultCSPs
+; ("Microsoft Software Key Storage Provider") + pKIDefaultKeySpec (1).
+; MachineKeySet=TRUE lands the key in the LocalMachine store. Run as SYSTEM
+; so the request authenticates as {{ inventory_hostname }}$.
+Subject = "CN={{ inventory_hostname }}.{{ lab_domain }}"
+KeyAlgorithm = RSA
+KeyLength = 2048
+KeySpec = 1
+ProviderName = "Microsoft Software Key Storage Provider"
+ProviderType = 0
+MachineKeySet = TRUE
+RequestType = PKCS10
+Exportable = FALSE
+
+[RequestAttributes]
+CertificateTemplate = {{ cms_lab_win_ca_template }}

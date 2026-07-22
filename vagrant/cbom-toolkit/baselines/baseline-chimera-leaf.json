@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "scanner": "manual-leaf-reference",
+  "subject": "CN=observe1.yourlab.local",
+  "issuer": "CN=EJBCA-Chimera-Root-CA,O=YOURLAB",
+  "expected_oids": [
+    "2.5.29.72",
+    "2.5.29.73",
+    "2.5.29.74"
+  ],
+  "expected_oid_nested_in_2_5_29_73": "2.16.840.1.101.3.4.3.18",
+  "note": "2.16.840.1.101.3.4.3.18 (ML-DSA-65) is encoded as nested ASN.1 inside the altSignatureAlgorithm (2.5.29.73) extension value, not as a top-level OID. All three 2.5.29.7x OIDs plus subjectAltPublicKeyInfo (2.5.29.72) are present because cert was issued with --altkeyalg ML-DSA-65 --altsigalg ML-DSA-65.",
+  "verified": true
+}

@@ -1,0 +1,78 @@
+---
+# BGInfo role: PKI lab dashboard wallpaper
+# Requires sysinternals role (provides Bginfo64.exe)
+# Server Core has no interactive desktop, so the wallpaper render is wasted work.
+# Relies on `is_server_core` host fact set by the common role.
+
+- name: Detect Windows installation type (fallback if common role hasn't run)
+  when: is_server_core is not defined
+  ansible.windows.win_powershell:
+    script: |
+      $Ansible.Result = (Get-ComputerInfo -Property WindowsInstallationType).WindowsInstallationType
+  register: _bginfo_install_type
+  changed_when: false
+
+- name: Set is_server_core host fact (fallback)
+  when: is_server_core is not defined
+  ansible.builtin.set_fact:
+    is_server_core: "{{ (_bginfo_install_type.result | default('')) == 'Server Core' }}"
+
+- name: Skip BGInfo on Server Core (no interactive desktop)
+  ansible.builtin.meta: end_role
+  when: is_server_core | bool
+
+- name: Skip BGInfo when desktop UX disabled
+  ansible.builtin.meta: end_role
+  when: not (lab_desktop_enabled | default(true) | bool)
+
+- name: Create BGInfo directory
+  ansible.windows.win_file:
+    path: '{{ bginfo_dir }}'
+    state: directory
+
+- name: Create BGInfo scripts directory
+  ansible.windows.win_file:
+    path: '{{ bginfo_dir }}\scripts'
+    state: directory
+
+- name: Deploy standard field scripts
+  ansible.windows.win_copy:
+    src: 'scripts/{{ item }}'
+    dest: '{{ bginfo_dir }}\scripts\{{ item }}'
+  loop:
+    - Get-BgInfoStandard.ps1
+    - Get-BgInfoCrypto.ps1
+
+- name: Deploy role-specific field script
+  ansible.windows.win_copy:
+    src: 'scripts/Get-BgInfo{{ _role_script_map[vm_role] }}.ps1'
+    dest: '{{ bginfo_dir }}\scripts\Get-BgInfoRole.ps1'
+  vars:
+    _role_script_map:
+      dc: DC
+      ca: CA
+      rootca: CA
+      issueca: CA
+      web: Web
+      manage: Manage
+      tomcat: Tomcat
+  when: vm_role in _role_script_map
+
+- name: Deploy BGInfo wrapper script
+  ansible.windows.win_copy:
+    src: 'Set-LabBgInfo.ps1'
+    dest: '{{ bginfo_dir }}\Set-LabBgInfo.ps1'
+
+- name: Register BGInfo wrapper to run at logon
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+    name: StrayBgInfo
+    data: 'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "{{ bginfo_dir }}\Set-LabBgInfo.ps1" -Role "{{ vm_role | upper }}" -Topology "{{ log_prefix | default("") }}" -ObserveIP "{{ observe_ip | default("") }}"'
+    type: string
+
+- name: Run BGInfo wrapper now
+  ansible.windows.win_powershell:
+    script: |
+      & '{{ bginfo_dir }}\Set-LabBgInfo.ps1' -Role '{{ vm_role | upper }}' -Topology '{{ log_prefix | default("") }}' -ObserveIP '{{ observe_ip | default("") }}'
+  changed_when: false
+  failed_when: false

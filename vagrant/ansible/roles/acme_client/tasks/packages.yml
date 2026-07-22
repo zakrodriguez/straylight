@@ -1,0 +1,25 @@
+---
+# Install OS packages required for the ACME walkthrough.
+# nginx terminates HTTP-01 challenges and serves the demo HTTPS sites.
+# curl/jq/openssl are used in walkthrough pre-flight commands.
+
+- name: Install nginx and walkthrough utilities
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - curl
+      - jq
+      - openssl
+      - git
+      - ca-certificates
+      - dnsutils  # dig — used in walkthrough pre-flight checks
+      - certbot   # third ACME client; used in the acme1-certbot walkthrough (content/walkthroughs-unverified branch)
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure nginx is enabled and running
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true

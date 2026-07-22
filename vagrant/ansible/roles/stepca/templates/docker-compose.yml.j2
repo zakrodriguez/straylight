@@ -1,0 +1,35 @@
+services:
+  stepca:
+    image: smallstep/step-ca:{{ stepca_image_tag }}
+    container_name: stepca
+    hostname: stepca1.{{ lab_domain }}
+    ports:
+      - "9000:9000"
+    environment:
+      DOCKER_STEPCA_INIT_NAME: "{{ stepca_ca_name }}"
+      DOCKER_STEPCA_INIT_DNS_NAMES: "stepca1.{{ lab_domain }},{{ stepca_ip }},localhost"
+      DOCKER_STEPCA_INIT_ACME: "true"
+      DOCKER_STEPCA_INIT_REMOTE_MANAGEMENT: "false"
+      DOCKER_STEPCA_INIT_PASSWORD_FILE: "/home/step/secrets/password"
+    volumes:
+      - /opt/stepca/data:/home/step
+{% if 'dc1' not in groups['all'] %}
+    # Linux-only profiles have no AD DNS. step-ca runs ACME challenges by
+    # making HTTP requests to the cert subject's hostname (e.g.
+    # observe1.yourlab.local), so the container needs explicit static host
+    # resolution here. Mirrors the lab_static_hosts map in
+    # common_linux/defaults/main.yml — keep in sync when adding VMs.
+    extra_hosts:
+{% for h in lab_static_hosts %}
+{% for n in h.names %}
+      - "{{ n }}.{{ lab_domain }}:{{ h.ip }}"
+{% endfor %}
+{% endfor %}
+{% endif %}
+    healthcheck:
+      test: ["CMD", "step", "ca", "health", "--ca-url", "https://localhost:9000", "--root", "/home/step/certs/root_ca.crt"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped

@@ -1,0 +1,148 @@
+---
+# Secondary Domain Controller role: join existing forest as additional DC
+# Uses microsoft.ad.domain_controller which handles domain join + promotion + reboot
+
+- name: Install AD-Domain-Services feature
+  ansible.windows.win_feature:
+    name: AD-Domain-Services
+    include_management_tools: true
+    state: present
+
+- name: Verify DNS points to DC before domain operations
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $targetPrefix = '{{ ip_address }}'.Split('.')[0..2] -join '.'
+      $adapter = Get-NetIPConfiguration |
+          Where-Object { $_.NetAdapter.Status -eq 'Up' -and $_.IPv4Address.IPAddress -like "$targetPrefix.*" } |
+          Select-Object -First 1
+      if (-not $adapter) { $Ansible.Changed = $false; return }
+
+      $dns = (Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4).ServerAddresses
+      if (-not $dns -or '{{ dc_ip }}' -notin $dns) {
+          Write-PSFMessage -Level Warning -Message "DNS not set on $($adapter.InterfaceAlias) — fixing to {{ dc_ip }}" -Tag 'secondary-controller'
+          Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses @('{{ dc_ip }}', '8.8.8.8') -ErrorAction SilentlyContinue
+          netsh interface ipv4 set dnsservers name="$($adapter.InterfaceAlias)" static '{{ dc_ip }}' primary validate=no
+          netsh interface ipv4 add dnsservers name="$($adapter.InterfaceAlias)" '8.8.8.8' index=2 validate=no
+          Start-Sleep -Seconds 2
+          Clear-DnsClientCache
+          $verify = (Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4).ServerAddresses
+          Write-PSFMessage -Level Host -Message "DNS fixed: $($verify -join ', ')" -Tag 'secondary-controller'
+      } else {
+          Write-PSFMessage -Level Host -Message "DNS OK: $($dns -join ', ')" -Tag 'secondary-controller'
+          $Ansible.Changed = $false
+      }
+      Wait-PSFMessage
+
+- name: Wait for AD DS to be available
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      # DNS resolution alone is insufficient — DC may respond to DNS
+      # before AD DS is ready for domain joins. Verify LDAP is serving.
+      Write-PSFMessage -Level Host -Message 'Checking AD DS availability at {{ lab_domain }}' -Tag 'secondary-controller'
+      $resolved = Resolve-DnsName -Name '{{ lab_domain }}' -ErrorAction SilentlyContinue
+      if (-not $resolved) {
+          Write-PSFMessage -Level Warning -Message 'Cannot resolve domain {{ lab_domain }}' -Tag 'secondary-controller'
+          Wait-PSFMessage
+          throw "Cannot resolve domain {{ lab_domain }}"
+      }
+      $result = nltest /dsgetdc:{{ lab_domain }}
+      if ($LASTEXITCODE -ne 0) {
+          Write-PSFMessage -Level Warning -Message 'DC not ready for domain operations' -Tag 'secondary-controller'
+          Wait-PSFMessage
+          throw "DC not ready: $result"
+      }
+      Write-PSFMessage -Level Host -Message 'AD DS is available' -Tag 'secondary-controller'
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  retries: 45
+  delay: 20
+  register: dc_ready
+  until: dc_ready is not failed
+
+- name: Promote as secondary Domain Controller
+  microsoft.ad.domain_controller:
+    dns_domain_name: "{{ lab_domain }}"
+    domain_admin_user: "{{ lab_netbios }}\\Administrator"
+    domain_admin_password: "{{ admin_password }}"
+    safe_mode_password: "{{ safe_mode_password }}"
+    install_dns: true
+    database_path: C:\Windows\NTDS
+    domain_log_path: C:\Windows\NTDS
+    sysvol_path: C:\Windows\SYSVOL
+    state: domain_controller
+    reboot: true
+    reboot_timeout: 600
+
+- name: Wait for AD DS to be fully operational
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Waiting for AD DS to become operational on secondary DC' -Tag 'secondary-controller'
+      $maxWait = 600
+      $waited = 0
+      while ($waited -lt $maxWait) {
+          try {
+              Get-ADDomain -ErrorAction Stop | Out-Null
+              Write-PSFMessage -Level Host -Message "AD DS operational after $waited seconds" -Tag 'secondary-controller'
+              Wait-PSFMessage
+              return
+          } catch {
+              Write-PSFMessage -Level Host -Message "AD DS not ready yet ($waited s elapsed)" -Tag 'secondary-controller'
+              Start-Sleep -Seconds 15
+              $waited += 15
+          }
+      }
+      Write-PSFMessage -Level Error -Message "AD DS did not become operational within $maxWait seconds" -Tag 'secondary-controller'
+      Wait-PSFMessage
+      throw "AD DS did not become operational within $maxWait seconds"
+  retries: 3
+  delay: 10
+  register: ad_ready
+  until: ad_ready is not failed
+
+- name: Restrict DNS Server to host-only IP and clean NAT records
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      # The DNS Server listens on all IPs by default, including the NAT adapter
+      # (10.0.2.x). It auto-generates in-memory A records for the DC hostname from
+      # its listening interfaces — these don't appear in Get-DnsServerResourceRecord
+      # but DO appear in Resolve-DnsName. Fix: restrict DNS Server to host-only IP.
+      $changed = $false
+
+      # Check current DNS Server listening addresses
+      $dnsListenKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\DNS\Parameters'
+      $current = Get-ItemProperty -Path $dnsListenKey -Name 'ListenAddresses' -ErrorAction SilentlyContinue
+      $targetIP = '{{ ip_address }}'
+
+      # Compare-Object pattern mirrors domain_controller/tasks/main.yml:72 —
+      # `$current.ListenAddresses -ne @($targetIP)` does element-wise filtering
+      # (returns a filtered array, not a boolean), which made the idempotency
+      # check fire on every run (or never, depending on element layout).
+      if (-not $current -or @(Compare-Object $current.ListenAddresses @($targetIP) -SyncWindow 0).Count -gt 0) {
+          Write-PSFMessage -Level Host -Message "Restricting DNS Server to listen on $targetIP only" -Tag 'secondary-controller'
+          dnscmd /ResetListenAddresses $targetIP
+          if ($LASTEXITCODE -eq 0) {
+              Restart-Service DNS -Force
+              Start-Sleep -Seconds 5
+              $changed = $true
+          }
+      }
+
+      # Also remove any stale 10.0.2.x A records from the zone data
+      $zone = '{{ lab_domain }}'
+      $hostname = $env:COMPUTERNAME
+      $records = Get-DnsServerResourceRecord -ZoneName $zone -Name $hostname -RRType A -ErrorAction SilentlyContinue |
+          Where-Object { $_.RecordData.IPv4Address.ToString() -like '10.0.2.*' }
+      if ($records) {
+          Write-PSFMessage -Level Host -Message "Removing $($records.Count) stale NAT DNS record(s)" -Tag 'secondary-controller'
+          foreach ($record in $records) {
+              Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $record -Force
+          }
+          $changed = $true
+      }
+
+      $Ansible.Changed = $changed
+      Wait-PSFMessage

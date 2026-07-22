@@ -1,0 +1,355 @@
+---
+# iis_chimera_demo role — codifies the manual web1 chimera install as an
+# Ansible flow so vagrant destroy/rebuild reproduces it.
+#
+# Idempotency: re-running tears down any pre-existing EJBCA end-entity
+# (mirrors the ejbca_pqc_enroll role — re-issuing is cheap and avoids
+# profile-mismatch silent failures).
+
+# =========================================================================
+# Pre-flight: confirm IIS is installed on the target
+# =========================================================================
+
+- name: Verify IIS is present on target
+  ansible.windows.win_powershell:
+    script: |
+      if (-not (Get-Service -Name W3SVC -ErrorAction SilentlyContinue)) {
+        throw "IIS (W3SVC) not installed on {{ inventory_hostname }} — install IIS before running iis_chimera_demo"
+      }
+      $Ansible.Changed = $false
+
+# =========================================================================
+# Idempotency gate: skip re-issuance if a valid chimera leaf already exists
+# in LocalMachine\My with >30d remaining. Mirrors the gate in
+# ejbca_pqc_enroll/tasks/chimera.yml so re-runs of pqc-chimera.yml don't
+# rotate web1's RSA private key + thumbprint on every play.
+# =========================================================================
+
+- name: Inspect existing chimera leaf on target (NotAfter + thumbprint)
+  ansible.windows.win_powershell:
+    script: |
+      $cert = Get-ChildItem Cert:\LocalMachine\My |
+        Where-Object { $_.Subject -eq 'CN={{ iis_chimera_cn }}' } |
+        Sort-Object NotAfter -Descending |
+        Select-Object -First 1
+      if ($cert) {
+        $Ansible.Result = @{
+          exists       = $true
+          thumbprint   = $cert.Thumbprint
+          not_after    = $cert.NotAfter.ToString('o')
+          days_left    = [int]($cert.NotAfter - (Get-Date)).TotalDays
+        }
+      } else {
+        $Ansible.Result = @{ exists = $false; thumbprint = ''; not_after = ''; days_left = -1 }
+      }
+      $Ansible.Changed = $false
+  register: existing_chimera_leaf
+
+# chimera_reissue is true when:
+#   - no chimera cert in LocalMachine\My matching the expected CN, OR
+#   - cert NotAfter is within 30 days of now (>= 30 days remaining → skip)
+# Thumbprint pattern check: SHA-1 thumbprint is 40 hex chars; absence/empty
+# string ⇒ no valid cert ⇒ force reissue.
+- name: Decide whether re-issuance is needed
+  ansible.builtin.set_fact:
+    chimera_reissue: >-
+      {{ (not (existing_chimera_leaf.result.exists | default(false)))
+         or ((existing_chimera_leaf.result.thumbprint | default('')) | length != 40)
+         or ((existing_chimera_leaf.result.days_left | default(-1) | int) < 30) }}
+
+- name: Report idempotency decision
+  ansible.builtin.debug:
+    msg: >-
+      chimera_reissue={{ chimera_reissue }}
+      (exists={{ existing_chimera_leaf.result.exists | default(false) }},
+      days_left={{ existing_chimera_leaf.result.days_left | default(-1) }},
+      thumbprint={{ existing_chimera_leaf.result.thumbprint | default('') }})
+
+# =========================================================================
+# EJBCA — issue chimera leaf (delegated to ejbca1) — gated on chimera_reissue
+# =========================================================================
+
+- name: Delete pre-existing chimera end-entity (guarantees clean re-issue)
+  # Same pattern as ejbca_pqc_enroll's profile-recreate fix — silent
+  # "already exists" no-ops are how we got bitten by wrong-EKU certs before.
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra delendentity
+      --username "{{ iis_chimera_username }}" -force
+  register: ejbca_chimera_delee
+  changed_when: ejbca_chimera_delee.rc == 0
+  failed_when:
+    - ejbca_chimera_delee.rc != 0
+    - "'No such end entity' not in ejbca_chimera_delee.stdout"
+    - "'No such end entity' not in ejbca_chimera_delee.stderr"
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Add EJBCA end-entity for chimera enrollment
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra addendentity
+      --username "{{ iis_chimera_username }}"
+      --dn "CN={{ iis_chimera_cn }}"
+      --caname EJBCA-Chimera-Root-CA
+      --certprofile ENDUSER-Chimera
+      --eeprofile EE-Chimera
+      --type 1 --token P12
+      --password "{{ ejbca_token_password | default('foo123') }}"
+  changed_when: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Set cleartext password on chimera end-entity
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra setclearpwd
+      --username "{{ iis_chimera_username }}"
+      --password "{{ ejbca_token_password | default('foo123') }}"
+  changed_when: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Set chimera end-entity status to NEW
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra setendentitystatus
+      --username "{{ iis_chimera_username }}" -S 10
+  changed_when: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Fresh per-host export dir in EJBCA container
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce sh -c "rm -rf /mnt/export/{{ iis_chimera_username }} && mkdir -p /mnt/export/{{ iis_chimera_username }}"
+  changed_when: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Generate hybrid CSR — RSA-2048 primary + ML-DSA-65 alt
+  # --altkeyalg/--altsigalg generate the secondary ML-DSA-65 key pair whose
+  # public key EJBCA embeds in the CSR. The Chimera CA signs the leaf twice
+  # and emits altSignatureAlgorithm (2.5.29.73) + altSignatureValue
+  # (2.5.29.74) + subjectAltPublicKeyInfo (2.5.29.72) extensions on issue.
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh gencsr
+      --keyalg RSA --keyspec 2048 --sigalg SHA256WithRSA
+      --altkeyalg ML-DSA-65 --altsigalg ML-DSA-65
+      --subjectdn "CN={{ iis_chimera_cn }}"
+      --destination /mnt/export/{{ iis_chimera_username }}
+  changed_when: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Issue chimera certificate
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh createcert
+      --username "{{ iis_chimera_username }}"
+      --password "{{ ejbca_token_password | default('foo123') }}"
+      -c /mnt/export/{{ iis_chimera_username }}/certificateSigningRequest.csr
+      -f /mnt/export/{{ iis_chimera_username }}/cert.pem
+  changed_when: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+# =========================================================================
+# EJBCA — copy artifacts to bind-mounted dir + build PKCS12
+# =========================================================================
+
+- name: Copy chimera artifacts out of container
+  ansible.builtin.command:
+    cmd: >-
+      docker cp ejbca-ce:/mnt/export/{{ iis_chimera_username }}/{{ item }}
+      {{ iis_chimera_ejbca_export_dir }}/{{ iis_chimera_username }}-{{ item }}
+  loop:
+    - cert.pem
+    - privkey.pem
+  changed_when: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Fetch Chimera Root CA cert (for chain bundle)
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca getcacert --caname EJBCA-Chimera-Root-CA -f /tmp/chimera-root-ca.pem
+  changed_when: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Pull chimera root cert out of container
+  ansible.builtin.command:
+    cmd: >-
+      docker cp ejbca-ce:/tmp/chimera-root-ca.pem
+      {{ iis_chimera_ejbca_export_dir }}/{{ iis_chimera_username }}-chain.pem
+  changed_when: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Remove any stale PKCS12 from prior manual runs
+  # Prior manual runs may have left a root-owned .p12 in /tmp the vagrant
+  # user can't overwrite. become: true makes this safe.
+  ansible.builtin.file:
+    path: "/tmp/{{ iis_chimera_username }}.p12"
+    state: absent
+  become: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Build PKCS12 keystore on ejbca1 (stock openssl handles RSA leaf fine)
+  ansible.builtin.command:
+    cmd: >-
+      openssl pkcs12 -export
+      -out /tmp/{{ iis_chimera_username }}.p12
+      -inkey {{ iis_chimera_ejbca_export_dir }}/{{ iis_chimera_username }}-privkey.pem
+      -in {{ iis_chimera_ejbca_export_dir }}/{{ iis_chimera_username }}-cert.pem
+      -certfile {{ iis_chimera_ejbca_export_dir }}/{{ iis_chimera_username }}-chain.pem
+      -name {{ inventory_hostname }}
+      -passout pass:{{ iis_chimera_p12_pass }}
+  changed_when: true
+  become: true
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+- name: Make PKCS12 + chain readable for fetch
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "0644"
+  become: true
+  loop:
+    - "/tmp/{{ iis_chimera_username }}.p12"
+    - "{{ iis_chimera_ejbca_export_dir }}/{{ iis_chimera_username }}-chain.pem"
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+# =========================================================================
+# Controller — stage files locally
+# =========================================================================
+
+- name: Ensure controller staging dir exists
+  ansible.builtin.file:
+    path: "/tmp/chimera-iis-stage/{{ iis_chimera_username }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: chimera_reissue | bool
+
+- name: Fetch PKCS12 + chain to controller
+  ansible.builtin.fetch:
+    src: "{{ item.src }}"
+    dest: "/tmp/chimera-iis-stage/{{ iis_chimera_username }}/{{ item.dest }}"
+    flat: true
+  loop:
+    - { src: "/tmp/{{ iis_chimera_username }}.p12", dest: "leaf.p12" }
+    - { src: "{{ iis_chimera_ejbca_export_dir }}/{{ iis_chimera_username }}-chain.pem", dest: "chain.pem" }
+  delegate_to: ejbca1
+  when: chimera_reissue | bool
+
+# =========================================================================
+# Windows target — stage files + install
+# =========================================================================
+
+- name: Ensure cert dir exists on target
+  ansible.windows.win_file:
+    path: "{{ iis_chimera_cert_dir }}"
+    state: directory
+
+- name: Push PKCS12 + chain to target
+  ansible.windows.win_copy:
+    src: "/tmp/chimera-iis-stage/{{ iis_chimera_username }}/{{ item.src }}"
+    dest: "{{ iis_chimera_cert_dir }}\\{{ item.dest }}"
+  loop:
+    - { src: "leaf.p12",   dest: "{{ inventory_hostname }}-chimera.p12" }
+    - { src: "chain.pem",  dest: "chimera-root-ca.pem" }
+  when: chimera_reissue | bool
+
+- name: Import EJBCA-Chimera-Root-CA into LocalMachine\Root (idempotent)
+  # Belt-and-braces: pqc-chimera.yml's final play also publishes this to AD
+  # config NC, but a direct local import means trust works on the target
+  # immediately without waiting for gpupdate.
+  ansible.windows.win_powershell:
+    script: |
+      $rootPath = '{{ iis_chimera_cert_dir }}\chimera-root-ca.pem'
+      $rootCert = Get-PfxCertificate -FilePath $rootPath
+      if (-not (Get-ChildItem Cert:\LocalMachine\Root | Where-Object Thumbprint -eq $rootCert.Thumbprint)) {
+        Import-Certificate -FilePath $rootPath -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+        $Ansible.Changed = $true
+      } else {
+        $Ansible.Changed = $false
+      }
+  when: chimera_reissue | bool
+
+- name: Import chimera leaf+key PKCS12 into LocalMachine\My (gated on reissue)
+  # On re-runs where the existing cert is still fresh, skip — preserves the
+  # existing private key + thumbprint instead of rotating on every play.
+  ansible.windows.win_powershell:
+    script: |
+      $pfxPath = '{{ iis_chimera_cert_dir }}\{{ inventory_hostname }}-chimera.p12'
+      $pfxPass = ConvertTo-SecureString -String '{{ iis_chimera_p12_pass }}' -AsPlainText -Force
+      # Remove any prior leaf for our CN to avoid stale dupes
+      Get-ChildItem Cert:\LocalMachine\My |
+        Where-Object { $_.Subject -eq "CN={{ iis_chimera_cn }}" } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+      $leaf = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\LocalMachine\My -Password $pfxPass -Exportable
+      $Ansible.Result = @{ thumbprint = $leaf.Thumbprint; subject = $leaf.Subject }
+  when: chimera_reissue | bool
+
+- name: Bind chimera HTTPS endpoint to IIS site
+  ansible.windows.win_powershell:
+    script: |
+      Import-Module WebAdministration
+      # Refresh the binding (drop + recreate so the cert gets re-bound clean)
+      Get-WebBinding -Name '{{ iis_chimera_iis_site }}' -Protocol https -Port {{ iis_chimera_port }} -ErrorAction SilentlyContinue |
+        Remove-WebBinding -ErrorAction SilentlyContinue
+      New-WebBinding -Name '{{ iis_chimera_iis_site }}' -Protocol https -Port {{ iis_chimera_port }} -IPAddress '*' | Out-Null
+
+      # HTTP.SYS sslcert binding is host-wide
+      $thumb = (Get-ChildItem Cert:\LocalMachine\My |
+                Where-Object Subject -eq 'CN={{ iis_chimera_cn }}' |
+                Select-Object -First 1).Thumbprint
+      netsh http delete sslcert ipport=0.0.0.0:{{ iis_chimera_port }} 2>&1 | Out-Null
+      $r = netsh http add sslcert ipport=0.0.0.0:{{ iis_chimera_port }} certhash=$thumb appid='{{ iis_chimera_appid }}' certstorename=MY 2>&1
+      $Ansible.Result = $r -join "`n"
+
+- name: Open Windows firewall for chimera HTTPS port
+  ansible.windows.win_powershell:
+    script: |
+      if (-not (Get-NetFirewallRule -DisplayName '{{ iis_chimera_firewall_rule }}' -ErrorAction SilentlyContinue)) {
+        New-NetFirewallRule -DisplayName '{{ iis_chimera_firewall_rule }}' `
+          -Direction Inbound -LocalPort {{ iis_chimera_port }} -Protocol TCP -Action Allow | Out-Null
+        $Ansible.Changed = $true
+      } else {
+        $Ansible.Changed = $false
+      }
+
+- name: Restart IIS site to pick up new binding
+  ansible.windows.win_powershell:
+    script: |
+      Import-Module WebAdministration
+      Stop-Website -Name '{{ iis_chimera_iis_site }}' -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 1
+      Start-Website -Name '{{ iis_chimera_iis_site }}'
+      Start-Sleep -Seconds 2
+      $state = (Get-Website -Name '{{ iis_chimera_iis_site }}').State
+      if ($state -ne 'Started') { throw "IIS site '{{ iis_chimera_iis_site }}' is in state '$state' after restart" }
+      $Ansible.Result = "site state: $state"
+
+- name: Verify TLS handshake works on the local loopback
+  ansible.windows.win_powershell:
+    script: |
+      [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+      try {
+        $req = [System.Net.HttpWebRequest]::Create('https://127.0.0.1:{{ iis_chimera_port }}/')
+        $resp = $req.GetResponse()
+        # Any HTTP response (incl. 403) means TLS terminated cleanly
+        $Ansible.Result = "ok: cert subject=$($req.ServicePoint.Certificate.Subject)"
+      } catch [System.Net.WebException] {
+        $resp = $_.Exception.Response
+        if ($resp -ne $null) {
+          # HTTP-layer error (403 etc.) is fine — TLS succeeded
+          $Ansible.Result = "ok: HTTP $([int]$resp.StatusCode)"
+        } else {
+          throw "TLS handshake failed: $($_.Exception.Message)"
+        }
+      }

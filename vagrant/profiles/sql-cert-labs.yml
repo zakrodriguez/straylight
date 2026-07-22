@@ -1,0 +1,23 @@
+name: sql-cert-labs
+description: |
+  Minimum topology for SQL Server certificate-binding labs.
+  Two-tier ADCS + manage1 + a SQL Server 2022 Developer host
+  (sqlhost1) on Windows Server 2025 — the SQL instance the cert
+  binding lab actually targets end-to-end.
+
+  Footprint: ~24 GB RAM. The SQL host alone takes ~6 GB; SQL install
+  download is ~1.5 GB so first provision can take 30–45 minutes from
+  scratch.
+
+components:
+  - dc1
+  - rootca
+  - issueca
+  - web1         # CRL/AIA distribution — required for issueca provisioning
+  - manage1
+  - sqlhost1
+
+resources:
+  sqlhost1:
+    memory: 6144
+    cpus: 2

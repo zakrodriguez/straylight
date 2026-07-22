@@ -1,0 +1,26 @@
+---
+# Parameters for stepca_ad_trust.
+#
+# Publish step-ca Root CA to AD's NTAuth store?
+#
+# False by default — and that default is load-bearing for lab security.
+#
+# Why false-by-default:
+#   The stepca role enables DOCKER_STEPCA_INIT_ACME=true, which exposes an
+#   ACME provisioner on https://stepca1:9000/acme. ANY host on the lab network
+#   that can reach port 9000 and pass an HTTP-01 challenge can mint a cert
+#   from step-ca. If step-ca's root is in AD's NTAuthCA store, those certs
+#   are accepted by AD for certificate-based user authentication — turning
+#   "can serve HTTP on :80" into "can forge domain user logon certs". That's
+#   a real lateral-movement primitive even inside a lab.
+#
+# When to flip true:
+#   Only when explicitly demonstrating the NTAuthCA-trusted external CA risk,
+#   or when you've locked down ACME provisioner access (network ACLs, removed
+#   the HTTP-01 challenge, or swapped to a provisioner with stronger auth).
+#
+# Matches the ejbca_ad_trust_publish_ntauth knob (see
+# roles/ejbca_ad_trust/defaults/main.yml) — same pattern, opposite default,
+# because EJBCA's enrollment path is gated by EJBCA's own end-entity workflow
+# while step-ca's ACME provisioner is wide-open by default.
+stepca_ad_trust_publish_ntauth: false

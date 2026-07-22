@@ -1,0 +1,13 @@
+---
+temurin_major_version: "17"
+temurin_install_dir: 'C:\Java\jdk-17'
+
+tomcat_version: "10.1.34"
+tomcat_major_version: "10"
+tomcat_install_dir: 'C:\Tomcat'
+tomcat_service_name: "Tomcat10"
+tomcat_http_port: 8080
+tomcat_https_port: 8443
+
+temurin_msi: "temurin-jdk-{{ temurin_major_version }}.msi"
+tomcat_zip: "apache-tomcat-{{ tomcat_version }}-windows-x64.zip"

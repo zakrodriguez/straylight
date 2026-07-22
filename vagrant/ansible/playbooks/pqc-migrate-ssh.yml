@@ -1,0 +1,48 @@
+---
+# pqc-migrate-ssh.yml — Phase 3/5 of the PQC migration orchestrator.
+# Wraps pqc-ssh.yml (builds OpenSSH 10 + sshd-pqc on the four PQC SSH
+# targets) and verifies live mlkem768x25519-sha256 KEX negotiation via the
+# shared verifier scripts/lib/pqc-verify/ssh-kex.sh (same file validate.sh
+# runs — see playbooks/README.md).
+#
+# Standalone usage:
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-migrate-ssh.yml
+
+- name: Phase 3/5 banner
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "═══ Phase 3/5: SSH migration ═══"
+
+- import_playbook: pqc-ssh.yml
+
+- name: Phase 3 verification — OpenSSH 10 + ML-KEM hybrid KEX on all PQC SSH hosts
+  hosts: linux_pqc_targets
+  gather_facts: false
+  become: true
+  ignore_unreachable: true
+  tasks:
+    # The SSH-KEX probe is the SINGLE source of truth in
+    # scripts/lib/pqc-verify/ssh-kex.sh, shared verbatim with validate.sh
+    # (scripts/checks/pqc-chimera.sh runs the same file). No more hand-sync —
+    # both consumers cat/exec one file. The probe emits PASS:/FAIL: lines and
+    # always exits 0 (the validate.sh contract), so failed_when keys off FAIL:.
+    - name: SSH — sshd-pqc negotiates mlkem768x25519-sha256 (shared verifier)
+      ansible.builtin.script: ../../scripts/lib/pqc-verify/ssh-kex.sh
+      args:
+        executable: /bin/bash
+      register: ssh_probe
+      changed_when: false
+      failed_when: "'FAIL:' in ssh_probe.stdout"
+
+    - name: SSH — probe results
+      ansible.builtin.debug:
+        msg: "{{ ssh_probe.stdout_lines }}"
+
+- name: Phase 3 summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "Phase 3/5 (SSH) complete"

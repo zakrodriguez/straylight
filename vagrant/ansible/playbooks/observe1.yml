@@ -1,0 +1,63 @@
+---
+# OBSERVE1 - OpenSearch Observability Stack on Ubuntu/Docker
+- hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Include common_linux role
+      ansible.builtin.include_role:
+        name: common_linux
+    - name: Include docker_host role
+      ansible.builtin.include_role:
+        name: docker_host
+
+    # AD DNS A record for observe1.yourlab.local must exist before
+    # observe_tls's cert_initial.yml runs (it polls DNS resolution as a
+    # gate before issuing the cert).
+    # Skipped on Linux-only profiles (no dc1) — common_linux writes
+    # observe1 + lab hostnames into /etc/hosts on every Linux VM so DNS
+    # resolution works without AD DNS.
+    # ignore_unreachable handles partial-stack builds where dc1 is in
+    # the inventory but powered off (e.g. testing observe1 + scanner1
+    # in isolation): the /etc/hosts fallback covers DNS resolution.
+    - name: Add A record for observe1.yourlab.local
+      when: "'dc1' in groups['all']"
+      ignore_unreachable: true
+      delegate_to: dc1
+      vars:
+        ansible_python_interpreter: "{{ omit }}"
+      become: false
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $zone = '{{ lab_domain }}'
+          $name = 'observe1'
+          $ip = '{{ ip_address }}'
+          $changed = $false
+          $existing = Get-DnsServerResourceRecord -ZoneName $zone -Name $name -RRType A -ErrorAction SilentlyContinue |
+              Where-Object { $_.RecordData.IPv4Address.IPAddressToString -eq $ip }
+          if (-not $existing) {
+              Get-DnsServerResourceRecord -ZoneName $zone -Name $name -RRType A -ErrorAction SilentlyContinue |
+                  ForEach-Object { Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $_ -Force }
+              Add-DnsServerResourceRecordA -ZoneName $zone -Name $name -IPv4Address $ip -TimeToLive 01:00:00
+              Write-Output "added: $name.$zone -> $ip"
+              $changed = $true
+          } else {
+              Write-Output "exists: $name.$zone -> $ip"
+          }
+          $Ansible.Changed = $changed
+
+    - name: Include opensearch_stack role
+      ansible.builtin.include_role:
+        name: opensearch_stack
+    # observe_tls fetches step-ca's root cert and issues an ACME-signed cert
+    # for observe1.yourlab.local. Skip the entire role when stepca1 isn't in
+    # the active profile (e.g. AD-CS-only profiles) — observe1 still serves
+    # plain HTTP on :5601 and Beats on :9200, just no nginx :443 termination.
+    - name: Include observe_tls role
+      ansible.builtin.include_role:
+        name: observe_tls
+      when: "'stepca1' in groups['all']"
+    - name: Include filebeat role
+      ansible.builtin.include_role:
+        name: filebeat

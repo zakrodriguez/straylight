@@ -1,0 +1,71 @@
+winlogbeat.event_logs:
+  # ── Base channels (all Windows VMs) ──
+  - name: Application
+  - name: System
+  - name: Security
+  - name: Windows PowerShell
+  - name: Microsoft-Windows-PowerShell/Operational
+
+  # ── Sysmon ──
+{% if sysmon_enabled | default(true) %}
+  - name: Microsoft-Windows-Sysmon/Operational
+{% endif %}
+
+  # ── Domain Controller channels ──
+{% if winlogbeat_dc_channels | default(false) %}
+  - name: Directory Service
+  - name: DNS Server
+  - name: DFS Replication
+  - name: Microsoft-Windows-DNSServer/Analytical
+{% endif %}
+
+  # ── Certificate Authority channels ──
+{% if winlogbeat_ca_channels | default(false) %}
+  - name: Microsoft-Windows-CertificationAuthority/Operational
+{% endif %}
+
+  # ── IIS channels ──
+{% if winlogbeat_iis_channels | default(false) %}
+  - name: Microsoft-Windows-IIS-Configuration/Operational
+{% endif %}
+
+  # ── WSUS channels ──
+{% if winlogbeat_wsus_channels | default(false) %}
+  - name: Microsoft-Windows-WindowsUpdateClient/Operational
+{% endif %}
+
+output.elasticsearch:
+  hosts: ["https://{{ observe_ip }}:{{ beats_tls_port | default(9244) }}"]
+  username: "{{ beats_basic_auth_user }}"
+  password: "{{ beats_basic_auth_password }}"
+  # `certificate` mode: verify chain (step-ca root is in Windows trust via
+  # stepca_ad_trust forest GPO), skip hostname (Beats connect via IP).
+  ssl.verification_mode: certificate
+  # Date-suffixed index so the server-side ISM policy (opensearch_stack role)
+  # can age out whole daily indices instead of one fixed-name index growing
+  # unbounded on the single-node cluster. Field types are locked by
+  # the `straylight-logs` index template, which also auto-attaches the
+  # retention policy on index creation.
+  index: "logs-windows-%{+yyyy.MM.dd}"
+  allow_older_versions: true
+  pipeline: ""
+
+# setup.template.enabled: false — the index template + ISM policy are managed
+# server-side by the opensearch_stack role (single source of truth), not pushed
+# by each Beat. A custom non-default index name also requires ilm disabled.
+setup.ilm.enabled: false
+setup.template.enabled: false
+setup.pipelines.enabled: false
+
+fields:
+  lab_source: "{{ log_prefix }}-{{ inventory_hostname | upper }}"
+  lab_domain: "{{ lab_domain }}"
+
+fields_under_root: true
+
+logging.level: warning
+logging.to_files: true
+logging.files:
+  path: C:\ProgramData\Winlogbeat\logs
+  name: winlogbeat
+  keepfiles: 3

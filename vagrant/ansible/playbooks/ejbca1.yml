@@ -1,0 +1,26 @@
+---
+# EJBCA1 - EJBCA Community Edition on Ubuntu/Docker
+# Deploys MariaDB + EJBCA CE, creates Root CA → Issuing CA hierarchy
+- hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Include common_linux role
+      ansible.builtin.include_role:
+        name: common_linux
+
+    - name: Include docker_host role
+      ansible.builtin.include_role:
+        name: docker_host
+
+    - name: Include yubihsm role (YubiHSM2 SDK + connector)
+      ansible.builtin.include_role:
+        name: yubihsm
+
+    - name: Include ejbca role
+      ansible.builtin.include_role:
+        name: ejbca
+
+    - name: Include filebeat role
+      ansible.builtin.include_role:
+        name: filebeat

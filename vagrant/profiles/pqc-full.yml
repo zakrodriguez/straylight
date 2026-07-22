@@ -1,0 +1,24 @@
+name: pqc-full
+description: |
+  PQC migration demo including the Windows side. pqc-linux components
+  plus AD CS two-tier hierarchy + parallel ML-DSA AD CS hierarchy
+  (rootca-pqc + issueca-pqc) + IIS chimera leaf + admin workstation
+  for browser screenshots. Demonstrates forest-wide chimera root trust
+  via AD config NC distribution, web1:8443 chimera on Schannel, ML-DSA-65
+  Server-Auth leaves issued forest-wide, and manage1 trusting both
+  classical and PQC chains without warnings.
+
+components:
+  - dc1
+  - rootca
+  - issueca
+  - rootca-pqc
+  - issueca-pqc
+  - web1
+  - manage1
+  - ejbca1
+  - stepca1
+  - hydra1
+  - observe1
+  - scanner1
+  - acme1

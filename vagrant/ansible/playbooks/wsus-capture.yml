@@ -1,0 +1,42 @@
+---
+# Explicit WsusContent capture → golden master cache. Run via:
+#   scripts/cache-wsus.sh   (= vagrant provision wsus1 --provision-with wsus-capture)
+# AFTER the WsusContent download has completed (it downloads asynchronously after the
+# wsus1 provision finishes). Floor-guarded so a partial download can't clobber the master.
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Capture WsusContent to the golden master cache
+      ansible.windows.win_powershell:
+        script: |
+          {{ psf_init }}
+          $work = "{{ 'D:\\WSUS' if (wsus_content_disk | default(false)) else 'C:\\WSUS' }}\WsusContent"
+          $cache = 'C:\Software\wsus-cache\WsusContent'
+          if (-not (Test-Path $work)) { throw "Working content store not found: $work" }
+
+          # Floor guard: refuse to capture a trivial/partial store over the master.
+          $sum = (Get-ChildItem $work -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+          if (-not $sum -or $sum -lt 1GB) {
+              Write-PSFMessage -Level Warning -Message "WsusContent is $([math]::Round(($sum/1GB),2)) GB (< 1 GB floor) — skipping capture (download likely incomplete)" -Tag 'wsus-server'
+              $Ansible.Changed = $false
+              $Ansible.Result = "skipped (below floor)"
+              Wait-PSFMessage
+              return
+          }
+
+          New-Item -Path $cache -ItemType Directory -Force | Out-Null
+          Write-PSFMessage -Level Host -Message "Capturing WsusContent ($([math]::Round(($sum/1GB),2)) GB) to golden master via robocopy /MIR" -Tag 'wsus-server'
+          $null = robocopy $work $cache /MIR /R:3 /W:5 /NP /NFL /NDL
+          if ($LASTEXITCODE -gt 7) {
+              Write-PSFMessage -Level Error -Message "Robocopy failed with exit code $LASTEXITCODE" -Tag 'wsus-server'
+              Wait-PSFMessage
+              throw "Robocopy failed with exit code $LASTEXITCODE"
+          }
+          Write-PSFMessage -Level Host -Message 'WsusContent captured to golden master' -Tag 'wsus-server'
+          $Ansible.Changed = $true
+          $Ansible.Result = "captured"
+          Wait-PSFMessage

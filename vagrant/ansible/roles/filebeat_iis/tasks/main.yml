@@ -1,0 +1,122 @@
+---
+# Filebeat IIS role: forward IIS W3SVC access logs to OpenSearch
+# Uses local cache (C:\Software) when available, downloads from Elastic otherwise.
+
+- name: Skip filebeat if logging disabled
+  ansible.builtin.meta: end_role
+  when: not (logging_enabled | default(true) and filebeat_enabled | default(true))
+
+- name: Set Filebeat zip filename
+  ansible.builtin.set_fact:
+    filebeat_zip: "filebeat-{{ filebeat_version }}-windows-x86_64.zip"
+
+- name: Check if Filebeat is already installed
+  ansible.windows.win_stat:
+    path: 'C:\Program Files\Filebeat\filebeat.exe'
+  register: filebeat_exe
+
+- name: Create temp download directory
+  ansible.windows.win_file:
+    path: C:\tmp
+    state: directory
+  when: not filebeat_exe.stat.exists
+
+- name: Check for staged Filebeat ZIP in local software cache
+  ansible.windows.win_stat:
+    path: '{{ software_source }}\{{ filebeat_zip }}'
+  register: filebeat_local
+  when:
+    - not filebeat_exe.stat.exists
+    - software_source is defined
+
+- name: Copy Filebeat ZIP from local cache
+  ansible.windows.win_copy:
+    src: '{{ software_source }}\{{ filebeat_zip }}'
+    dest: 'C:\tmp\filebeat.zip'
+    remote_src: true
+  when:
+    - not filebeat_exe.stat.exists
+    - software_source is defined
+    - filebeat_local.stat.exists | default(false)
+
+# Checksum omitted: ansible.windows.win_get_url 3.5.0 has a string-comparison
+# bug that mismatches every checksum value (sha1/sha256/sha512) because the
+# "<algo>:" prefix never gets stripped before comparison. See the matching
+# comment in roles/winlogbeat/tasks/main.yml for the full rationale and
+# reproduction. HTTPS covers transport; cache-hit path still byte-anchored.
+# Re-add the checksum once ansible.windows >= 3.6 is in use.
+# Upstream SHA-512 for cross-check:
+# https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.17.0-windows-x86_64.zip.sha512
+- name: Download Filebeat {{ filebeat_version }} from Elastic
+  ansible.windows.win_get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/filebeat/{{ filebeat_zip }}"
+    dest: 'C:\tmp\filebeat.zip'
+  when:
+    - not filebeat_exe.stat.exists
+    - software_source is not defined or not (filebeat_local.stat.exists | default(false))
+
+- name: Extract Filebeat
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Extracting Filebeat to C:\Program Files\Filebeat' -Tag 'filebeat'
+
+      $extractDir = 'C:\tmp\filebeat-extract'
+      if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+
+      Expand-Archive -Path 'C:\tmp\filebeat.zip' -DestinationPath $extractDir -Force
+
+      # The zip contains a versioned subdirectory — move its contents to final location
+      $inner = Get-ChildItem $extractDir | Select-Object -First 1
+      Move-Item -Path $inner.FullName -Destination 'C:\Program Files\Filebeat' -Force
+
+      Remove-Item $extractDir -Recurse -Force
+
+      Write-PSFMessage -Level Host -Message 'Filebeat extracted' -Tag 'filebeat'
+      Wait-PSFMessage
+  when: not filebeat_exe.stat.exists
+
+- name: Create Filebeat log directory
+  ansible.windows.win_file:
+    path: 'C:\ProgramData\Filebeat\logs'
+    state: directory
+
+- name: Deploy filebeat.yml configuration
+  ansible.windows.win_template:
+    src: filebeat-iis.yml.j2
+    dest: 'C:\Program Files\Filebeat\filebeat.yml'
+  register: filebeat_config
+
+- name: Install Filebeat Windows service
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+
+      $svc = Get-Service -Name filebeat -ErrorAction SilentlyContinue
+      if ($svc) {
+          Write-PSFMessage -Level Host -Message 'Filebeat service already installed' -Tag 'filebeat'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+          return
+      }
+
+      Write-PSFMessage -Level Host -Message 'Installing Filebeat service' -Tag 'filebeat'
+      Push-Location 'C:\Program Files\Filebeat'
+      & .\install-service-filebeat.ps1
+      if ($LASTEXITCODE) { Pop-Location; throw "install-service-filebeat.ps1 failed (exit $LASTEXITCODE)" }
+      Pop-Location
+
+      Write-PSFMessage -Level Host -Message 'Filebeat service installed' -Tag 'filebeat'
+      Wait-PSFMessage
+
+- name: Ensure Filebeat service is running
+  ansible.windows.win_service:
+    name: filebeat
+    start_mode: auto
+    state: started
+
+- name: Restart Filebeat if config changed
+  ansible.windows.win_service:
+    name: filebeat
+    state: restarted
+  when: filebeat_config.changed

@@ -1,0 +1,77 @@
+---
+# Smallstep step-ca role: deploy step-ca via Docker Compose with auto-init
+# Creates root + intermediate CA hierarchy with ACME provisioner
+
+- name: Create step-ca parent directory
+  ansible.builtin.file:
+    path: /opt/stepca
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create step-ca data directories (owned by container user UID 1000)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
+  loop:
+    - /opt/stepca/data
+    - /opt/stepca/data/secrets
+
+- name: Write step-ca password file
+  ansible.builtin.copy:
+    dest: /opt/stepca/data/secrets/password
+    content: "{{ stepca_password }}"
+    owner: "1000"
+    group: "1000"
+    mode: "0600"
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/stepca/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start step-ca container
+  community.docker.docker_compose_v2:
+    project_src: /opt/stepca
+    state: present
+
+- name: Wait for step-ca to be ready
+  ansible.builtin.command:
+    cmd: docker exec stepca step ca health --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
+  register: stepca_ready
+  until: stepca_ready.rc == 0
+  retries: 30
+  delay: 10
+  changed_when: false
+
+- name: Copy root CA certificate to host
+  ansible.builtin.command:
+    cmd: docker cp stepca:/home/step/certs/root_ca.crt /opt/stepca/data/root_ca.pem
+  changed_when: false
+
+- name: Display root CA certificate subject
+  ansible.builtin.command:
+    cmd: openssl x509 -in /opt/stepca/data/root_ca.pem -noout -subject -issuer
+  register: stepca_root_cert
+  changed_when: false
+
+- name: Root CA certificate info
+  ansible.builtin.debug:
+    var: stepca_root_cert.stdout_lines
+
+- name: Verify ACME provisioner is configured
+  ansible.builtin.command:
+    cmd: docker exec stepca step ca provisioner list --ca-url https://localhost:9000 --root /home/step/certs/root_ca.crt
+  register: stepca_provisioners
+  changed_when: false
+
+- name: Display provisioner list
+  ansible.builtin.debug:
+    var: stepca_provisioners.stdout_lines

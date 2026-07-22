@@ -1,0 +1,57 @@
+# Managed by Ansible (acme_client role). Do not edit by hand.
+
+# HTTP-01 webroot — step-ca will GET /.well-known/acme-challenge/<token>
+# during validation, so this site must be reachable on port 80 from stepca1
+# at every name in the AD DNS A records list (acme1, step.acme1, sh.acme1,
+# cb.acme1, alpn.acme1).
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name acme1.{{ lab_domain }} step.acme1.{{ lab_domain }} sh.acme1.{{ lab_domain }} cb.acme1.{{ lab_domain }} alpn.acme1.{{ lab_domain }};
+
+    root /var/www/html;
+    index index.html;
+
+    location /.well-known/acme-challenge/ {
+        # Webroot for both step CLI (--webroot) and acme.sh (-w)
+        root /var/www/html;
+        # ACME challenge files are served as plain text, no extensions
+        default_type "text/plain";
+        try_files $uri =404;
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+
+# HTTPS server blocks — initially commented out. Walkthrough step 5
+# uncomments them after the learner has issued certs and copied them into
+# /etc/nginx/ssl/.
+#
+# server {
+#     listen 443 ssl;
+#     server_name step.acme1.{{ lab_domain }};
+#
+#     ssl_certificate     /etc/nginx/ssl/step.crt;
+#     ssl_certificate_key /etc/nginx/ssl/step.key;
+#
+#     location / {
+#         return 200 "step.acme1 — cert issued by step CLI from step-ca\n";
+#         default_type text/plain;
+#     }
+# }
+#
+# server {
+#     listen 443 ssl;
+#     server_name sh.acme1.{{ lab_domain }};
+#
+#     ssl_certificate     /etc/nginx/ssl/sh.crt;
+#     ssl_certificate_key /etc/nginx/ssl/sh.key;
+#
+#     location / {
+#         return 200 "sh.acme1 — cert issued by acme.sh from step-ca\n";
+#         default_type text/plain;
+#     }
+# }

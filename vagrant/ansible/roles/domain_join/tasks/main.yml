@@ -1,0 +1,213 @@
+---
+# Domain Join role: DNS configuration, wait for DC, join domain
+
+- name: Set DNS to point to Domain Controller
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $targetPrefix = '{{ dc_ip }}'.Split('.')[0..2] -join '.'
+      $adapter = Get-NetIPConfiguration |
+          Where-Object { $_.NetAdapter.Status -eq 'Up' } |
+          Where-Object { $_.IPv4Address.IPAddress -like "$targetPrefix.*" } |
+          Select-Object -First 1
+      if (-not $adapter) {
+          $adapter = Get-NetIPConfiguration |
+              Where-Object { $_.NetAdapter.Status -eq 'Up' -and -not $_.IPv4DefaultGateway } |
+              Select-Object -First 1
+      }
+      if (-not $adapter) {
+          Write-PSFMessage -Level Error -Message 'No suitable adapter found for DNS configuration' -Tag 'domain-join'
+          Wait-PSFMessage
+          throw "No suitable adapter found for DNS configuration"
+      }
+      $current = (Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4).ServerAddresses
+      if ($current -contains '{{ dc_ip }}' -and $current.Count -eq 1) {
+          Write-PSFMessage -Level Host -Message 'DNS already set to {{ dc_ip }}' -Tag 'domain-join'
+          $Ansible.Changed = $false
+      } else {
+          Write-PSFMessage -Level Host -Message "Setting DNS to {{ dc_ip }} on $($adapter.InterfaceAlias)" -Tag 'domain-join'
+          Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses @('{{ dc_ip }}') -ErrorAction Stop
+
+          # Verify DNS was actually set
+          $verify = (Get-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -AddressFamily IPv4).ServerAddresses
+          if (-not $verify -or '{{ dc_ip }}' -notin $verify) {
+              Write-PSFMessage -Level Warning -Message 'DNS verification failed — retrying with netsh' -Tag 'domain-join'
+              netsh interface ipv4 set dnsservers name="$($adapter.InterfaceAlias)" static '{{ dc_ip }}' primary validate=no
+              Start-Sleep -Seconds 2
+              Clear-DnsClientCache
+          }
+      }
+      Wait-PSFMessage
+
+- name: Wait for AD DS to be available
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      # DNS resolution alone is insufficient — DC may respond to DNS
+      # before AD DS is ready for domain joins. Verify LDAP is serving.
+      Write-PSFMessage -Level Host -Message 'Checking AD DS availability at {{ lab_domain }}' -Tag 'domain-join'
+      $resolved = Resolve-DnsName -Name '{{ lab_domain }}' -ErrorAction SilentlyContinue
+      if (-not $resolved) {
+          Write-PSFMessage -Level Warning -Message 'Cannot resolve domain {{ lab_domain }}' -Tag 'domain-join'
+          Wait-PSFMessage
+          throw "Cannot resolve domain {{ lab_domain }}"
+      }
+      $result = nltest /dsgetdc:{{ lab_domain }}
+      if ($LASTEXITCODE -ne 0) {
+          Write-PSFMessage -Level Warning -Message 'DC not ready for domain joins' -Tag 'domain-join'
+          Wait-PSFMessage
+          throw "DC not ready: $result"
+      }
+      Write-PSFMessage -Level Host -Message 'AD DS is available for domain join' -Tag 'domain-join'
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  retries: 45
+  delay: 20
+  register: dc_ready
+  until: dc_ready is not failed
+
+# Pre-join WMI/CIM stability probe.
+# A CA host can fail the `Join domain` task with `WS-Management ... InvalidSelectors`
+# (HTTP 500) when it has just had several back-to-back `win_feature` ADCS installs
+# (Cert-Authority + Web-Enrollment + Device-Enrollment + Enroll-Web-Pol +
+# Enroll-Web-Svc), which can transiently destabilize WMI's Win32_ComputerSystem
+# provider — the exact class `microsoft.ad.membership` uses. Earlier tasks (Set DNS,
+# Wait for AD DS) run through win_powershell, which uses a lighter CIM path and
+# doesn't expose the issue. Wait for WMI to respond cleanly before the membership
+# module takes over.
+- name: Wait for WMI/CIM stability (Win32_ComputerSystem probe)
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      try {
+          $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+          if (-not $cs) { throw "Win32_ComputerSystem returned null" }
+          Write-PSFMessage -Level Host -Message "WMI/CIM ready (Win32_ComputerSystem: $($cs.Name), Domain=$($cs.Domain))" -Tag 'domain-join'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+      } catch {
+          Write-PSFMessage -Level Warning -Message "WMI/CIM not stable: $($_.Exception.Message)" -Tag 'domain-join'
+          Wait-PSFMessage
+          throw "WMI/CIM not stable: $($_.Exception.Message)"
+      }
+  retries: 10
+  delay: 6
+  register: wmi_stable
+  until: wmi_stable is not failed
+
+- name: Join domain
+  microsoft.ad.membership:
+    dns_domain_name: "{{ lab_domain }}"
+    domain_admin_user: "{{ lab_netbios }}\\Administrator"
+    domain_admin_password: "{{ admin_password }}"
+    state: domain
+    reboot: true
+    reboot_timeout: 600
+  register: join_result
+  # 6×60s = 6 min: a 3×30s = 90s window was too tight for the ADCS-induced WMI
+  # race on CA hosts. 6 min gives WMI time to fully settle even after heavy
+  # CIM-using provisioning bursts.
+  retries: 6
+  delay: 60
+  until: join_result is not failed
+
+# Post-Join WMI/CIM stability probe. After the domain-join reboot, WMI restarts
+# but isn't fully settled before the next CIM-using task (e.g. the "Ensure DNS is
+# set on host-only adapter after domain join reboot" step), which then hits a
+# `WS-Management ... InvalidSelectors` HTTP 500. This is the same WMI race the
+# pre-Join probe addresses, but fired AFTER the domain_join reboot — when WMI has
+# restarted but the next Get-NetIPConfiguration / Get-CimInstance call races it.
+#
+# The ceiling is 60 × 6s = 6 min: under parallel rebuilds WS-Management can stay
+# unavailable for >3 min after the reboot on a slow VM. The probe only iterates
+# until WMI returns, so on a healthy build it exits in ~6s regardless of the
+# ceiling — no waste on healthy builds.
+- name: Wait for WMI/CIM stability after domain-join reboot
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      try {
+          $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+          if (-not $cs) { throw "Win32_ComputerSystem returned null" }
+          # Also exercise the NetAdapter CIM provider — that's what the next
+          # task ("Ensure DNS is set on host-only adapter") actually uses,
+          # and Win32_ComputerSystem alone doesn't catch a transient
+          # NetAdapter / NetTCPIP namespace race.
+          $null = Get-NetIPConfiguration -ErrorAction Stop | Select-Object -First 1
+          Write-PSFMessage -Level Host -Message "Post-reboot WMI/CIM ready (Domain=$($cs.Domain))" -Tag 'domain-join'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+      } catch {
+          Write-PSFMessage -Level Warning -Message "Post-reboot WMI/CIM not stable: $($_.Exception.Message)" -Tag 'domain-join'
+          Wait-PSFMessage
+          throw "Post-reboot WMI/CIM not stable: $($_.Exception.Message)"
+      }
+  retries: 60
+  delay: 6
+  register: post_reboot_wmi_stable
+  until: post_reboot_wmi_stable is not failed
+
+- name: Ensure DNS is set on host-only adapter after domain join reboot
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      # Domain join + reboot can move DNS settings from the host-only adapter
+      # to the NAT adapter (Windows sets DNS on the "primary" interface with a
+      # default gateway). Re-apply DNS to the host-only adapter so DNS
+      # registration targets the correct server from the correct source IP.
+      $targetPrefix = '{{ dc_ip }}'.Split('.')[0..2] -join '.'
+
+      # Enumerate all adapters once
+      $allAdapters = Get-NetIPConfiguration | Where-Object { $_.NetAdapter.Status -eq 'Up' }
+
+      $hostOnly = $allAdapters |
+          Where-Object { $_.IPv4Address.IPAddress -like "$targetPrefix.*" } |
+          Select-Object -First 1
+
+      if (-not $hostOnly) {
+          $hostOnly = $allAdapters |
+              Where-Object { -not $_.IPv4DefaultGateway } |
+              Select-Object -First 1
+      }
+
+      if ($hostOnly) {
+          $current = (Get-DnsClientServerAddress -InterfaceIndex $hostOnly.InterfaceIndex -AddressFamily IPv4).ServerAddresses
+          if ($current -contains '{{ dc_ip }}' -and $current.Count -eq 1) {
+              $Ansible.Changed = $false
+          } else {
+              Write-PSFMessage -Level Host -Message 'Re-pinning DNS to {{ dc_ip }} on host-only adapter after domain join reboot' -Tag 'domain-join'
+              Set-DnsClientServerAddress -InterfaceIndex $hostOnly.InterfaceIndex -ServerAddresses @('{{ dc_ip }}')
+          }
+      }
+
+      # Also clear DNS from NAT adapter to prevent it from registering
+      $natAdapters = $allAdapters |
+          Where-Object { $_.IPv4DefaultGateway } |
+          Where-Object { -not ($_.IPv4Address.IPAddress -like "$targetPrefix.*") }
+      foreach ($nat in $natAdapters) {
+          $natDns = (Get-DnsClientServerAddress -InterfaceIndex $nat.InterfaceIndex -AddressFamily IPv4).ServerAddresses
+          if ($natDns.Count -gt 0) {
+              Write-PSFMessage -Level Host -Message "Clearing DNS from NAT adapter $($nat.InterfaceAlias)" -Tag 'domain-join'
+              Set-DnsClientServerAddress -InterfaceIndex $nat.InterfaceIndex -ResetServerAddresses
+          }
+      }
+      Wait-PSFMessage
+
+- name: Force DNS registration of host-only adapter
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Forcing DNS registration' -Tag 'domain-join'
+      ipconfig /registerdns | Out-Null
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+
+# The post-join reboot above can leave C:\Software as a stale symlink — the
+# directory entry survives but \\vboxsvr\C:_Software is no longer enumerable
+# until the symlink is recreated. Repair pre-emptively so downstream
+# cache-first roles (windows_kb_install, winlogbeat, sysmon, sysinternals)
+# don't fall through to internet downloads. Idempotent; ~1s on healthy share.
+- name: Repair C:\Software symlink if domain-join reboot left it stale
+  ansible.builtin.include_role:
+    name: shared_folder_repair
+  when: software_source is defined and software_source != ""

@@ -1,0 +1,17 @@
+---
+# EJBCA AD Trust - Publish EJBCA Root CA certificate to Active Directory
+# Run after EJBCA1 is provisioned: vagrant provision dc1 --provision-with ejbca-trust
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Stage shared scheduled-task helper
+      ansible.builtin.include_role:
+        name: win_scheduled_task
+
+    - name: Include ejbca_ad_trust role
+      ansible.builtin.include_role:
+        name: ejbca_ad_trust

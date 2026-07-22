@@ -1,0 +1,5 @@
+---
+# BGInfo role defaults
+vm_role: "generic"
+bginfo_exe: 'C:\Tools\Sysinternals\Bginfo64.exe'
+bginfo_dir: 'C:\ProgramData\straylight\bginfo'

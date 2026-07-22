@@ -1,0 +1,73 @@
+---
+# cms_lab_linux entry point. Stages /opt/cms-lab/ on scanner1.
+# Short-circuits cleanly when required CAs are not in the inventory.
+
+- name: Skip cms_lab_linux when classical or PQC issuing CA absent from inventory
+  ansible.builtin.meta: end_role
+  when: >
+    'issueca' not in groups['all'] or
+    'issueca-pqc' not in groups['all']
+
+- name: Load shared CMS-lab CA enrollment targets (single source of truth)
+  ansible.builtin.include_vars: "{{ playbook_dir }}/../vars/cms_lab_ca.yml"
+
+- name: Install lab support packages (dumpasn1 + python3-asn1crypto + python3-cryptography)
+  ansible.builtin.apt:
+    name:
+      - dumpasn1
+      - python3-asn1crypto
+      - python3-cryptography
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Create cms_lab directory tree on scanner1
+  ansible.builtin.file:
+    path: "{{ cms_lab_root }}/{{ item }}"
+    state: directory
+    owner: vagrant
+    group: vagrant
+    mode: "0755"
+  loop:
+    - certs
+    - inputs
+    - scripts
+    - outputs
+
+- name: Generate + enroll lab certs (self-signed + delegated AD CS)
+  ansible.builtin.import_tasks: certs.yml
+
+- name: Stage sample inputs (hello.txt + recipients.list)
+  ansible.builtin.copy:
+    src: "inputs/{{ item }}"
+    dest: "{{ cms_lab_root }}/inputs/{{ item }}"
+    owner: vagrant
+    group: vagrant
+    mode: "0644"
+  loop:
+    - hello.txt
+    - recipients.list
+
+- name: Stage tarball builder script
+  ansible.builtin.copy:
+    src: inputs/build-tarball.sh
+    dest: "{{ cms_lab_root }}/inputs/build-tarball.sh"
+    owner: vagrant
+    group: vagrant
+    mode: "0755"
+
+- name: Build deterministic tarball.tar.gz (idempotent)
+  ansible.builtin.command:
+    cmd: "{{ cms_lab_root }}/inputs/build-tarball.sh {{ cms_lab_root }}"
+    creates: "{{ cms_lab_root }}/inputs/tarball.tar.gz"
+  become: true
+  become_user: vagrant
+
+- name: Stage helper scripts
+  ansible.builtin.copy:
+    src: "scripts/"
+    dest: "{{ cms_lab_root }}/scripts/"
+    owner: vagrant
+    group: vagrant
+    mode: "0755"

@@ -1,0 +1,51 @@
+# cms-lab AD CS enrollment via certreq — runs as SYSTEM (scheduled task) so the
+# request authenticates as the machine account ({{ inventory_hostname }}$),
+# which holds Enroll on the template.
+#
+# Why certreq -submit instead of Get-Certificate / CertEnroll: on the multi-homed
+# Vagrant CA VMs every guest shares the VirtualBox NAT IP 10.0.2.15, so the CA's
+# RPC endpoint mapper hands a client an endpoint that resolves to the client
+# *itself* — CertEnroll's DCOM bind then fails with RPC_S_SERVER_UNAVAILABLE
+# (0x800706ba). `certreq -submit -config "<host>\<ca>"` binds to the CA host
+# directly and succeeds (same path machine_cert autoenroll and pqc_machine_cert
+# use). The earlier `certreq -submit -attrib` attempt was abandoned because
+# -attrib silently drops the template name over the wire; an INF
+# [RequestAttributes] CertificateTemplate embeds it correctly.
+$ErrorActionPreference = 'Stop'
+$root   = '{{ cms_lab_win_root }}'
+$label  = '{{ enroll_label }}'
+$config = '{{ enroll_config }}'
+$inf    = "$root\certs\$label.inf"
+$req    = "C:\Windows\Temp\$label.req"
+$cer    = "C:\Windows\Temp\$label.cer"
+$status = "C:\Windows\Temp\$label.status"
+Remove-Item $req, $cer, $status -Force -ErrorAction SilentlyContinue
+try {
+    $out  = (& certreq -f -q -new $inf $req 2>&1 | Out-String)
+    $out += (& certreq -f -q -submit -config $config $req $cer 2>&1 | Out-String)
+    $out += (& certreq -f -q -accept -machine $cer 2>&1 | Out-String)
+    if (-not (Test-Path $cer)) { throw "no cert issued. certreq output: $out" }
+
+    $thumb = (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $cer).Thumbprint
+    $cert  = Get-Item "Cert:\LocalMachine\My\$thumb" -ErrorAction Stop
+    if (-not $cert.HasPrivateKey) { throw "issued cert $thumb has no private key" }
+
+    # Get-Certificate respected the template's non-exportable pKIPrivateKeyFlags;
+    # certreq does too. Scripts load the cert by thumbprint from LocalMachine\My
+    # rather than from a PFX, so persist the thumbprint + the chain PEM.
+    Set-Content -Path "$root\certs\$label.thumbprint" -Value $thumb -Encoding ASCII
+
+    $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+    $chain.Build($cert) | Out-Null
+    $pem = ""
+    foreach ($c in $chain.ChainElements.Certificate) {
+        $b64 = [Convert]::ToBase64String($c.RawData, 'InsertLineBreaks')
+        $pem += "-----BEGIN CERTIFICATE-----`n$b64`n-----END CERTIFICATE-----`n"
+    }
+    Set-Content -Path "$root\certs\$label-chain.pem" -Value $pem -Encoding ASCII
+
+    Remove-Item $req, $cer -Force -ErrorAction SilentlyContinue
+    Set-Content -Path $status -Value "OK:$thumb"
+} catch {
+    Set-Content -Path $status -Value "ERR:$_"
+}

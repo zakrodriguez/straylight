@@ -1,0 +1,31 @@
+name: pqc-adcs-two-tier
+description: |
+  Microsoft AD CS PQC test-bed — extends ad-cs-two-tier with a parallel
+  ML-DSA-signed CA hierarchy alongside the existing RSA hierarchy.
+
+  Mirrors the EJBCA chimera model already in the lab (RSA-primary CAs +
+  ML-DSA alternative-signing keys) but at the AD CS layer with pure-PQC
+  CAs.  Demonstrates classical + PQC AD CS coexistence end-to-end:
+
+    - rootca       (SHA256WithRSA-4096)  +  rootca-pqc   (ML-DSA-87)
+    - issueca      (SHA256WithRSA-4096)  +  issueca-pqc  (ML-DSA-65)
+
+  Both hierarchies share web1 for CRL/AIA distribution.  Clients (manage1)
+  trust both root CAs forest-wide.
+
+  Requires KB5087539 on the PQC CAs (Server 2025 May 2026 cumulative —
+  the windows_kb_install role installs it as part of ca.yml, gated on kb_prereq).
+
+  rootca-pqc + issueca-pqc are provisioned by the unified ca.yml playbook,
+  which drives the standalone_ca / subordinate_ca roles in ML-DSA mode
+  (ca_crypto_provider = ML-DSA-87 / ML-DSA-65) alongside the classical
+  hierarchy.
+
+components:
+  - dc1
+  - rootca
+  - issueca
+  - rootca-pqc
+  - issueca-pqc
+  - web1
+  - manage1

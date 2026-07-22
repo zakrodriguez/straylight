@@ -1,0 +1,42 @@
+---
+# iis_chimera_demo — bind a chimera (RSA + ML-DSA-65 alt-sig) leaf to an IIS
+# site on an AD-joined Windows VM. End-to-end: EJBCA enrollment → PKCS12
+# build on ejbca1 → transfer to Windows target → cert store import → IIS
+# binding → firewall.
+#
+# Required vars (set by caller; no sane defaults):
+#   ejbca_token_password   EJBCA end-entity password (lab default: foo123)
+#   lab_domain             DNS domain (yourlab.local)
+#
+# Optional vars (sensible defaults below):
+
+# CN for the leaf cert. Defaults to the inventory_hostname.lab_domain.
+iis_chimera_cn: "{{ inventory_hostname }}.{{ lab_domain }}"
+
+# EJBCA end-entity username (must be unique per host).
+iis_chimera_username: "{{ inventory_hostname }}-chimera"
+
+# PKCS12 password. Note: the IIS keystore lives in Cert:\LocalMachine\My
+# after import; this password is only used during the on-disk handoff.
+iis_chimera_p12_pass: changeit
+
+# IIS site to attach the chimera HTTPS binding to. PKI is the AD CS CRL
+# distribution site that already runs on web1; binding here piggybacks on
+# an existing site without conflicting with Default Web Site.
+iis_chimera_iis_site: PKI
+
+# HTTPS port to bind. Default 8443 to coexist with whatever's on :443/:80.
+iis_chimera_port: 8443
+
+# Where on the Windows target the cert artifacts land.
+iis_chimera_cert_dir: 'C:\PqcCerts'
+
+# Firewall rule display name (idempotent — created if missing).
+iis_chimera_firewall_rule: "IIS-HTTPS-{{ iis_chimera_port }}-Chimera"
+
+# Arbitrary GUID for HTTP.SYS sslcert app binding (any unique GUID works).
+iis_chimera_appid: '{4dc3e181-e14b-4a21-b022-59fc669b0914}'
+
+# Where on ejbca1 the EJBCA container exports cert artifacts (matches
+# ejbca_pqc_enroll role's pattern).
+iis_chimera_ejbca_export_dir: /opt/ejbca/data/export

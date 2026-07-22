@@ -1,0 +1,46 @@
+---
+# cloudflare_pqc role defaults — public CF PQC observation
+# See the cloudflare-pqc walkthrough (content/walkthroughs-unverified branch)
+
+# Endpoints to probe. Format: human-name -> URL.
+cloudflare_pqc_endpoints:
+  cloudflare-com: https://cloudflare.com
+  pq-research:    https://pq.cloudflareresearch.com
+  one-one-doh:    https://1.1.1.1/dns-query
+
+# Install paths.
+cloudflare_pqc_install_dir: /opt/cloudflare-pqc
+cloudflare_pqc_report_dir:  /var/lib/cloudflare-pqc
+cloudflare_pqc_report_path: /var/lib/cloudflare-pqc/report.json
+
+# Systemd timer cadence (every 6 hours, matches other scanner1 jobs).
+cloudflare_pqc_timer_oncalendar: "*-*-* 00/6:00:00"
+
+# Go toolchain path (provided by cbom_lens role on scanner1).
+cloudflare_pqc_go_binary: /usr/local/go/bin/go
+
+# CBOM scanner id used by cbom_ingest.py to tag documents.
+cloudflare_pqc_scanner_id: scanner1-cloudflare
+
+# ── OpenSearch ingest wiring ────────────────────────────────────────────────
+# After each probe.sh run (systemd ExecStartPost + the initial provision-time
+# run) the report.json is fed through cbom_ingest.py so the cbom-source
+# branch in build_documents() actually lands docs on OSD. Without this the
+# `Cloudflare Edge PQC Posture` panel stays empty.
+#
+# Endpoint mirrors host-side cbom-pipeline.sh / pqc-remediate.sh
+# (observe_tls nginx data port :9244 → TLS + Basic Auth → 127.0.0.1:9200).
+# observe_ip / admin_password come from the Vagrantfile extra_vars (always
+# present under vagrant provisioning) or generated group_vars; beats_* use
+# the same safety-net defaults as the filebeat/winlogbeat roles for
+# inventories that don't surface group_vars. No hardcoded secrets/IPs.
+cloudflare_pqc_opensearch_url:  "https://{{ observe_ip }}:{{ beats_tls_port | default(9244) }}"
+cloudflare_pqc_opensearch_user: "{{ beats_basic_auth_user | default('beats') }}"
+cloudflare_pqc_opensearch_pass: "{{ beats_basic_auth_password | default(admin_password) }}"
+# Lab CA isn't in the system trust store; ingest uses --insecure.
+cloudflare_pqc_opensearch_insecure: true
+
+# Where to drop the slice of cbom-toolkit needed for ingest. Keeping this
+# under /opt (instead of /vagrant, which is disabled for scanner1) means the
+# ExecStartPost path is stable across reboots.
+cloudflare_pqc_toolkit_dir: /opt/cbom-toolkit/python

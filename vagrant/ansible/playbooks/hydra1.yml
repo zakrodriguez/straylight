@@ -1,0 +1,22 @@
+---
+# HYDRA1 - Ory Hydra OAuth 2.0 / OIDC server on Ubuntu/Docker
+# Deploys Hydra with PostgreSQL and a consent app that authenticates against AD via LDAP
+- hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Include common_linux role
+      ansible.builtin.include_role:
+        name: common_linux
+
+    - name: Include docker_host role
+      ansible.builtin.include_role:
+        name: docker_host
+
+    - name: Include hydra role
+      ansible.builtin.include_role:
+        name: hydra
+
+    - name: Include filebeat role
+      ansible.builtin.include_role:
+        name: filebeat

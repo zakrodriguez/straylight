@@ -1,0 +1,242 @@
+---
+# Domain Controller role: AD DS forest creation, OUs, service accounts, GPOs
+
+- name: Install AD-Domain-Services feature
+  ansible.windows.win_feature:
+    name: AD-Domain-Services
+    include_management_tools: true
+    state: present
+
+- name: Create AD DS Forest
+  microsoft.ad.domain:
+    dns_domain_name: "{{ lab_domain }}"
+    domain_netbios_name: "{{ lab_netbios }}"
+    safe_mode_password: "{{ safe_mode_password }}"
+    install_dns: true
+    database_path: C:\Windows\NTDS
+    log_path: C:\Windows\NTDS
+    sysvol_path: C:\Windows\SYSVOL
+    reboot: true
+    reboot_timeout: 600
+
+- name: Wait for AD DS to be fully operational
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $null = Get-ADDomain -ErrorAction Stop
+      Write-PSFMessage -Level Host -Message 'AD DS is operational' -Tag 'domain-controller'
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  retries: 40
+  delay: 15
+  register: ad_ready
+  until: ad_ready is not failed
+
+- name: Set DNS client to host-only IP after DC promotion
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      # Install-ADDSForest overrides the DNS client to 127.0.0.1. Re-set it to
+      # the host-only IP so other VMs and validate.sh see the correct address.
+      $targetPrefix = '{{ ip_address }}'.Split('.')[0..2] -join '.'
+      $hostOnly = Get-NetIPConfiguration |
+          Where-Object { $_.NetAdapter.Status -eq 'Up' -and $_.IPv4Address.IPAddress -like "$targetPrefix.*" } |
+          Select-Object -First 1
+      if ($hostOnly) {
+          $current = (Get-DnsClientServerAddress -InterfaceIndex $hostOnly.InterfaceIndex -AddressFamily IPv4).ServerAddresses
+          if ($current -contains '{{ ip_address }}' -and $current.Count -eq 1) {
+              $Ansible.Changed = $false
+          } else {
+              Write-PSFMessage -Level Host -Message 'Re-setting DNS client to {{ ip_address }} after DC promotion' -Tag 'domain-controller'
+              Set-DnsClientServerAddress -InterfaceIndex $hostOnly.InterfaceIndex -ServerAddresses @('{{ ip_address }}')
+          }
+      }
+      Wait-PSFMessage
+
+- name: Restrict DNS Server to host-only IP and clean NAT records
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      # The DNS Server listens on all IPs by default, including the NAT adapter
+      # (10.0.2.x). It auto-generates in-memory A records for the DC hostname from
+      # its listening interfaces — these don't appear in Get-DnsServerResourceRecord
+      # but DO appear in Resolve-DnsName. Fix: restrict DNS Server to host-only IP.
+      $changed = $false
+
+      # Check current DNS Server listening addresses
+      $dnsListenKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\DNS\Parameters'
+      $current = Get-ItemProperty -Path $dnsListenKey -Name 'ListenAddresses' -ErrorAction SilentlyContinue
+      $targetIP = '{{ ip_address }}'
+
+      if (-not $current -or @(Compare-Object $current.ListenAddresses @($targetIP) -SyncWindow 0).Count -gt 0) {
+          Write-PSFMessage -Level Host -Message "Restricting DNS Server to listen on $targetIP only" -Tag 'domain-controller'
+          dnscmd /ResetListenAddresses $targetIP
+          if ($LASTEXITCODE -ne 0) {
+              Write-PSFMessage -Level Error -Message "dnscmd /ResetListenAddresses failed with exit code $LASTEXITCODE" -Tag 'domain-controller'
+              Wait-PSFMessage
+              throw "dnscmd /ResetListenAddresses failed with exit code $LASTEXITCODE"
+          }
+          Restart-Service DNS -Force -ErrorAction Stop
+          $changed = $true
+      }
+
+      # Also remove any stale 10.0.2.x A records from the zone data
+      $zone = '{{ lab_domain }}'
+      $hostname = $env:COMPUTERNAME
+      $records = Get-DnsServerResourceRecord -ZoneName $zone -Name $hostname -RRType A -ErrorAction SilentlyContinue |
+          Where-Object { $_.RecordData.IPv4Address.ToString() -like '10.0.2.*' }
+      if ($records) {
+          Write-PSFMessage -Level Host -Message "Removing $($records.Count) stale NAT DNS record(s)" -Tag 'domain-controller'
+          foreach ($record in $records) {
+              Remove-DnsServerResourceRecord -ZoneName $zone -InputObject $record -Force
+          }
+          $changed = $true
+      }
+
+      $Ansible.Changed = $changed
+      Wait-PSFMessage
+
+- name: Create PKI Organizational Units
+  microsoft.ad.ou:
+    name: "{{ item.name }}"
+    path: "{{ item.path }}"
+    state: present
+    protect_from_deletion: false
+  loop:
+    - name: PKI
+      path: "{{ domain_dn }}"
+    - name: Servers
+      path: "OU=PKI,{{ domain_dn }}"
+    - name: Service Accounts
+      path: "OU=PKI,{{ domain_dn }}"
+    - name: Groups
+      path: "OU=PKI,{{ domain_dn }}"
+    - name: Workstations
+      path: "{{ domain_dn }}"
+
+- name: Create PKI service accounts
+  microsoft.ad.user:
+    name: "{{ item.name }}"
+    sam_account_name: "{{ item.name }}"
+    upn: "{{ item.name }}@{{ lab_domain }}"
+    path: "OU=Service Accounts,OU=PKI,{{ domain_dn }}"
+    password: "{{ svc_password }}"
+    password_never_expires: true
+    user_cannot_change_password: true
+    description: "{{ item.description }}"
+    state: present
+    enabled: true
+    update_password: on_create
+  loop:
+    - name: svc-ndes
+      description: NDES Service Account
+    - name: svc-cep
+      description: CEP Service Account
+    - name: svc-ces
+      description: CES Service Account
+    - name: svc-sql
+      description: SQL Server Database Engine service account (sqlhost1)
+
+- name: Create PKI admin groups
+  microsoft.ad.group:
+    name: "{{ item.name }}"
+    path: "OU=Groups,OU=PKI,{{ domain_dn }}"
+    scope: global
+    category: security
+    description: "{{ item.description }}"
+    state: present
+  loop:
+    - name: PKI Admins
+      description: PKI Administrators
+    - name: Certificate Managers
+      description: Certificate request approvers
+    - name: PKI-ServerAdmins
+      description: Server-level admin certificate enrollment
+    - name: PKI-DomainAdmins
+      description: Domain-level admin certificate enrollment
+    - name: PKI-EnterpriseAdmins
+      description: Enterprise-level admin certificate enrollment
+
+- name: Create DNS A record for PKI web server
+  ansible.windows.win_dns_record:
+    name: pki
+    zone: "{{ lab_domain }}"
+    type: A
+    value: "{{ web_ip }}"
+    state: present
+
+- name: Create Autoenrollment GPO
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $gpoName = "PKI - Certificate Autoenrollment"
+      $domainDN = '{{ domain_dn }}'
+
+      if (Get-GPO -Name $gpoName -ErrorAction SilentlyContinue) {
+          Write-PSFMessage -Level Host -Message "GPO '$gpoName' already exists" -Tag 'domain-controller'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+          return
+      }
+
+      Write-PSFMessage -Level Host -Message "Creating Autoenrollment GPO '$gpoName'" -Tag 'domain-controller'
+      $gpo = New-GPO -Name $gpoName -Comment "Enables automatic certificate enrollment for users and computers"
+
+      New-GPLink -Name $gpoName -Target $domainDN -LinkEnabled Yes -ErrorAction Stop
+
+      # Computer Configuration autoenrollment
+      Set-GPRegistryValue -Name $gpoName -Key "HKLM\SOFTWARE\Policies\Microsoft\Cryptography\AutoEnrollment" `
+          -ValueName "AEPolicy" -Type DWord -Value 7 -ErrorAction Stop
+      Set-GPRegistryValue -Name $gpoName -Key "HKLM\SOFTWARE\Policies\Microsoft\Cryptography\AutoEnrollment" `
+          -ValueName "OfflineExpirationPercent" -Type DWord -Value 10 -ErrorAction Stop
+      Set-GPRegistryValue -Name $gpoName -Key "HKLM\SOFTWARE\Policies\Microsoft\Cryptography\AutoEnrollment" `
+          -ValueName "OfflineExpirationStoreNames" -Type String -Value "MY" -ErrorAction Stop
+
+      # User Configuration autoenrollment
+      Set-GPRegistryValue -Name $gpoName -Key "HKCU\SOFTWARE\Policies\Microsoft\Cryptography\AutoEnrollment" `
+          -ValueName "AEPolicy" -Type DWord -Value 7 -ErrorAction Stop
+
+      Write-PSFMessage -Level Host -Message "GPO '$gpoName' created and linked" -Tag 'domain-controller'
+      Wait-PSFMessage
+
+- name: Create Explorer Settings GPO
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $gpoName = "Explorer - Default Settings"
+      $domainDN = '{{ domain_dn }}'
+      $regKey = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+
+      $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
+      if (-not $gpo) {
+          Write-PSFMessage -Level Host -Message "Creating GPO '$gpoName'" -Tag 'domain-controller'
+          $gpo = New-GPO -Name $gpoName -Comment "Explorer: show extensions, show hidden files, open to This PC"
+          New-GPLink -Name $gpoName -Target $domainDN -LinkEnabled Yes -ErrorAction Stop
+      }
+
+      $settings = @(
+          @{ ValueName = 'HideFileExt';                  Value = 0 }   # Show file extensions
+          @{ ValueName = 'Hidden';                       Value = 1 }   # Show hidden files
+          @{ ValueName = 'ShowSuperHidden';              Value = 1 }   # Show protected OS files
+          @{ ValueName = 'LaunchTo';                     Value = 3 }   # Open to Downloads
+          @{ ValueName = 'SharingWizardOn';              Value = 0 }   # Disable sharing wizard
+          @{ ValueName = 'NavPaneExpandToCurrentFolder'; Value = 1 }   # Expand nav pane to current folder
+      )
+
+      $changed = $false
+      foreach ($s in $settings) {
+          $existing = Get-GPPrefRegistryValue -Name $gpoName -Context User -Key $regKey -ValueName $s.ValueName -ErrorAction SilentlyContinue
+          if (-not $existing -or $existing.Value -ne $s.Value) {
+              Set-GPPrefRegistryValue -Name $gpoName -Context User -Action Replace `
+                  -Key $regKey -ValueName $s.ValueName -Type DWord -Value $s.Value -ErrorAction Stop
+              $changed = $true
+          }
+      }
+
+      if ($changed) {
+          Write-PSFMessage -Level Host -Message "GPO '$gpoName' configured" -Tag 'domain-controller'
+      } else {
+          Write-PSFMessage -Level Host -Message "GPO '$gpoName' already up to date" -Tag 'domain-controller'
+      }
+      $Ansible.Changed = $changed
+      Wait-PSFMessage

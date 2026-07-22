@@ -1,0 +1,253 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "name": "straylight",
+      "description": "Vagrant-based Windows PKI lab software cache"
+    }
+  },
+  "components": [
+    {
+      "type": "application",
+      "name": "powershell-7",
+      "version": "7.4.7",
+      "hashes": [{"alg": "SHA-256", "content": "217b5575398d5e4a0ac67aff7b468c696a66c3e209685cf338032fc0a5f032ec"}],
+      "externalReferences": [{"type": "distribution", "url": "https://github.com/PowerShell/PowerShell/releases/download/v7.4.7/PowerShell-7.4.7-win-x64.msi"}],
+      "properties": [
+        {"name": "platform", "value": "windows"},
+        {"name": "filename", "value": "PowerShell-7.4.7-win-x64.msi"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "filebeat-windows",
+      "version": "8.17.0",
+      "hashes": [{"alg": "SHA-256", "content": "938229e667a417695758460b1927e74fdae408ebe47c825f7349a6f1639b594e"}],
+      "externalReferences": [{"type": "distribution", "url": "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.17.0-windows-x86_64.zip"}],
+      "properties": [
+        {"name": "platform", "value": "windows"},
+        {"name": "filename", "value": "filebeat-8.17.0-windows-x86_64.zip"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "winlogbeat",
+      "version": "8.17.0",
+      "hashes": [{"alg": "SHA-256", "content": "60a47c74366b8969f114dcd93177873ef6cac71b5826af00175ca25ce9427033"}],
+      "externalReferences": [{"type": "distribution", "url": "https://artifacts.elastic.co/downloads/beats/winlogbeat/winlogbeat-8.17.0-windows-x86_64.zip"}],
+      "properties": [
+        {"name": "platform", "value": "windows"},
+        {"name": "filename", "value": "winlogbeat-8.17.0-windows-x86_64.zip"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "temurin-jdk",
+      "version": "17",
+      "hashes": [{"alg": "SHA-256", "content": "bd169b6b8439e1d715eff789e355029e222ce6152994cefc3e666783ade8ff44"}],
+      "externalReferences": [{"type": "distribution", "url": "https://api.adoptium.net/v3/installer/latest/17/ga/windows/x64/jdk/hotspot/normal/eclipse"}],
+      "properties": [
+        {"name": "platform", "value": "windows"},
+        {"name": "filename", "value": "temurin-jdk-17.msi"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "tomcat",
+      "version": "10.1.34",
+      "hashes": [{"alg": "SHA-256", "content": "5e4251b493febd92ac9333b4c1893d9a8b2193c5f8d49a5571cf8e14a3c4189a"}],
+      "externalReferences": [{"type": "distribution", "url": "https://archive.apache.org/dist/tomcat/tomcat-10/v10.1.34/bin/apache-tomcat-10.1.34-windows-x64.zip"}],
+      "properties": [
+        {"name": "platform", "value": "windows"},
+        {"name": "filename", "value": "apache-tomcat-10.1.34-windows-x64.zip"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "sysinternals-suite",
+      "version": "2026-03",
+      "hashes": [{"alg": "SHA-256", "content": "5b0ef1748598cea56c776957fa2cce3b4604a8e5416732a60676d8449e56c23e"}],
+      "externalReferences": [{"type": "distribution", "url": "https://download.sysinternals.com/files/SysinternalsSuite.zip"}],
+      "properties": [
+        {"name": "platform", "value": "windows"},
+        {"name": "filename", "value": "SysinternalsSuite.zip"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "sysinternals-pstools",
+      "version": "2026-03",
+      "hashes": [{"alg": "SHA-256", "content": "a9ca77dfe03ce15004157727bb43ba66f00ceb215362c9b3d199f000edaa8d61"}],
+      "externalReferences": [{"type": "distribution", "url": "https://download.sysinternals.com/files/PSTools.zip"}],
+      "properties": [
+        {"name": "platform", "value": "windows"},
+        {"name": "filename", "value": "PSTools.zip"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "nettools",
+      "version": "5.0.170",
+      "hashes": [{"alg": "SHA-256", "content": "d4a9e09a9d205f6f60716183d16e4071dc5e7c81f6764127ff10ccef10e26a1b"}],
+      "externalReferences": [{"type": "distribution", "url": "https://nettools.net/?sdm_process_download=1&download_id=4726"}],
+      "properties": [
+        {"name": "platform", "value": "windows"},
+        {"name": "filename", "value": "NetTools.zip"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "yubihsm2-sdk",
+      "version": "2026-01",
+      "hashes": [{"alg": "SHA-256", "content": "4b2b8d15c818bfa72479d09680fd13473de92390aaa8755b5fc448673aad9702"}],
+      "externalReferences": [{"type": "distribution", "url": "https://developers.yubico.com/YubiHSM2/Releases/yubihsm2-sdk-2026-01-ubuntu2204-amd64.tar.gz"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "yubihsm2-sdk-2026-01-ubuntu2204-amd64.tar.gz"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "filebeat-linux",
+      "version": "8.17.0",
+      "hashes": [{"alg": "SHA-256", "content": "5fe052153d9b22ae3aee97140ad2525676db077e07cdc49d4dcd01cf535e97a8"}],
+      "externalReferences": [{"type": "distribution", "url": "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.17.0-linux-x86_64.tar.gz"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "filebeat-8.17.0-linux-x86_64.tar.gz"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "step-cli",
+      "version": "0.28.3",
+      "hashes": [{"alg": "SHA-256", "content": "fa3511aeafd91569ec2bc3244d21cacf3b5b83e7d8eaa78e0e3b4d87ebd5189f"}],
+      "externalReferences": [{"type": "distribution", "url": "https://github.com/smallstep/cli/releases/download/v0.28.3/step-cli_0.28.3-1_amd64.deb"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "step-cli_0.28.3_amd64.deb"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "go",
+      "version": "1.25.6",
+      "hashes": [{"alg": "SHA-256", "content": "f022b6aad78e362bcba9b0b94d09ad58c5a70c6ba3b7582905fababf5fe0181a"}],
+      "externalReferences": [{"type": "distribution", "url": "https://go.dev/dl/go1.25.6.linux-amd64.tar.gz"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "go1.25.6.linux-amd64.tar.gz"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "openssh-pqc-src",
+      "version": "10.0p2",
+      "hashes": [{"alg": "SHA-256", "content": "021a2e709a0edf4250b1256bd5a9e500411a90dddabea830ed59cef90eb9d85c"}],
+      "externalReferences": [{"type": "distribution", "url": "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.0p2.tar.gz"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "openssh-10.0p2.tar.gz"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "gnupg-libgpg-error",
+      "version": "1.56",
+      "hashes": [{"alg": "SHA-256", "content": "82c3d2deb4ad96ad3925d6f9f124fe7205716055ab50e291116ef27975d169c0"}],
+      "externalReferences": [{"type": "distribution", "url": "https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.56.tar.bz2"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "gnupg-cache/libgpg-error-1.56.tar.bz2"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "gnupg-libgcrypt",
+      "version": "1.11.2",
+      "hashes": [{"alg": "SHA-256", "content": "6ba59dd192270e8c1d22ddb41a07d95dcdbc1f0fb02d03c4b54b235814330aac"}],
+      "externalReferences": [{"type": "distribution", "url": "https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.2.tar.bz2"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "gnupg-cache/libgcrypt-1.11.2.tar.bz2"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "gnupg-libassuan",
+      "version": "3.0.2",
+      "hashes": [{"alg": "SHA-256", "content": "d2931cdad266e633510f9970e1a2f346055e351bb19f9b78912475b8074c36f6"}],
+      "externalReferences": [{"type": "distribution", "url": "https://www.gnupg.org/ftp/gcrypt/libassuan/libassuan-3.0.2.tar.bz2"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "gnupg-cache/libassuan-3.0.2.tar.bz2"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "gnupg-libksba",
+      "version": "1.6.7",
+      "hashes": [{"alg": "SHA-256", "content": "cf72510b8ebb4eb6693eef765749d83677a03c79291a311040a5bfd79baab763"}],
+      "externalReferences": [{"type": "distribution", "url": "https://www.gnupg.org/ftp/gcrypt/libksba/libksba-1.6.7.tar.bz2"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "gnupg-cache/libksba-1.6.7.tar.bz2"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "gnupg-npth",
+      "version": "1.8",
+      "hashes": [{"alg": "SHA-256", "content": "8bd24b4f23a3065d6e5b26e98aba9ce783ea4fd781069c1b35d149694e90ca3e"}],
+      "externalReferences": [{"type": "distribution", "url": "https://www.gnupg.org/ftp/gcrypt/npth/npth-1.8.tar.bz2"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "gnupg-cache/npth-1.8.tar.bz2"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "gnupg-pinentry",
+      "version": "1.3.2",
+      "hashes": [{"alg": "SHA-256", "content": "8e986ed88561b4da6e9efe0c54fa4ca8923035c99264df0b0464497c5fb94e9e"}],
+      "externalReferences": [{"type": "distribution", "url": "https://www.gnupg.org/ftp/gcrypt/pinentry/pinentry-1.3.2.tar.bz2"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "gnupg-cache/pinentry-1.3.2.tar.bz2"}
+      ]
+    }
+    ,
+    {
+      "type": "application",
+      "name": "gnupg",
+      "version": "2.5.13",
+      "hashes": [{"alg": "SHA-256", "content": "31a92aa03525d66a5834fe8ae4aad05a9ba93e99235189f4f64e78ae32f13093"}],
+      "externalReferences": [{"type": "distribution", "url": "https://www.gnupg.org/ftp/gcrypt/gnupg/gnupg-2.5.13.tar.bz2"}],
+      "properties": [
+        {"name": "platform", "value": "linux"},
+        {"name": "filename", "value": "gnupg-cache/gnupg-2.5.13.tar.bz2"}
+      ]
+    }
+  ]
+}

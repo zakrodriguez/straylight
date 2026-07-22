@@ -1,0 +1,450 @@
+{
+  "$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:56f3d1e3-5b06-47b3-997e-6361d3f23b6a",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-05-21T12:20:05.189221+00:00",
+    "component": {
+      "type": "application",
+      "name": "pqc-handshake-probe",
+      "version": "1.0.0"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "4be558cc-5048-5cac-8b32-d091f57ef6f7",
+      "type": "cryptographic-asset",
+      "name": "id-ecPublicKey",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.53/192.168.56.53:443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "b86252bb-46b6-581f-8215-96816e0d9de4",
+      "type": "cryptographic-asset",
+      "name": "CN=observe1.yourlab.local (signed with ecdsa-with-SHA256)",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.53/192.168.56.53:443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=observe1.yourlab.local",
+          "issuerName": "O=Smallstep-CA, CN=Smallstep-CA Intermediate CA",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "732febcc-71e1-5b97-acbf-183c293a0d91",
+          "subjectPublicKeyRef": "4be558cc-5048-5cac-8b32-d091f57ef6f7",
+          "notValidBefore": "2026-05-21T11:13:26+00:00",
+          "notValidAfter": "2026-05-22T11:14:26+00:00"
+        }
+      }
+    },
+    {
+      "bom-ref": "c17706e4-cbac-5b32-9a39-3588c65d70eb",
+      "type": "cryptographic-asset",
+      "name": "rsaEncryption",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.53/192.168.56.53:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "72e0085b-89f0-5916-90dc-4a18f6709361",
+      "type": "cryptographic-asset",
+      "name": "CN=observe1.yourlab.local (signed with rsassaPss)",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.53/192.168.56.53:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=observe1.yourlab.local",
+          "issuerName": "CN=EJBCA-Chimera-Root-CA, O=YOURLAB",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "7059c1d5-2b1e-5db1-bc66-ab412ff0ccba",
+          "subjectPublicKeyRef": "c17706e4-cbac-5b32-9a39-3588c65d70eb",
+          "notValidBefore": "2026-05-21T11:56:04+00:00",
+          "notValidAfter": "2028-05-20T11:56:03+00:00"
+        }
+      }
+    },
+    {
+      "bom-ref": "5f5e6637-947d-5a53-bb44-a5cc4b8002e8",
+      "type": "cryptographic-asset",
+      "name": "[PQC-ONLY] ML-DSA-65",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.53/192.168.56.53:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "10b7dffc-194a-5aee-9104-2313c1f3284c",
+      "type": "cryptographic-asset",
+      "name": "[PQC-ONLY] CN=observe1.yourlab.local (signed with ML-DSA-65)",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.53/192.168.56.53:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=observe1.yourlab.local",
+          "issuerName": "CN=EJBCA-PQC-Issuing-CA, O=YOURLAB",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "1c4af9a2-3d4a-5977-8e98-673682697bbe",
+          "subjectPublicKeyRef": "5f5e6637-947d-5a53-bb44-a5cc4b8002e8",
+          "notValidBefore": "2026-05-21T11:51:34+00:00",
+          "notValidAfter": "2028-05-20T11:51:33+00:00"
+        }
+      }
+    },
+    {
+      "bom-ref": "11f63eab-6a3a-59e0-9993-c922fec6eda0",
+      "type": "cryptographic-asset",
+      "name": "id-ecPublicKey",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.51/192.168.56.51:9000"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "001114c4-cd7a-55ef-96d7-ed67db70b183",
+      "type": "cryptographic-asset",
+      "name": "CN=Step Online CA (signed with ecdsa-with-SHA256)",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.51/192.168.56.51:9000"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=Step Online CA",
+          "issuerName": "O=Smallstep-CA, CN=Smallstep-CA Intermediate CA",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "732febcc-71e1-5b97-acbf-183c293a0d91",
+          "subjectPublicKeyRef": "11f63eab-6a3a-59e0-9993-c922fec6eda0",
+          "notValidBefore": "2026-05-21T11:12:45+00:00",
+          "notValidAfter": "2026-05-22T11:13:45+00:00"
+        }
+      }
+    },
+    {
+      "bom-ref": "d4282088-bbe5-5e19-ba0d-a4f88a0841be",
+      "type": "cryptographic-asset",
+      "name": "[PQC-ONLY] ML-DSA-65",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.51/192.168.56.51:9444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "b50f3a8b-d563-53d6-a5a5-add3899aa790",
+      "type": "cryptographic-asset",
+      "name": "[PQC-ONLY] CN=stepca1.yourlab.local (signed with ML-DSA-65)",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.51/192.168.56.51:9444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=stepca1.yourlab.local",
+          "issuerName": "CN=EJBCA-PQC-Issuing-CA, O=YOURLAB",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "1c4af9a2-3d4a-5977-8e98-673682697bbe",
+          "subjectPublicKeyRef": "d4282088-bbe5-5e19-ba0d-a4f88a0841be",
+          "notValidBefore": "2026-05-21T11:51:35+00:00",
+          "notValidAfter": "2028-05-20T11:51:34+00:00"
+        }
+      }
+    },
+    {
+      "bom-ref": "a710694e-2e1d-55d3-b943-56745b3b8716",
+      "type": "cryptographic-asset",
+      "name": "rsaEncryption",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "55d13003-87c3-57e3-b4ff-59a2f470141f",
+      "type": "cryptographic-asset",
+      "name": "CN=ejbca1.yourlab.local, UID=c-0xai5zdfyoyktpag0, O=PrimeKey Container Quickstart (signed with sha256WithRSAEncryption)",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=ejbca1.yourlab.local, UID=c-0xai5zdfyoyktpag0, O=PrimeKey Container Quickstart",
+          "issuerName": "CN=ejbca1.yourlab.local, UID=c-0xai5zdfyoyktpag0, O=PrimeKey Container Quickstart",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "151e66f8-6395-5347-aa07-3ffb247661d8",
+          "subjectPublicKeyRef": "a710694e-2e1d-55d3-b943-56745b3b8716",
+          "notValidBefore": "2026-05-21T04:57:30+00:00",
+          "notValidAfter": "2036-05-20T04:57:30+00:00"
+        }
+      }
+    },
+    {
+      "bom-ref": "35c3c7ad-4101-5ea4-a308-6c43d9c131b9",
+      "type": "cryptographic-asset",
+      "name": "[PQC-ONLY] ML-DSA-65",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "156b5719-6396-5334-a613-91ed06d5fad3",
+      "type": "cryptographic-asset",
+      "name": "[PQC-ONLY] CN=ejbca1.yourlab.local (signed with ML-DSA-65)",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=ejbca1.yourlab.local",
+          "issuerName": "CN=EJBCA-PQC-Issuing-CA, O=YOURLAB",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "1c4af9a2-3d4a-5977-8e98-673682697bbe",
+          "subjectPublicKeyRef": "35c3c7ad-4101-5ea4-a308-6c43d9c131b9",
+          "notValidBefore": "2026-05-21T11:51:36+00:00",
+          "notValidAfter": "2028-05-20T11:51:35+00:00"
+        }
+      }
+    },
+    {
+      "bom-ref": "f022a578-b431-550f-9035-a4b7213017d5",
+      "type": "cryptographic-asset",
+      "name": "[PQC-ONLY] ML-DSA-65",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.52/192.168.56.52:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "a59a3bcc-9a73-51b2-90ae-b5e1addc9e3d",
+      "type": "cryptographic-asset",
+      "name": "[PQC-ONLY] CN=hydra1.yourlab.local (signed with ML-DSA-65)",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.52/192.168.56.52:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=hydra1.yourlab.local",
+          "issuerName": "CN=EJBCA-PQC-Issuing-CA, O=YOURLAB",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "1c4af9a2-3d4a-5977-8e98-673682697bbe",
+          "subjectPublicKeyRef": "f022a578-b431-550f-9035-a4b7213017d5",
+          "notValidBefore": "2026-05-21T11:51:36+00:00",
+          "notValidAfter": "2028-05-20T11:51:35+00:00"
+        }
+      }
+    },
+    {
+      "bom-ref": "732febcc-71e1-5b97-acbf-183c293a0d91",
+      "type": "cryptographic-asset",
+      "name": "ecdsa-with-SHA256",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.53/192.168.56.53:443"
+          },
+          {
+            "location": "192.168.56.51/192.168.56.51:9000"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "7059c1d5-2b1e-5db1-bc66-ab412ff0ccba",
+      "type": "cryptographic-asset",
+      "name": "rsassaPss",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.53/192.168.56.53:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "1c4af9a2-3d4a-5977-8e98-673682697bbe",
+      "type": "cryptographic-asset",
+      "name": "[PQC-ONLY] ML-DSA-65",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.53/192.168.56.53:8444"
+          },
+          {
+            "location": "192.168.56.51/192.168.56.51:9444"
+          },
+          {
+            "location": "192.168.56.50/192.168.56.50:8444"
+          },
+          {
+            "location": "192.168.56.52/192.168.56.52:8444"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "151e66f8-6395-5347-aa07-3ffb247661d8",
+      "type": "cryptographic-asset",
+      "name": "sha256WithRSAEncryption",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "192.168.56.50/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    }
+  ],
+  "dependencies": []
+}

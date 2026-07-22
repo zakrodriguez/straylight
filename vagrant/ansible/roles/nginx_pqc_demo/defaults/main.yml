@@ -1,0 +1,10 @@
+---
+nginx_pqc_service_name: nginx-pqc-demo
+nginx_pqc_port: 8443
+nginx_pqc_image: "nginx:1.27-alpine"
+nginx_pqc_compose_dir: "/opt/{{ nginx_pqc_service_name }}"
+nginx_pqc_cert_label: chimera
+# Cert contract (shared with openssl_pqc_demo — see roles/README.md "PQC demo
+# cert contract"): caller MUST set nginx_pqc_cert_path and nginx_pqc_key_path
+# (no defaults; the role asserts them). nginx only stages the leaf, so unlike
+# openssl_pqc_demo it has no CA-chain path vars.

@@ -1,0 +1,42 @@
+$ErrorActionPreference = 'Continue'
+$ca   = '{{ ca_config }}'
+$work = '{{ work_dir }}'
+$cn   = '{{ subject_cn }}'
+Import-Module ADCSAdministration -ErrorAction SilentlyContinue
+Add-CATemplate -Name WebServer -Force -ErrorAction SilentlyContinue
+Start-Sleep 3
+@"
+[NewRequest]
+Subject = "CN=$cn,O={{ lab_netbios }},C=US"
+KeyLength = 2048
+KeySpec = 1
+KeyUsage = 0xA0
+MachineKeySet = true
+HashAlgorithm = SHA256
+ProviderName = "Microsoft Software Key Storage Provider"
+RequestType = PKCS10
+Exportable = true
+
+[Extensions]
+2.5.29.17 = "{text}"
+_continue_ = "dns=$cn&"
+
+[RequestAttributes]
+CertificateTemplate = WebServer
+"@ | Set-Content "$work\functest.inf" -Encoding ASCII
+
+$log  = (& certreq -f -q -new "$work\functest.inf" "$work\functest.req" 2>&1 | Out-String)
+$log += (& certreq -f -q -submit -config $ca "$work\functest.req" "$work\functest.cer" 2>&1 | Out-String)
+Set-Content "$work\enroll-log.txt" $log
+
+if (Test-Path "$work\functest.cer") {
+    $c   = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 "$work\functest.cer"
+    $ser = $c.SerialNumber                                   # hex, what certutil -revoke expects
+    $rid = ([regex]::Match($log, 'RequestId:\s*(\d+)')).Groups[1].Value   # decimal, from -submit output
+    [PSCustomObject]@{
+        RequestId    = $rid
+        SerialNumber = $ser
+        Subject      = "CN=$cn"
+        IssuedAt     = (Get-Date).ToString('o')
+    } | ConvertTo-Json | Set-Content "$work\functest-cert-ids.txt"
+}

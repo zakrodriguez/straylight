@@ -1,0 +1,25 @@
+[Unit]
+Description={{ observe_timer_description }}
+{% if observe_timer_documentation %}
+Documentation={{ observe_timer_documentation }}
+{% endif %}
+After={{ observe_timer_after }}
+Wants={{ observe_timer_after }}
+
+[Service]
+Type=oneshot
+ExecStart={{ observe_timer_exec_start }}
+{% if observe_timer_ingest_path %}
+# Pipe the freshly-written report into OpenSearch via cbom_ingest.py. Without
+# this the report sits on disk and the OSD panel is permanently empty.
+# Ingest is idempotent (deterministic _id), so timer-driven runs upsert rather
+# than duplicate. ExecStartPost=- keeps a transient ingest failure non-fatal so
+# a fresh report is still written when OpenSearch is briefly down.
+ExecStartPost=-{{ observe_timer_ingest_python }} {{ observe_timer_ingest_script }} {{ observe_timer_ingest_path }} {{ observe_timer_ingest_args | join(' ') }}
+{% endif %}
+StandardOutput=journal
+StandardError=journal
+User={{ observe_timer_user }}
+
+[Install]
+WantedBy=multi-user.target

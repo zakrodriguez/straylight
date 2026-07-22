@@ -1,0 +1,29 @@
+# Software cache — large binaries staged here for VM provisioning
+# Run scripts/cache-software.sh to populate from the manifest.
+#
+# scanner-cache/ holds first-build artifacts (openssl 3.5 binary tree, CBOM-Lens
+# Go binary, cloned source repos). The role tasks populate this on first cold-build;
+# subsequent cold-builds skip the source-build step in favor of the cached artifact.
+# wsus-cache/ is the WSUS golden master: SUSDB.mdf + SUSDB_log.ldf (catalog DB) AND
+# WsusContent/ (patch binaries, ~118 GB). All ignored by wsus-cache/* below; only the
+# .gitkeep + README.md are committed (~30 min savings on cold-builds after the first).
+# Cache files themselves are gitignored — only the directory marker is committed.
+*
+!.gitignore
+!sbom.json
+!Straylight-*.json
+!template-aliases.json
+!kb-pins.txt
+!choco/
+!scanner-cache/
+scanner-cache/*
+!scanner-cache/.gitkeep
+!scanner-cache/README.md
+!wsus-cache/
+wsus-cache/*
+!wsus-cache/.gitkeep
+!wsus-cache/README.md
+!gnupg-cache/
+gnupg-cache/*
+!gnupg-cache/.gitkeep
+!gnupg-cache/README.md

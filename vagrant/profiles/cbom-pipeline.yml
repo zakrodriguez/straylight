@@ -1,0 +1,12 @@
+name: cbom-pipeline
+description: |
+  Subset that exercises the full CBOM pipeline — three CAs to scan
+  (EJBCA + step-ca for issuance, observe1 for the OpenSearch sink),
+  scanner1 for the probe runners. Heavy overlap with pqc-linux but
+  framed for "what's the minimum to test the CBOM pipeline end-to-end."
+
+components:
+  - ejbca1
+  - stepca1
+  - observe1
+  - scanner1

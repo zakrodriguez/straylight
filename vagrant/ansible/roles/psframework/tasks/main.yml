@@ -1,0 +1,103 @@
+---
+# PSFramework role: install PSFramework module and deploy logging init script
+# Provides structured file logging to C:\Users\Public\Logs\straylight\ on every Windows VM
+#
+# When psf_source is set (local VirtualBox shared folder with pre-downloaded
+# module), installs from there (~instant). Falls back to PSGallery if the
+# shared folder isn't ready (common during parallel VM boots).
+
+# ansible-core/module_utils/csharp/Ansible.Basic.cs:365-384 catches a
+# SecurityException from EventLog.SourceExists() but then proceeds to call
+# CreateEventSource("Ansible", "Application") and only catches SecurityException
+# again. If the source exists in a non-Application log, the .NET runtime throws
+# "Source Ansible already exists on the local computer" (InvalidOperationException)
+# which leaks as a module load failure — breaking the very first win_* task.
+# Pre-creating the source via raw (bypasses Ansible.Basic.cs entirely) so the
+# upstream SourceExists() check reliably returns True before any module loads.
+- name: Bootstrap Ansible event log source (workaround for ansible-core race)
+  ansible.builtin.raw: |
+    try {
+        if (-not [System.Diagnostics.EventLog]::SourceExists('Ansible')) {
+            [System.Diagnostics.EventLog]::CreateEventSource('Ansible', 'Application')
+        }
+    } catch {
+        try {
+            [System.Diagnostics.EventLog]::DeleteEventSource('Ansible')
+            [System.Diagnostics.EventLog]::CreateEventSource('Ansible', 'Application')
+        } catch {
+            Write-Warning ("EventLog source bootstrap failed: " + $_.Exception.Message)
+        }
+    }
+  changed_when: false
+
+- name: Check if PSFramework is already installed
+  ansible.windows.win_powershell:
+    script: |
+      $mod = Get-Module -ListAvailable -Name PSFramework | Select-Object -First 1
+      if ($mod) {
+          $Ansible.Changed = $false
+          $Ansible.Result = "PSFramework $($mod.Version) already installed"
+      } else {
+          $Ansible.Result = "not-installed"
+      }
+  register: psf_check
+
+- name: Install PSFramework
+  when: psf_check.result == "not-installed"
+  block:
+    - name: Install PSFramework from local cache
+      ansible.windows.win_powershell:
+        script: |
+          $src = '{{ psf_source }}\PSFramework'
+          $dest = "$env:ProgramFiles\WindowsPowerShell\Modules\PSFramework"
+          # VBox shared folder may take a moment to become available on parallel VM boots
+          for ($i = 0; $i -lt 12; $i++) {
+              if (Test-Path $src) { break }
+              Start-Sleep -Seconds 5
+          }
+          if (-not (Test-Path $src)) { throw "Local PSFramework cache not found at $src" }
+          Copy-Item -Path $src -Destination $dest -Recurse -Force
+          $mod = Get-Module -ListAvailable -Name PSFramework | Select-Object -First 1
+          if (-not $mod) { throw "PSFramework not loadable after copy" }
+          $Ansible.Result = "Installed PSFramework $($mod.Version) from local cache"
+      when: psf_source is defined and psf_source != ""
+
+    - name: Install PSFramework from PSGallery
+      ansible.windows.win_powershell:
+        script: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSFramework -Scope AllUsers -Force
+          $mod = Get-Module -ListAvailable -Name PSFramework | Select-Object -First 1
+          $Ansible.Result = "Installed PSFramework $($mod.Version) from PSGallery"
+      when: psf_source is not defined or psf_source == ""
+  rescue:
+    - name: Install PSFramework from PSGallery (fallback)
+      ansible.windows.win_powershell:
+        script: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSFramework -Scope AllUsers -Force
+          $mod = Get-Module -ListAvailable -Name PSFramework | Select-Object -First 1
+          $Ansible.Result = "Installed PSFramework $($mod.Version) from PSGallery (local cache unavailable)"
+
+- name: Create PSFramework log directory
+  ansible.windows.win_file:
+    path: C:\Users\Public\Logs\straylight
+    state: directory
+
+- name: Deploy PSFramework logging init script
+  ansible.windows.win_copy:
+    dest: C:\Users\Public\Logs\straylight\Initialize-PSFLogging.ps1
+    content: |
+      # PSFramework logging initialization for straylight
+      # Dot-source this at the start of any script or scheduled task wrapper:
+      #   . C:\Users\Public\Logs\straylight\Initialize-PSFLogging.ps1
+      Import-Module PSFramework
+      Set-PSFLoggingProvider -Name logfile `
+          -InstanceName "straylight-$env:COMPUTERNAME" `
+          -FilePath 'C:\Users\Public\Logs\straylight\%computername%-%date%.csv' `
+          -FileType CSV `
+          -Enabled $true

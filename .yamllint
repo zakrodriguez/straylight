@@ -1,0 +1,80 @@
+# yamllint config for straylight
+# https://yamllint.readthedocs.io/
+
+extends: default
+
+rules:
+  line-length:
+    # Profile descriptions and Ansible task names commonly exceed 80.
+    max: 200
+    level: warning
+
+  comments:
+    # Ansible-generated comments sometimes lack the leading space.
+    min-spaces-from-content: 1
+    level: warning
+
+  braces:
+    # Jinja2 expressions `{{ var }}` show up in YAML strings; relax brace rules.
+    max-spaces-inside: 1
+    level: warning
+
+  # Codebase aligns columns for readability (IP address tables, var blocks).
+  # Demote alignment/spacing rules so they surface as warnings but don't block.
+  commas:
+    level: warning
+  colons:
+    level: warning
+  empty-lines:
+    level: warning
+  trailing-spaces:
+    level: warning
+  brackets:
+    level: warning
+  hyphens:
+    level: warning
+  key-duplicates:
+    # Real error — duplicate keys silently overwrite. Keep as error.
+    level: error
+  new-lines:
+    # Real error — CRLF endings break YAML parsers on some platforms.
+    level: error
+
+  document-start:
+    # Codebase is inconsistent — some files have `---`, some don't.
+    # Disable rather than churn 100+ files for stylistic consistency.
+    level: warning
+    present: false
+
+  truthy:
+    # Ansible idioms use yes/no extensively; demote to warning so CI doesn't
+    # block on `on: push:` keys in GitHub workflow YAML either.
+    level: warning
+    allowed-values: ['true', 'false', 'yes', 'no']
+
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+  # ansible-lint expects these to align with its bundled defaults; tracking
+  # them prevents "incompatible custom yamllint configuration" warnings.
+  comments-indentation: false
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+
+ignore: |
+  vagrant/.vagrant/
+  vagrant/.vagrant-*/
+  vagrant/logs/
+  vagrant/cbom-output/
+  vagrant/cbom-export/
+  vagrant/cbom-toolkit/
+  vagrant/resources/
+  .planning/
+  packer/
+  # walkverify golden companions are machine-generated (yaml.safe_dump), not
+  # hand-authored — their sequence indentation intentionally differs from the
+  # repo style.
+  docs/walkthroughs/walkverify/

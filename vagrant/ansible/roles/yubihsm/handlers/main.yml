@@ -1,0 +1,6 @@
+---
+- name: Restart yubihsm-connector
+  ansible.builtin.systemd:
+    name: yubihsm-connector
+    state: restarted
+    daemon_reload: true

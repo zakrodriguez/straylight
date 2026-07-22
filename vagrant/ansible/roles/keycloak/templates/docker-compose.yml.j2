@@ -1,0 +1,37 @@
+services:
+  keycloak-db:
+    image: postgres:16
+    container_name: keycloak-db
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+    volumes:
+      - /opt/keycloak/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:{{ keycloak_tag }}
+    container_name: keycloak
+    command: start-dev --health-enabled=true
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+      - "9000:9000"
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: "{{ admin_password }}"
+      KC_DB: postgres
+      KC_DB_URL: "jdbc:postgresql://keycloak-db/keycloak"
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    restart: unless-stopped

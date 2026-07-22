@@ -1,0 +1,23 @@
+---
+# TOMCAT1 Phase 1 — domain join (reboots VM, breaks VBoxSF on Desktop Experience)
+# Phase 2 runs after vagrant-reload restores shared folders.
+- hosts: all
+  gather_facts: false
+  vars:
+    ansible_winrm_operation_timeout_sec: 1800
+    ansible_winrm_read_timeout_sec: 1860
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Include common role
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        dns_servers:
+          - "{{ dc_ip }}"
+
+    - name: Include domain_join role
+      ansible.builtin.include_role:
+        name: domain_join

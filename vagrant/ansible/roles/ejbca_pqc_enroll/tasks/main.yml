@@ -1,0 +1,15 @@
+---
+# ejbca_pqc_enroll dispatcher — selects an enrollment mode.
+#
+# Modes:
+#   issuing  — current behavior: enroll ML-DSA-65 leaf from EJBCA-PQC-Issuing-CA
+#   chimera  — enroll RSA leaf from EJBCA-Chimera-Root-CA with hybrid issuer signature
+
+- name: Validate pqc_enroll_mode
+  ansible.builtin.assert:
+    that:
+      - pqc_enroll_mode in ['issuing', 'chimera']
+    fail_msg: "pqc_enroll_mode must be 'issuing' or 'chimera' (got {{ pqc_enroll_mode }})"
+
+- name: Include enrollment tasks for mode {{ pqc_enroll_mode }}
+  ansible.builtin.include_tasks: "{{ pqc_enroll_mode }}.yml"

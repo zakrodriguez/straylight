@@ -1,0 +1,9 @@
+---
+# Beats → OpenSearch HTTP Basic Auth credentials (canonical defaults live in
+# vagrant/ansible/group_vars/all.yml so observe_tls + filebeat + winlogbeat +
+# filebeat_iis all read the same values). Re-declared here at the role level
+# as a safety net for cases where group_vars are bypassed — mirrors the
+# opensearch_stack/defaults/main.yml pattern.
+beats_basic_auth_user: beats
+beats_basic_auth_password: "{{ admin_password }}"
+beats_tls_port: 9244

@@ -1,0 +1,10 @@
+name: observability
+description: |
+  OpenSearch + dashboards focused. observe1 hosts the stack;
+  scanner1 generates data to ingest. For demos that center on the
+  CBOM dashboards or OpenSearch query patterns rather than the
+  underlying PKI machinery.
+
+components:
+  - observe1
+  - scanner1

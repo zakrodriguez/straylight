@@ -1,0 +1,200 @@
+---
+# Standalone CA role: offline root CA installation and configuration.
+#
+# Crypto-provider agnostic: classical RSA roots (ca_crypto_provider unset ->
+# RSA default) and ML-DSA PQC roots (ca_crypto_provider set in the Vagrantfile,
+# e.g. "ML-DSA:87#Microsoft Software Key Storage Provider") share this one role.
+# The ML-DSA preflight + the PQC CAPolicy variant only engage when the provider
+# is an ML-DSA one.
+
+- name: Install ADCS-Cert-Authority feature
+  ansible.windows.win_feature:
+    name: ADCS-Cert-Authority
+    include_management_tools: true
+    state: present
+
+- name: Preflight — confirm the ML-DSA CNG provider is registered
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      # ca_crypto_provider is "<Algorithm>#<KSP name>", e.g.
+      # "ML-DSA:87#Microsoft Software Key Storage Provider". The ":87" is a
+      # PARAMETER-SET selector used in the provider string; `certutil -csplist`
+      # lists the CNG algorithm FAMILY ("ML-DSA"), not the ":paramset" form, so
+      # match the family. This check is informational only — KB5087539 presence
+      # is already verified by windows_kb_install (Get-HotFix) before this role,
+      # so a csplist miss must NOT block the install (it previously did, a
+      # false-negative). Warn and let Install-AdcsCertificationAuthority be the
+      # authoritative test.
+      $provider = '{{ ca_crypto_provider }}'
+      $algorithm = ($provider -split '#')[0]
+      $family = ($algorithm -split ':')[0]
+      $ksp = ($provider -split '#')[1]
+      Write-PSFMessage -Level Host -Message "Checking KSP '$ksp' for algorithm family '$family' (provider '$algorithm')" -Tag 'standalone-ca'
+      $csp = & certutil.exe -csplist 2>&1 | Out-String
+      if ($csp -match [regex]::Escape($family)) {
+          Write-PSFMessage -Level Host -Message "ML-DSA family '$family' present in CNG provider list" -Tag 'standalone-ca'
+      } else {
+          Write-PSFMessage -Level Warning -Message "certutil -csplist did not surface '$family' (it may not enumerate PQC param sets). KB5087539 is already verified installed; proceeding to Install-AdcsCertificationAuthority as the authoritative test." -Tag 'standalone-ca'
+      }
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  when: "'ML-DSA' in (ca_crypto_provider | default(''))"
+
+- name: Deploy CAPolicy.inf for Standalone Root CA
+  ansible.windows.win_template:
+    src: "CAPolicy-{{ 'pqc-standalone' if 'ML-DSA' in (ca_crypto_provider | default('')) else 'standalone' }}.inf.j2"
+    dest: C:\Windows\CAPolicy.inf
+
+- name: Check if CA service is already running
+  ansible.windows.win_service_info:
+    name: CertSvc
+  register: certsvc_info
+  failed_when: false
+
+- name: Install Standalone Root CA
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Installing Standalone Root CA: {{ ca_common_name }} ({{ ca_crypto_provider | default('RSA#Microsoft Software Key Storage Provider') }})' -Tag 'standalone-ca'
+      $caParams = @{
+          CAType                      = '{{ ca_type }}'
+          CACommonName                = '{{ ca_common_name }}'
+          KeyLength                   = {{ ca_key_length }}
+          HashAlgorithmName           = '{{ ca_hash_algorithm }}'
+          ValidityPeriod              = '{{ ca_validity_period }}'
+          ValidityPeriodUnits         = {{ ca_validity_period_units }}
+          CryptoProviderName          = '{{ ca_crypto_provider | default('RSA#Microsoft Software Key Storage Provider') }}'
+          CADistinguishedNameSuffix   = '{{ domain_dn }}'
+          Force                       = $true
+      }
+
+      Install-AdcsCertificationAuthority @caParams
+      Write-PSFMessage -Level Host -Message 'Standalone Root CA installed successfully' -Tag 'standalone-ca'
+      Wait-PSFMessage
+  when: certsvc_info.services is not defined or certsvc_info.services | length == 0 or certsvc_info.services[0].state != 'started'
+
+- name: Wait for CA service to be ready
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $svc = Get-Service CertSvc -ErrorAction SilentlyContinue
+      if (-not $svc -or $svc.Status -ne 'Running') {
+          Write-PSFMessage -Level Warning -Message 'CertSvc is not running yet' -Tag 'standalone-ca'
+          Wait-PSFMessage
+          throw "CertSvc is not running"
+      }
+      Write-PSFMessage -Level Host -Message 'CertSvc is running' -Tag 'standalone-ca'
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  retries: 12
+  delay: 10
+  register: ca_svc_ready
+  until: ca_svc_ready is not failed
+
+- name: Configure CDP and AIA
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Configuring CDP and AIA extensions' -Tag 'standalone-ca'
+
+      # Remove default CDP entries
+      Get-CACRLDistributionPoint | ForEach-Object {
+          Remove-CACRLDistributionPoint -Uri $_.Uri -Force
+      }
+
+      # Add local CDP
+      Add-CACRLDistributionPoint -Uri "C:\Windows\System32\CertSrv\CertEnroll\%3%8%9.crl" -PublishToServer -Force
+
+      # Add HTTP CDP
+      {% if crl_url is defined %}
+      Write-PSFMessage -Level Host -Message 'Adding HTTP CDP: {{ crl_url }}' -Tag 'standalone-ca'
+      Add-CACRLDistributionPoint -Uri "{{ crl_url }}/%3%8%9.crl" -AddToCertificateCDP -Force
+      {% endif %}
+
+      # Remove default AIA entries
+      Get-CAAuthorityInformationAccess | ForEach-Object {
+          Remove-CAAuthorityInformationAccess -Uri $_.Uri -Force
+      }
+
+      # Add HTTP AIA
+      {% if aia_url is defined %}
+      Write-PSFMessage -Level Host -Message 'Adding HTTP AIA: {{ aia_url }}' -Tag 'standalone-ca'
+      Add-CAAuthorityInformationAccess -Uri "{{ aia_url }}/%3%4.crt" -AddToCertificateAia -Force
+      {% endif %}
+
+      Write-PSFMessage -Level Host -Message 'CDP and AIA configured' -Tag 'standalone-ca'
+      Wait-PSFMessage
+
+- name: Configure CA registry settings
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Configuring CA registry settings (validity, CRL, audit)' -Tag 'standalone-ca'
+      # Long validity for subordinate CA certs issued by Root
+      certutil.exe -setreg CA\ValidityPeriodUnits 5
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\ValidityPeriodUnits failed (exit $LASTEXITCODE)" }
+      certutil.exe -setreg CA\ValidityPeriod "Years"
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\ValidityPeriod failed (exit $LASTEXITCODE)" }
+
+      # CRL validity (6 months for offline root)
+      certutil.exe -setreg CA\CRLPeriodUnits 26
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\CRLPeriodUnits failed (exit $LASTEXITCODE)" }
+      certutil.exe -setreg CA\CRLPeriod "Weeks"
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\CRLPeriod failed (exit $LASTEXITCODE)" }
+
+      # No delta CRL for offline root
+      certutil.exe -setreg CA\CRLDeltaPeriodUnits 0
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\CRLDeltaPeriodUnits failed (exit $LASTEXITCODE)" }
+      certutil.exe -setreg CA\CRLDeltaPeriod "Days"
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\CRLDeltaPeriod failed (exit $LASTEXITCODE)" }
+
+      # Auto-issue certificates (standalone CAs default to pending/manual approval)
+      certutil.exe -setreg policy\RequestDisposition 1
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg policy\RequestDisposition failed (exit $LASTEXITCODE)" }
+
+      # Audit all events
+      certutil.exe -setreg CA\AuditFilter 127
+      if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\AuditFilter failed (exit $LASTEXITCODE)" }
+      Write-PSFMessage -Level Host -Message 'CA registry settings configured' -Tag 'standalone-ca'
+      Wait-PSFMessage
+
+- name: Restart CA service and publish CRL
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Restarting CertSvc and publishing CRL' -Tag 'standalone-ca'
+      Restart-Service CertSvc -ErrorAction Stop
+
+      # Restart-Service returns when SCM reports Running, but CertSvc
+      # opens its RPC endpoint a few seconds later. certutil hits
+      # RPC_S_SERVER_UNAVAILABLE if called immediately.
+      # Poll certutil -ping (local LRPC, no double-hop) up to 60s.
+      $ready = $false
+      for ($i = 0; $i -lt 12; $i++) {
+          & certutil.exe -ping *>$null
+          if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+          Start-Sleep -Seconds 5
+      }
+      if (-not $ready) {
+          throw "CertSvc RPC endpoint not ready within 60s after restart"
+      }
+
+      certutil.exe -crl
+      if ($LASTEXITCODE -ne 0) { throw "certutil -crl failed (exit $LASTEXITCODE)" }
+      Write-PSFMessage -Level Host -Message 'CRL published' -Tag 'standalone-ca'
+      Wait-PSFMessage
+
+- name: Create PKI export directory and copy cert/CRL
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Copying Root CA cert and CRL to C:\PKI-Export' -Tag 'standalone-ca'
+      $exportPath = "C:\PKI-Export"
+      New-Item -ItemType Directory -Path $exportPath -Force | Out-Null
+      Copy-Item "C:\Windows\System32\CertSrv\CertEnroll\*.crt" $exportPath -Force
+      Copy-Item "C:\Windows\System32\CertSrv\CertEnroll\*.crl" $exportPath -Force
+      $certs = (Get-ChildItem "$exportPath\*.crt").Count
+      $crls = (Get-ChildItem "$exportPath\*.crl").Count
+      Write-PSFMessage -Level Host -Message "Exported $certs cert(s) and $crls CRL(s) to C:\PKI-Export" -Tag 'standalone-ca'
+      Wait-PSFMessage

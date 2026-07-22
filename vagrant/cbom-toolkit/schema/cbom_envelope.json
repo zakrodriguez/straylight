@@ -1,0 +1,68 @@
+{
+  "envelope_version": "cbom-envelope/v1",
+  "description": "Single source of truth for the CBOM OpenSearch document contract. Every cbom_* / cf_* field is declared once here with its OpenSearch type. The OpenSearch index mapping (opensearch_stack role) is generated from this file by gen_opensearch_mapping.py, and cbom_ingest.py reads the producer registry below to dispatch by the explicit `schema` field instead of startswith() sniffing. Adding a producer or a field is a one-file edit here; consumers pick it up.",
+  "index": "cbom",
+  "fields": {
+    "@timestamp": {"type": "date", "doc": "Event time; pinned by time-filtered dashboards. Mirrors cbom_scan_time."},
+    "message": {"type": "text", "doc": "Human-readable summary line."},
+    "cbom_envelope_version": {"type": "keyword", "doc": "Version of this envelope contract the document was produced under."},
+    "cbom_schema": {"type": "keyword", "doc": "Producer schema id (e.g. cyclonedx, cloudflare_pqc/v1, adcs_pqc_audit/v1) — drives ingest dispatch."},
+    "cbom_scanner": {"type": "keyword", "doc": "Scanner/producer name (e.g. cbomkit-theia, scanner1-cloudflare)."},
+    "cbom_scan_time": {"type": "date", "doc": "Scan timestamp; component of the deterministic _id."},
+    "cbom_asset_type": {"type": "keyword", "doc": "algorithm | certificate | related-crypto-material."},
+    "cbom_vm": {"type": "keyword", "doc": "Source VM/host name derived from location."},
+    "cbom_name": {"type": "keyword", "doc": "Component name."},
+    "cbom_location": {"type": "keyword", "doc": "Filesystem/endpoint location; component of the deterministic _id."},
+    "cbom_bom_ref": {"type": "keyword", "doc": "CycloneDX bom-ref or synthetic ref; component of the deterministic _id."},
+    "cbom_event_type": {"type": "keyword", "doc": "scan | diff-added | diff-removed | audit."},
+    "cbom_pqc_only": {"type": "boolean", "doc": "True when the component came from a pure-PQC endpoint ([PQC-ONLY] prefix)."},
+    "cbom_pqc_status": {"type": "keyword", "doc": "quantum-safe | quantum-vulnerable | weak-classical | unknown | pqc-hybrid | classical | failed."},
+    "cbom_algorithm": {"type": "keyword", "doc": "Algorithm name (asset_type=algorithm)."},
+    "cbom_primitive": {"type": "keyword", "doc": "Primitive category (kem, signature, hash, ...)."},
+    "cbom_subject": {"type": "keyword", "doc": "Certificate subject DN."},
+    "cbom_issuer": {"type": "keyword", "doc": "Certificate issuer DN."},
+    "cbom_not_before": {"type": "date", "doc": "Certificate notValidBefore."},
+    "cbom_not_after": {"type": "date", "doc": "Certificate notValidAfter."},
+    "cbom_sig_algorithm": {"type": "keyword", "doc": "Resolved certificate signature algorithm name."},
+    "cbom_days_to_expiry": {"type": "integer", "doc": "Days until certificate expiry (negative = expired)."},
+    "cbom_is_root": {"type": "boolean", "doc": "Certificate is self-signed (subject == issuer)."},
+    "cbom_key_type": {"type": "keyword", "doc": "Key material type (related-crypto-material)."},
+    "cbom_key_size": {"type": "integer", "doc": "Key size in bits."},
+    "cbom_source": {"type": "keyword", "doc": "Logical source family (e.g. cloudflare-pqc, adcs-pqc-audit)."},
+    "cbom_source_file": {"type": "keyword", "doc": "Originating report file path."},
+    "cf_endpoint": {"type": "keyword", "doc": "Cloudflare probe endpoint host:port."},
+    "cf_endpoint_name": {"type": "keyword", "doc": "Cloudflare probe endpoint friendly name."},
+    "cf_stack": {"type": "keyword", "doc": "Probe stack (go-stdlib-mlkem | openssl-oqs | curl-system)."},
+    "cf_success": {"type": "boolean", "doc": "Probe handshake succeeded."},
+    "cf_tls_version": {"type": "keyword", "doc": "Negotiated TLS version."},
+    "cf_cipher": {"type": "keyword", "doc": "Negotiated cipher suite."},
+    "cf_kex_offered": {"type": "keyword", "doc": "KEX group negotiated/offered (e.g. X25519MLKEM768)."},
+    "cf_handshake_ms": {"type": "float", "doc": "Handshake latency in milliseconds."},
+    "cf_cert_fp_sha256": {"type": "keyword", "doc": "Server certificate SHA-256 fingerprint."},
+    "cf_cert_issuer": {"type": "keyword", "doc": "Server certificate issuer."},
+    "cf_error": {"type": "text", "doc": "Probe error message."},
+    "adcs_layer": {"type": "keyword", "doc": "AD CS PQC audit layer id (cng | certenroll | adcs | schannel)."},
+    "adcs_layer_name": {"type": "keyword", "doc": "AD CS PQC audit layer human name."},
+    "adcs_status": {"type": "keyword", "doc": "AVAILABLE | NOT_AVAILABLE — per-layer audit verdict."},
+    "adcs_build": {"type": "keyword", "doc": "Windows build the audit ran on (e.g. 26100.7171)."},
+    "adcs_detail": {"type": "text", "doc": "Per-layer audit detail text."}
+  },
+  "producers": {
+    "cyclonedx": {
+      "match_schema_prefixes": [],
+      "default": true,
+      "handler": "build_documents",
+      "doc": "CycloneDX 1.6 CBOM from cbomkit-theia / nmap / ejbca-api / pqc-* probes. Default when no recognized `schema` key is present."
+    },
+    "cloudflare_pqc/v1": {
+      "match_schema_prefixes": ["cloudflare_pqc/"],
+      "handler": "documents_from_cloudflare_pqc",
+      "doc": "Cloudflare edge PQC observation report (probe.sh)."
+    },
+    "adcs_pqc_audit/v1": {
+      "match_schema_prefixes": ["adcs_pqc_audit/"],
+      "handler": "documents_from_adcs_pqc_audit",
+      "doc": "AD CS layered PQC gap audit (Invoke-PqcAudit.ps1 -> JSON sidecar)."
+    }
+  }
+}

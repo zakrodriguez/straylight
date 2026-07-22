@@ -1,0 +1,20 @@
+---
+# pqc-enroll.yml — Issue ML-DSA-65 certificates from EJBCA PQC Issuing CA to Linux VMs
+#
+# Prerequisites:
+#   - ejbca1 must be up and pqc-ejbca.yml must have been run (EJBCA-PQC-Issuing-CA must exist)
+#   - Inventory: use vagrant/ansible/inventory/$LAB_PROFILE/pqc.ini (defines [linux_pqc_targets] and [ejbca])
+#
+# Usage:
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-enroll.yml \
+#     -e "ejbca_token_password=foo123 lab_domain=yourlab.local"
+#
+# Certificates are placed in /opt/pqc-certs/ on each target VM.
+- hosts: linux_pqc_targets
+  gather_facts: false
+  become: true
+  ignore_unreachable: true
+  tasks:
+    - name: Include ejbca_pqc_enroll role
+      ansible.builtin.include_role:
+        name: ejbca_pqc_enroll

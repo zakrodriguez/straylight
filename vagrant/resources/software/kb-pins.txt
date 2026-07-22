@@ -1,0 +1,17 @@
+# Pinned SHA256 hashes for Windows KB updates fetched via
+# scripts/fetch-windows-kb.sh.  Format:
+#
+#   <KB>  <sha256 lowercase hex>  <description>
+#
+# Lines beginning with # are ignored.  Whitespace-separated columns.
+#
+# Adding a new pin:
+#   1. Run: ./vagrant/scripts/fetch-windows-kb.sh <KB>
+#   2. Copy the SHA256 line the script prints at the end.
+#   3. Append it here with a one-line description.
+#   4. Commit this file (NOT the .msu — those are gitignored).
+#
+# Verifying an existing pin:
+#   ./vagrant/scripts/fetch-windows-kb.sh <KB>
+#   (the script auto-loads the pin from this file when no SHA arg is given)
+KB5087539  18bcf4eba2d04734b15685b6714fc16104ffc146f4dc77d94df1c03b043ce674  Windows Server 2025 May 2026 cumulative — adds ML-DSA-44/65/87 support to AD CS

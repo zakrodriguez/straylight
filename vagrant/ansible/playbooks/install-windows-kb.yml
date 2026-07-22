@@ -1,0 +1,41 @@
+---
+# Install a Windows hotfix / cumulative update on a target host or group.
+#
+# Wraps the `windows_kb_install` role.  See that role's defaults/main.yml
+# for the full parameter set + caching rationale.
+#
+# Examples
+# --------
+#
+# Install KB5087539 (Windows Server 2025 May-2026 cumulative — adds ML-DSA
+# support to AD CS).  Cache-first; the role fails if the .msu is not at
+# {{ software_source }}\KB5087539.msu and no msu_url is supplied:
+#
+#   ansible-playbook -i ansible/inventory/<your inventory> \
+#     ansible/playbooks/install-windows-kb.yml \
+#     -e kb_number=KB5087539 \
+#     -e target=rootca,issueca
+#
+# With explicit URL + checksum (download path):
+#
+#   ansible-playbook ... \
+#     -e kb_number=KB5087539 \
+#     -e msu_url=https://catalog.s.download.windowsupdate.com/.../windows10.0-kb5087539-x64.msu \
+#     -e msu_sha256=<lowercase hex sha256>
+#
+# Defaults
+# --------
+# `target` defaults to the `windows` inventory group so a bare invocation
+# fans out across every Windows VM in the active profile.  Override with
+# `-e target=<host or comma list>` for tighter scopes (typical: limit to
+# CA VMs when installing AD CS-specific KBs like KB5087539).
+
+- name: Install Windows KB on {{ target | default('windows') }}
+  hosts: "{{ target | default('windows') }}"
+  gather_facts: false
+  # NOTE: msu_url / msu_sha256 defaults come from the role's defaults/main.yml
+  # (both empty strings).  Don't redeclare them with `{{ msu_url | default('') }}`
+  # at play-level — that's a self-reference Ansible expands recursively and
+  # Jinja2's recursion guard fires.  Pass overrides via -e on the CLI.
+  roles:
+    - role: windows_kb_install

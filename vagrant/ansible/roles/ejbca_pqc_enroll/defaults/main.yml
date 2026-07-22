@@ -1,0 +1,4 @@
+---
+# Mode controls which enrollment flow runs.
+# Valid: issuing | chimera
+pqc_enroll_mode: issuing

@@ -1,0 +1,57 @@
+---
+# host_ready — bounded readiness probes, one per capability tag.
+#
+# Each probe is gated on membership in host_ready_capabilities (sourced from a
+# host's topology `requires_ready`). A probe is BOUNDED: it retries at most
+# host_ready_retries times with host_ready_delay seconds between attempts, then
+# the task FAILS with a clear error. It can never hang indefinitely the way the
+# blind `pause` sleeps it replaces could mask a never-ready dependency.
+#
+# Max wait per capability ≈ host_ready_retries * host_ready_delay seconds
+# (default 30 * 10 = 300s = 5 min).
+#
+# The root_ca_cert / cdp_aia probes target Windows hosts (the subordinate CA);
+# the acme / dns probes are examples for Linux hosts (e.g. observe1). All four
+# are defined; only the gated ones run on any given host.
+
+- name: Wait for root CA cert available in AD/local Root store (root_ca_cert)
+  when: "'root_ca_cert' in host_ready_capabilities"
+  ansible.windows.win_shell: |
+    $c = Get-ChildItem Cert:\LocalMachine\Root -ErrorAction SilentlyContinue
+    if ($c) { exit 0 } else { exit 1 }
+  register: _rootca_probe
+  until: _rootca_probe.rc == 0
+  retries: "{{ host_ready_retries }}"
+  delay: "{{ host_ready_delay }}"
+  changed_when: false
+
+- name: Wait for CDP/AIA reachable on web1 (cdp_aia)
+  when: "'cdp_aia' in host_ready_capabilities"
+  ansible.windows.win_uri:
+    url: "http://{{ lab_static_hosts | selectattr('names', 'contains', 'web1') | map(attribute='ip') | first | default(hostvars['web1'].ansible_host) }}/"
+    method: GET
+    status_code: [200, 403, 404]
+  register: _cdp_probe
+  until: _cdp_probe is succeeded
+  retries: "{{ host_ready_retries }}"
+  delay: "{{ host_ready_delay }}"
+  changed_when: false
+
+- name: Wait for step-ca ACME health (acme)
+  when: "'acme' in host_ready_capabilities"
+  ansible.builtin.uri:
+    url: "https://{{ lab_static_hosts | selectattr('names', 'contains', 'stepca1') | map(attribute='ip') | first }}:9000/health"
+    validate_certs: false
+  register: _acme_probe
+  until: _acme_probe.status == 200
+  retries: "{{ host_ready_retries }}"
+  delay: "{{ host_ready_delay }}"
+
+- name: Wait for DNS resolvable via DC (dns)
+  when: "'dns' in host_ready_capabilities"
+  ansible.builtin.command: "getent hosts {{ lab_static_hosts | selectattr('names', 'contains', 'dc1') | map(attribute='ip') | first }}"
+  register: _dns_probe
+  until: _dns_probe.rc == 0
+  retries: "{{ host_ready_retries }}"
+  delay: "{{ host_ready_delay }}"
+  changed_when: false

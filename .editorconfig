@@ -1,0 +1,26 @@
+root = true
+
+[*]
+end_of_line = lf
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{yml,yaml,rb,py}]
+indent_style = space
+indent_size = 2
+
+[*.sh]
+indent_style = space
+indent_size = 2
+
+[*.{ps1,psm1,psd1}]
+indent_style = space
+indent_size = 4
+
+[*.{md,markdown}]
+# Markdown intentional trailing spaces signal hard line breaks
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab

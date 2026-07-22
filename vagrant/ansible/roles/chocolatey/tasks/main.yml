@@ -1,0 +1,40 @@
+---
+# Chocolatey role: install packages via Chocolatey with optional local cache
+# win_chocolatey auto-bootstraps Chocolatey, but win_chocolatey_source does not.
+# Install a dummy package first to trigger bootstrap before configuring sources.
+
+- name: Bootstrap Chocolatey (install chocolatey-compatibility.extension)
+  chocolatey.chocolatey.win_chocolatey:
+    name: chocolatey-compatibility.extension
+    state: present
+
+- name: Add local Chocolatey source from software cache
+  chocolatey.chocolatey.win_chocolatey_source:
+    name: local-cache
+    source: '{{ software_source }}\choco'
+    priority: 1
+    state: present
+  when: software_source is defined
+
+# NOTE: `failed_when: false` (was `ignore_errors: true`) makes per-package install
+# failures non-fatal without flagging the task as a host error. The downstream
+# "Report failed Chocolatey packages" task below intentionally iterates
+# `choco_results.results` for ALL items (gating it on success would hide the very
+# failures it reports), so it is NOT gated. No other task in this role depends on
+# choco being installed, so no `is succeeded` gate is added here.
+# Changes failure semantics — flag for cold-build validation.
+- name: Install Chocolatey packages
+  chocolatey.chocolatey.win_chocolatey:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ choco_packages }}"
+  register: choco_results
+  failed_when: false
+
+- name: Report failed Chocolatey packages
+  ansible.builtin.debug:
+    msg: "WARNING: Failed to install {{ item.item }} — {{ item.msg | default('unknown error') }}"
+  loop: "{{ choco_results.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.failed | default(false)

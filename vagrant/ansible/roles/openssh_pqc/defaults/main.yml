@@ -1,0 +1,8 @@
+---
+# openssh_pqc role defaults — build OpenSSH 10.0+ from source and run a
+# parallel sshd negotiating mlkem768x25519-sha256 (NIST-standardized PQC
+# hybrid KEX). Callers may override any of these via play/inventory vars.
+openssh_pqc_version: "10.0p2"          # OpenSSH source version
+openssh_pqc_prefix: /opt/openssh-10    # install prefix
+openssh_pqc_port: 2222                 # new sshd port (system :22 untouched)
+openssh_pqc_unit_name: sshd-pqc        # systemd unit name

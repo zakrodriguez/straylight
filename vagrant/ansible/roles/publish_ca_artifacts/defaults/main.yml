@@ -1,0 +1,12 @@
+---
+# PSFramework -Tag applied to this role's log messages. Callers override to
+# attribute the publish step to the including CA role (e.g. 'subordinate-ca').
+publish_tag: publish-ca
+
+# CDP/AIA namespace subdirectory under the PKI$ share. Empty = the
+# classical hierarchy publishes to \crl\ and \aia\ at the share root. PQC CAs
+# set this to 'pqc' so their CRLs/certs land in \crl\pqc\ + \aia\pqc\ — a
+# separate revocation namespace from the classical hierarchy, served by web1 at
+# http://pki.<domain>/crl/pqc/ + /aia/pqc/. Must match the crl_url/aia_url the
+# PQC CA bakes into issued certs (Vagrantfile ROOT_CA_PQC_VARS / ISSUING_CA_PQC_VARS).
+publish_subdir: ''

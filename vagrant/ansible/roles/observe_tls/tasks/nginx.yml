@@ -1,0 +1,109 @@
+---
+# Install host nginx (NOT a Docker container — beats-proxy is the docker
+# nginx; this is a separate native install for TLS termination on :443).
+
+- name: Install nginx, dnsutils, apache2-utils (htpasswd for Beats Basic Auth)
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - dnsutils
+      - apache2-utils
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# /etc/nginx/.beats-htpasswd backs the auth_basic on the Beats data port
+# (:9244 server block in nginx-tls.conf.j2). htpasswd -bB writes a bcrypt
+# hash, which is what nginx auth_basic_user_file expects. Idempotent —
+# `htpasswd -c` would truncate; using non-`-c` upsert + a no-changed check
+# via stat keeps repeated provisions quiet.
+- name: Stat existing Beats htpasswd
+  ansible.builtin.stat:
+    path: /etc/nginx/.beats-htpasswd
+  register: beats_htpasswd_stat
+
+- name: Create empty htpasswd file (so non-`-c` invocation has a target)
+  ansible.builtin.copy:
+    content: ""
+    dest: /etc/nginx/.beats-htpasswd
+    force: false
+    owner: root
+    group: www-data
+    mode: "0640"
+  when: not beats_htpasswd_stat.stat.exists
+
+- name: Verify Beats user already has a matching bcrypt entry
+  ansible.builtin.command:
+    cmd: htpasswd -vbB /etc/nginx/.beats-htpasswd "{{ beats_basic_auth_user }}" "{{ beats_basic_auth_password }}"
+  register: beats_htpasswd_verify
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Write/refresh Beats user entry (bcrypt) into htpasswd
+  ansible.builtin.command:
+    cmd: htpasswd -bB /etc/nginx/.beats-htpasswd "{{ beats_basic_auth_user }}" "{{ beats_basic_auth_password }}"
+  when: beats_htpasswd_verify.rc != 0
+  no_log: true
+  notify: reload observe_tls nginx
+
+- name: Lock down Beats htpasswd permissions
+  ansible.builtin.file:
+    path: /etc/nginx/.beats-htpasswd
+    owner: root
+    group: www-data
+    mode: "0640"
+
+- name: Ensure /var/www/html exists for the webroot
+  ansible.builtin.file:
+    path: /var/www/html
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Ensure /etc/nginx/ssl directory exists
+  ansible.builtin.file:
+    path: /etc/nginx/ssl
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Check if observe1.crt already exists (drives template conditional)
+  ansible.builtin.stat:
+    path: /etc/nginx/ssl/observe1.crt
+  register: observe_tls_cert_stat
+
+- name: Deploy initial nginx site config (port 80 webroot only on first run)
+  ansible.builtin.template:
+    src: nginx-tls.conf.j2
+    dest: /etc/nginx/sites-available/observe-tls
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    observe_tls_cert_present: "{{ observe_tls_cert_stat.stat.exists }}"
+  notify: reload observe_tls nginx
+
+- name: Disable default nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: reload observe_tls nginx
+
+- name: Enable observe-tls nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/observe-tls
+    dest: /etc/nginx/sites-enabled/observe-tls
+    state: link
+  notify: reload observe_tls nginx
+
+- name: Ensure nginx is enabled and running
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Reload nginx now if config changed (so port 80 webroot is live before cert issuance)
+  ansible.builtin.meta: flush_handlers

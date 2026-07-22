@@ -1,0 +1,44 @@
+---
+# DC1 - Primary Domain Controller
+# Provisions AD DS forest, creates OUs, service accounts, GPOs
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Include common role
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        dns_servers:
+          - "{{ ip_address }}"
+
+    - name: Include domain_controller role
+      ansible.builtin.include_role:
+        name: domain_controller
+
+    - name: Include sysinternals role
+      ansible.builtin.include_role:
+        name: sysinternals
+
+    - name: Include bginfo role
+      ansible.builtin.include_role:
+        name: bginfo
+      vars:
+        vm_role: dc
+
+    - name: Include windows_logging role
+      ansible.builtin.include_role:
+        name: windows_logging
+
+    - name: Include sysmon role
+      ansible.builtin.include_role:
+        name: sysmon
+
+    - name: Include winlogbeat role
+      ansible.builtin.include_role:
+        name: winlogbeat
+      vars:
+        winlogbeat_dc_channels: true

@@ -1,0 +1,429 @@
+---
+# Cert generation + enrollment for cms_lab_linux.
+#
+# Pattern: self-signed certs generated locally with openssl + lab-CA certs
+# enrolled via CSR-delegation to issueca (classical) and issueca-pqc (PQC).
+# No step-ca / ACME dependency — lessons from attempt 1 showed that path was
+# brittle (DNS gymnastics + standalone HTTP-01 root-bind requirements).
+
+# ── Self-signed certs (throwaway, generated locally) ───────────────────────
+
+- name: Generate self-signed RSA-2048 cert + key on scanner1
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -newkey rsa:2048 -nodes
+      -keyout {{ cms_lab_root }}/certs/self-rsa.key
+      -out {{ cms_lab_root }}/certs/self-rsa.crt
+      -days 365
+      -subj "{{ cms_lab_self_rsa_subject }}"
+    creates: "{{ cms_lab_root }}/certs/self-rsa.crt"
+
+- name: Generate self-signed P-256 ECDSA cert + key on scanner1
+  ansible.builtin.command:
+    cmd: >-
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes
+      -keyout {{ cms_lab_root }}/certs/self-ecdsa.key
+      -out {{ cms_lab_root }}/certs/self-ecdsa.crt
+      -days 365
+      -subj "{{ cms_lab_self_ecdsa_subject }}"
+    creates: "{{ cms_lab_root }}/certs/self-ecdsa.crt"
+
+- name: Lock down self-signed private key permissions
+  ansible.builtin.file:
+    path: "{{ cms_lab_root }}/certs/{{ item }}"
+    owner: vagrant
+    group: vagrant
+    mode: "0600"
+  loop:
+    - self-rsa.key
+    - self-ecdsa.key
+
+# ── RSA lab-CA cert from YOURLAB-Issuing-CA via CSR delegation ──────────────
+
+- name: Generate RSA-2048 keypair for lab-CA cert (when missing)
+  ansible.builtin.command:
+    cmd: >-
+      openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048
+      -out {{ cms_lab_root }}/certs/rsa-labca.key
+    creates: "{{ cms_lab_root }}/certs/rsa-labca.key"
+
+- name: Generate PKCS#10 CSR for RSA lab-CA cert
+  ansible.builtin.shell:
+    cmd: >-
+      OPENSSL_CONF=/etc/ssl/openssl.cnf {{ cms_lab_openssl }} req -new
+      -key {{ cms_lab_root }}/certs/rsa-labca.key
+      -out {{ cms_lab_root }}/certs/rsa-labca.csr
+      -subj "{{ cms_lab_rsa_labca_subject }}"
+    creates: "{{ cms_lab_root }}/certs/rsa-labca.csr"
+
+- name: Lock down RSA labca private key permissions
+  ansible.builtin.file:
+    path: "{{ cms_lab_root }}/certs/rsa-labca.key"
+    owner: vagrant
+    group: vagrant
+    mode: "0600"
+
+- name: Check whether RSA lab-CA cert was already issued
+  ansible.builtin.stat:
+    path: "{{ cms_lab_root }}/certs/rsa-labca.crt"
+  register: rsa_labca_cert_stat
+
+# Cross-VM file shuffling uses slurp (read from scanner1) → content (push to
+# issueca), then slurp (read from issueca) → content (push back to scanner1).
+# Direct win_copy with src: from scanner1 would read from the controller's
+# filesystem (not scanner1's), which is wrong.
+
+- name: Slurp RSA CSR from scanner1
+  ansible.builtin.slurp:
+    src: "{{ cms_lab_root }}/certs/rsa-labca.csr"
+  register: rsa_labca_csr_slurp
+  when: not rsa_labca_cert_stat.stat.exists
+
+- name: Wait for issueca CA published (CRL on web1 CDP) — reboot-immune readiness gate
+  # On a cold build scanner1 (Linux, fast) reaches the CA enrollment while
+  # issueca is still domain-joining and about to REBOOT. A delegated WinRM probe
+  # to issueca dies during that reboot, and NO ansible retry primitive survives
+  # an unreachable host (verified: `until`+`ignore_unreachable` skips through it;
+  # `block`/`rescue` does not catch unreachable). So gate on a REBOOT-IMMUNE
+  # forward signal instead: poll issueca's CRL on web1's CDP (web1 is a separate,
+  # already-up VM). The CRL appears only once issueca's CA is installed + running
+  # — i.e. past its reboot — so a 200 here means the submit below is safe.
+  # uri→web1 returns a normal failed result (status≠200) if web1 blips or the
+  # CRL isn't published yet, so `until` retries it cleanly (no unreachable trap).
+  ansible.builtin.uri:
+    url: "http://{{ web_ip }}/crl/{{ lab_netbios }}-Issuing-CA.crl"
+    method: GET
+    status_code: 200
+  register: rsa_ca_crl
+  until: (rsa_ca_crl.status | default(0)) == 200
+  retries: 90    # 90×20s = 30 min — outlast a cold issueca provision + its reboots
+  delay: 20
+  failed_when: false
+  changed_when: false
+  when: not rsa_labca_cert_stat.stat.exists
+
+- name: Stage RSA CSR on issueca for submission
+  ansible.windows.win_copy:
+    content: "{{ rsa_labca_csr_slurp.content | b64decode }}"
+    dest: 'C:\Windows\Temp\cms-lab-rsa-labca.csr'
+  become: false
+  delegate_to: "{{ cms_lab_ca_host }}"
+  vars:
+    ansible_connection: winrm
+  when: not rsa_labca_cert_stat.stat.exists
+
+- name: Submit RSA CSR to YOURLAB-Issuing-CA via scheduled task (SYSTEM/machine identity)
+  ansible.windows.win_powershell:
+    script: |
+      # Remove stale .log / .rsp / .cer so certreq doesn't prompt to overwrite
+      Remove-Item -Path 'C:\Windows\Temp\cms-lab-rsa-submit.log','C:\Windows\Temp\cms-lab-rsa-labca.cer','C:\Windows\Temp\cms-lab-rsa-labca.rsp' -Force -ErrorAction SilentlyContinue
+      $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c certreq -q -submit -config "{{ cms_lab_ca_config }}" -attrib "CertificateTemplate:{{ cms_lab_ca_template }}" C:\Windows\Temp\cms-lab-rsa-labca.csr C:\Windows\Temp\cms-lab-rsa-labca.cer > C:\Windows\Temp\cms-lab-rsa-submit.log 2>&1'
+      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+      Register-ScheduledTask -TaskName 'cms-lab-rsa-submit' -Action $action -Principal $principal -Force | Out-Null
+      Start-ScheduledTask -TaskName 'cms-lab-rsa-submit'
+      $deadline = (Get-Date).AddSeconds(90)
+      do {
+        Start-Sleep 2
+        $t = Get-ScheduledTask -TaskName 'cms-lab-rsa-submit'
+      } while ($t.State -eq 'Running' -and (Get-Date) -lt $deadline)
+      $info = Get-ScheduledTaskInfo -TaskName 'cms-lab-rsa-submit'
+      Unregister-ScheduledTask -TaskName 'cms-lab-rsa-submit' -Confirm:$false
+      $log = if (Test-Path 'C:\Windows\Temp\cms-lab-rsa-submit.log') { Get-Content 'C:\Windows\Temp\cms-lab-rsa-submit.log' -Raw } else { '<no log>' }
+      Write-Output "LastTaskResult: $($info.LastTaskResult)"
+      Write-Output "Log: $log"
+      if (-not (Test-Path 'C:\Windows\Temp\cms-lab-rsa-labca.cer')) {
+        throw "RSA cert file not produced. Task result: $($info.LastTaskResult). Log: $log"
+      }
+  become: false
+  delegate_to: "{{ cms_lab_ca_host }}"
+  vars:
+    ansible_connection: winrm
+  register: rsa_labca_submit
+  # On a cold pqc-full build, scanner1 provisions in parallel with issueca; the
+  # CSR submit can hit the issuing CA before its cert service (RPC) is up
+  # (0x800706ba RPC_S_SERVER_UNAVAILABLE). Retry until the CA answers — mirrors
+  # the cms_lab_windows enroll guard.
+  until: rsa_labca_submit is succeeded
+  retries: 40   # ~20 min: must outlast a cold issueca provision (~28 min total; ~15 min
+  delay: 30     # after scanner1 reaches this step). 5 min was too short — raced and failed.
+  when: not rsa_labca_cert_stat.stat.exists
+
+- name: Slurp issued RSA lab-CA cert from issueca
+  ansible.builtin.slurp:
+    src: 'C:\Windows\Temp\cms-lab-rsa-labca.cer'
+  register: rsa_labca_cer_slurp
+  become: false
+  delegate_to: "{{ cms_lab_ca_host }}"
+  vars:
+    ansible_connection: winrm
+  when: not rsa_labca_cert_stat.stat.exists
+
+- name: Write RSA lab-CA cert back to scanner1
+  ansible.builtin.copy:
+    content: "{{ rsa_labca_cer_slurp.content | b64decode }}"
+    dest: "{{ cms_lab_root }}/certs/rsa-labca.crt"
+    owner: vagrant
+    group: vagrant
+    mode: "0644"
+  when: not rsa_labca_cert_stat.stat.exists
+
+- name: Cleanup RSA CSR/CER staging files on issueca
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - 'C:\Windows\Temp\cms-lab-rsa-labca.csr'
+    - 'C:\Windows\Temp\cms-lab-rsa-labca.cer'
+  become: false
+  delegate_to: "{{ cms_lab_ca_host }}"
+  vars:
+    ansible_connection: winrm
+
+# ── ML-DSA-65 cert from YOURLAB-PQC-Issuing-CA via CSR delegation ───────────
+
+- name: Generate ML-DSA-65 keypair on scanner1 (via OpenSSL 3.5 native ML-DSA)
+  ansible.builtin.command:
+    cmd: >-
+      {{ cms_lab_openssl }} genpkey -algorithm mldsa65
+      -out {{ cms_lab_root }}/certs/ml-dsa-labca.key
+    creates: "{{ cms_lab_root }}/certs/ml-dsa-labca.key"
+
+- name: Generate PKCS#10 CSR over ML-DSA-65 key
+  ansible.builtin.shell:
+    cmd: >-
+      OPENSSL_CONF=/etc/ssl/openssl.cnf {{ cms_lab_openssl }} req -new
+      -key {{ cms_lab_root }}/certs/ml-dsa-labca.key
+      -out {{ cms_lab_root }}/certs/ml-dsa-labca.csr
+      -subj "{{ cms_lab_ml_dsa_subject }}"
+    creates: "{{ cms_lab_root }}/certs/ml-dsa-labca.csr"
+
+- name: Lock down ML-DSA private key permissions
+  ansible.builtin.file:
+    path: "{{ cms_lab_root }}/certs/ml-dsa-labca.key"
+    owner: vagrant
+    group: vagrant
+    mode: "0600"
+
+- name: Check whether ML-DSA cert was already issued
+  ansible.builtin.stat:
+    path: "{{ cms_lab_root }}/certs/ml-dsa-labca.crt"
+  register: ml_dsa_cert_stat
+
+- name: Slurp ML-DSA CSR from scanner1
+  ansible.builtin.slurp:
+    src: "{{ cms_lab_root }}/certs/ml-dsa-labca.csr"
+  register: ml_dsa_csr_slurp
+  when: not ml_dsa_cert_stat.stat.exists
+
+- name: Wait for issueca-pqc CA published (PQC CRL on web1 CDP) — reboot-immune gate
+  # Same reboot-immune forward-signal gate as the RSA submit above, against the
+  # PQC issuing CA: poll issueca-pqc's CRL on web1's CDP (crl_url_pqc namespace,
+  # /crl/pqc/) until 200. Reboot-immune (web1) + `until`-retryable (uri failure
+  # is status≠200, not host-unreachable). See the RSA gate for the full rationale.
+  ansible.builtin.uri:
+    url: "http://{{ web_ip }}/crl/pqc/{{ lab_netbios }}-PQC-Issuing-CA.crl"
+    method: GET
+    status_code: 200
+  register: ml_dsa_ca_crl
+  until: (ml_dsa_ca_crl.status | default(0)) == 200
+  retries: 90    # 90×20s = 30 min — outlast a cold issueca-pqc provision + its reboots
+  delay: 20
+  failed_when: false
+  changed_when: false
+  when: not ml_dsa_cert_stat.stat.exists
+
+- name: Stage ML-DSA CSR on issueca-pqc for submission
+  ansible.windows.win_copy:
+    content: "{{ ml_dsa_csr_slurp.content | b64decode }}"
+    dest: 'C:\Windows\Temp\cms-lab-ml-dsa.csr'
+  become: false
+  delegate_to: "{{ cms_lab_pqc_ca_host }}"
+  vars:
+    ansible_connection: winrm
+  when: not ml_dsa_cert_stat.stat.exists
+
+- name: Submit ML-DSA CSR to YOURLAB-PQC-Issuing-CA via scheduled task (SYSTEM/machine identity)
+  ansible.windows.win_powershell:
+    script: |
+      # Remove stale .log / .rsp / .cer so certreq doesn't prompt to overwrite
+      Remove-Item -Path 'C:\Windows\Temp\cms-lab-ml-dsa-submit.log','C:\Windows\Temp\cms-lab-ml-dsa.cer','C:\Windows\Temp\cms-lab-ml-dsa.rsp' -Force -ErrorAction SilentlyContinue
+      $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c certreq -q -submit -config "{{ cms_lab_pqc_ca_config }}" -attrib "CertificateTemplate:{{ cms_lab_pqc_template }}" C:\Windows\Temp\cms-lab-ml-dsa.csr C:\Windows\Temp\cms-lab-ml-dsa.cer > C:\Windows\Temp\cms-lab-ml-dsa-submit.log 2>&1'
+      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+      Register-ScheduledTask -TaskName 'cms-lab-ml-dsa-submit' -Action $action -Principal $principal -Force | Out-Null
+      Start-ScheduledTask -TaskName 'cms-lab-ml-dsa-submit'
+      $deadline = (Get-Date).AddSeconds(90)
+      do {
+        Start-Sleep 2
+        $t = Get-ScheduledTask -TaskName 'cms-lab-ml-dsa-submit'
+      } while ($t.State -eq 'Running' -and (Get-Date) -lt $deadline)
+      $info = Get-ScheduledTaskInfo -TaskName 'cms-lab-ml-dsa-submit'
+      Unregister-ScheduledTask -TaskName 'cms-lab-ml-dsa-submit' -Confirm:$false
+      $log = if (Test-Path 'C:\Windows\Temp\cms-lab-ml-dsa-submit.log') { Get-Content 'C:\Windows\Temp\cms-lab-ml-dsa-submit.log' -Raw } else { '<no log>' }
+      Write-Output "LastTaskResult: $($info.LastTaskResult)"
+      Write-Output "Log: $log"
+      if (-not (Test-Path 'C:\Windows\Temp\cms-lab-ml-dsa.cer')) {
+        throw "ML-DSA cert file not produced. Task result: $($info.LastTaskResult). Log: $log"
+      }
+  become: false
+  delegate_to: "{{ cms_lab_pqc_ca_host }}"
+  vars:
+    ansible_connection: winrm
+  register: ml_dsa_submit
+  # Same parallel-build RPC race as the RSA submit above (issueca-pqc may not
+  # have its cert service up yet) — retry until it answers.
+  until: ml_dsa_submit is succeeded
+  retries: 40   # ~20 min: outlast a cold issueca-pqc provision (same race as RSA submit above).
+  delay: 30     # 5 min was too short on a cold parallel build.
+  when: not ml_dsa_cert_stat.stat.exists
+
+- name: Slurp issued ML-DSA cert from issueca-pqc
+  ansible.builtin.slurp:
+    src: 'C:\Windows\Temp\cms-lab-ml-dsa.cer'
+  register: ml_dsa_cer_slurp
+  become: false
+  delegate_to: "{{ cms_lab_pqc_ca_host }}"
+  vars:
+    ansible_connection: winrm
+  when: not ml_dsa_cert_stat.stat.exists
+
+- name: Write ML-DSA cert back to scanner1
+  ansible.builtin.copy:
+    content: "{{ ml_dsa_cer_slurp.content | b64decode }}"
+    dest: "{{ cms_lab_root }}/certs/ml-dsa-labca.crt"
+    owner: vagrant
+    group: vagrant
+    mode: "0644"
+  when: not ml_dsa_cert_stat.stat.exists
+
+- name: Cleanup ML-DSA CSR/CER staging files on issueca-pqc
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - 'C:\Windows\Temp\cms-lab-ml-dsa.csr'
+    - 'C:\Windows\Temp\cms-lab-ml-dsa.cer'
+  become: false
+  delegate_to: "{{ cms_lab_pqc_ca_host }}"
+  vars:
+    ansible_connection: winrm
+
+# ── ML-KEM-768 recipient (local-only; used in hand-built EnvelopedData) ──
+
+- name: Generate ML-KEM-768 keypair on scanner1
+  ansible.builtin.command:
+    cmd: >-
+      {{ cms_lab_openssl }} genpkey -algorithm mlkem768
+      -out {{ cms_lab_root }}/certs/ml-kem-recipient.key
+    creates: "{{ cms_lab_root }}/certs/ml-kem-recipient.key"
+
+- name: Extract ML-KEM-768 public key
+  ansible.builtin.command:
+    cmd: >-
+      {{ cms_lab_openssl }} pkey
+      -in {{ cms_lab_root }}/certs/ml-kem-recipient.key
+      -pubout
+      -out {{ cms_lab_root }}/certs/ml-kem-recipient.pub
+    creates: "{{ cms_lab_root }}/certs/ml-kem-recipient.pub"
+
+- name: Lock down ML-KEM private key permissions
+  ansible.builtin.file:
+    path: "{{ cms_lab_root }}/certs/ml-kem-recipient.key"
+    owner: vagrant
+    group: vagrant
+    mode: "0600"
+
+# ── Chain files (fetch issuing-CA + root certs in PEM form) ────────────────
+# Both the issuing-CA and root certs are fetched from web1's AIA over HTTP and
+# converted to PEM. This deliberately AVOIDS `certutil -ca.chain` on the CA: that
+# builds + revocation-checks the chain (AIA/CRL/OCSP retrieval + a local CA-RPC
+# call) and, with no timeout, hangs indefinitely when any of that stalls —
+# observed blocking a cold build 15+ min at ~0% CPU. web1's AIA is a plain static
+# file on an already-up VM, so the fetch can't hang and `until` retries cleanly.
+
+- name: Fetch classical issuing CA cert from web1 AIA (replaces hang-prone certutil -ca.chain)
+  ansible.builtin.get_url:
+    url: "http://pki.{{ lab_domain }}/aia/ISSUECA.{{ lab_domain }}_{{ lab_netbios }}-Issuing-CA.crt"
+    dest: "{{ cms_lab_root }}/certs/rsa-labca-issuingca.der"
+    mode: "0644"
+    force: false
+  register: rsa_issuingca_fetch
+  until: rsa_issuingca_fetch is succeeded
+  retries: 30
+  delay: 10
+
+- name: Convert classical issuing CA DER → PEM
+  ansible.builtin.command:
+    cmd: >-
+      {{ cms_lab_openssl }} x509 -inform DER
+      -in {{ cms_lab_root }}/certs/rsa-labca-issuingca.der
+      -out {{ cms_lab_root }}/certs/rsa-labca-issuingca.pem
+    creates: "{{ cms_lab_root }}/certs/rsa-labca-issuingca.pem"
+
+- name: Fetch classical Root CA cert from web1 AIA endpoint
+  ansible.builtin.get_url:
+    url: "http://pki.{{ lab_domain }}/aia/ROOTCA_YOURLAB-Root-CA.crt"
+    dest: "{{ cms_lab_root }}/certs/rsa-labca-rootca.der"
+    mode: "0644"
+    force: false
+
+- name: Convert classical Root CA DER → PEM
+  ansible.builtin.command:
+    cmd: >-
+      {{ cms_lab_openssl }} x509 -inform DER
+      -in {{ cms_lab_root }}/certs/rsa-labca-rootca.der
+      -out {{ cms_lab_root }}/certs/rsa-labca-rootca.pem
+    creates: "{{ cms_lab_root }}/certs/rsa-labca-rootca.pem"
+
+- name: Build full classical chain (issueca + root) PEM bundle
+  ansible.builtin.shell:
+    cmd: >-
+      cat {{ cms_lab_root }}/certs/rsa-labca-issuingca.pem
+      {{ cms_lab_root }}/certs/rsa-labca-rootca.pem
+      > {{ cms_lab_root }}/certs/rsa-labca-chain.crt
+  args:
+    creates: "{{ cms_lab_root }}/certs/rsa-labca-chain.crt"
+
+- name: Fetch PQC issuing CA cert from web1 AIA (replaces hang-prone certutil -ca.chain)
+  ansible.builtin.get_url:
+    # PQC hierarchy publishes to the /aia/pqc namespace, not /aia.
+    url: "http://pki.{{ lab_domain }}/aia/pqc/ISSUECAPQC.{{ lab_domain }}_{{ lab_netbios }}-PQC-Issuing-CA.crt"
+    dest: "{{ cms_lab_root }}/certs/ml-dsa-labca-issuingca.der"
+    mode: "0644"
+    force: false
+  register: ml_dsa_issuingca_fetch
+  until: ml_dsa_issuingca_fetch is succeeded
+  retries: 30
+  delay: 10
+
+- name: Convert PQC issuing CA DER → PEM
+  ansible.builtin.command:
+    cmd: >-
+      {{ cms_lab_openssl }} x509 -inform DER
+      -in {{ cms_lab_root }}/certs/ml-dsa-labca-issuingca.der
+      -out {{ cms_lab_root }}/certs/ml-dsa-labca-issuingca.pem
+    creates: "{{ cms_lab_root }}/certs/ml-dsa-labca-issuingca.pem"
+
+- name: Fetch PQC Root CA cert from web1 AIA endpoint
+  ansible.builtin.get_url:
+    # PQC hierarchy publishes to the /aia/pqc namespace, not /aia.
+    url: "http://pki.{{ lab_domain }}/aia/pqc/ROOTCAPQC_YOURLAB-PQC-Root-CA.crt"
+    dest: "{{ cms_lab_root }}/certs/ml-dsa-labca-rootca.der"
+    mode: "0644"
+    force: false
+
+- name: Convert PQC Root CA DER → PEM
+  ansible.builtin.command:
+    cmd: >-
+      {{ cms_lab_openssl }} x509 -inform DER
+      -in {{ cms_lab_root }}/certs/ml-dsa-labca-rootca.der
+      -out {{ cms_lab_root }}/certs/ml-dsa-labca-rootca.pem
+    creates: "{{ cms_lab_root }}/certs/ml-dsa-labca-rootca.pem"
+
+- name: Build full PQC chain (issueca-pqc + root-pqc) PEM bundle
+  ansible.builtin.shell:
+    cmd: >-
+      cat {{ cms_lab_root }}/certs/ml-dsa-labca-issuingca.pem
+      {{ cms_lab_root }}/certs/ml-dsa-labca-rootca.pem
+      > {{ cms_lab_root }}/certs/ml-dsa-labca-chain.crt
+  args:
+    creates: "{{ cms_lab_root }}/certs/ml-dsa-labca-chain.crt"

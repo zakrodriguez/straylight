@@ -1,0 +1,343 @@
+---
+# desktop_customize role: taskbar cleanup, system tray, OneDrive removal
+# Applies to Desktop Experience VMs only (CLIENT1, MANAGE1, TOMCAT1)
+# Skipped entirely when lab_desktop_enabled=false (LAB_DESKTOP_ENABLED=false env).
+
+- name: Skip desktop_customize when desktop UX disabled
+  ansible.builtin.meta: end_role
+  when: not (lab_desktop_enabled | default(true) | bool)
+
+- name: Configure taskbar and desktop settings for all user profiles
+  ansible.windows.win_powershell:
+    script: |
+      $settings = @{
+          # Explorer\Advanced
+          'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' = @{
+              ShowTaskViewButton = 0     # Hide task view button
+              TaskbarDa          = 0     # Hide widgets
+              ShowCopilotButton  = 0     # Hide Copilot button
+          }
+          # Explorer\Search
+          'Software\Microsoft\Windows\CurrentVersion\Search' = @{
+              SearchboxTaskbarMode = 0   # Hide search box
+          }
+          # Feeds (News & Interests)
+          'Software\Microsoft\Windows\CurrentVersion\Feeds' = @{
+              ShellFeedsTaskbarViewMode = 2   # Disable News & Interests
+          }
+      }
+      $changed = $false
+
+      # --- Default User hive (new profiles) ---
+      $defaultHive = 'C:\Users\Default\NTUSER.DAT'
+      reg load 'HKU\DefaultUser' $defaultHive 2>$null | Out-Null
+      foreach ($subPath in $settings.Keys) {
+          $regPath = "HKU\DefaultUser\$subPath"
+          foreach ($name in $settings[$subPath].Keys) {
+              $current = reg query $regPath /v $name 2>$null
+              $hexVal = '0x{0:x}' -f $settings[$subPath][$name]
+              if ($current -notmatch "\s$hexVal\s*$") {
+                  reg add $regPath /v $name /t REG_DWORD /d $settings[$subPath][$name] /f | Out-Null
+                  $changed = $true
+              }
+          }
+      }
+      reg unload 'HKU\DefaultUser' | Out-Null
+
+      # --- Existing user profiles ---
+      $profiles = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\*' |
+          Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.ProfileImagePath }
+
+      foreach ($profile in $profiles) {
+          $sid = $profile.PSChildName
+          $hivePath = Join-Path $profile.ProfileImagePath 'NTUSER.DAT'
+          $loaded = Test-Path "Registry::HKU\$sid"
+          if (-not $loaded) {
+              if (-not (Test-Path $hivePath)) { continue }
+              reg load "HKU\$sid" $hivePath 2>$null | Out-Null
+          }
+          foreach ($subPath in $settings.Keys) {
+              $regPath = "Registry::HKU\$sid\$subPath"
+              if (-not (Test-Path $regPath)) {
+                  New-Item -Path $regPath -Force | Out-Null
+              }
+              foreach ($name in $settings[$subPath].Keys) {
+                  $current = Get-ItemProperty -Path $regPath -Name $name -ErrorAction SilentlyContinue
+                  if (-not $current -or $current.$name -ne $settings[$subPath][$name]) {
+                      Set-ItemProperty -Path $regPath -Name $name -Value $settings[$subPath][$name] -Type DWord
+                      $changed = $true
+                  }
+              }
+          }
+          if (-not $loaded) {
+              [gc]::Collect()
+              reg unload "HKU\$sid" | Out-Null
+          }
+      }
+
+      $Ansible.Changed = $changed
+
+- name: Uninstall OneDrive
+  ansible.windows.win_powershell:
+    script: |
+      $changed = $false
+
+      # Find OneDrive setup
+      $setupPaths = @(
+          "$env:SystemRoot\System32\OneDriveSetup.exe",
+          "$env:SystemRoot\SysWOW64\OneDriveSetup.exe"
+      )
+      $setup = $setupPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+      if ($setup) {
+          # Check if OneDrive is installed
+          $od = Get-Package -Name '*OneDrive*' -ErrorAction SilentlyContinue
+          if ($od) {
+              Start-Process $setup -ArgumentList '/uninstall' -Wait -NoNewWindow
+              $changed = $true
+          }
+      }
+
+      # Remove auto-start registry entries for all profiles
+      $profiles = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\*' |
+          Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.ProfileImagePath }
+      foreach ($profile in $profiles) {
+          $sid = $profile.PSChildName
+          $loaded = Test-Path "Registry::HKU\$sid"
+          $hivePath = Join-Path $profile.ProfileImagePath 'NTUSER.DAT'
+          if (-not $loaded) {
+              if (-not (Test-Path $hivePath)) { continue }
+              reg load "HKU\$sid" $hivePath 2>$null | Out-Null
+          }
+          $runPath = "Registry::HKU\$sid\Software\Microsoft\Windows\CurrentVersion\Run"
+          if (Test-Path $runPath) {
+              $onedrive = Get-ItemProperty -Path $runPath -Name 'OneDrive' -ErrorAction SilentlyContinue
+              if ($onedrive) {
+                  Remove-ItemProperty -Path $runPath -Name 'OneDrive' -Force
+                  $changed = $true
+              }
+          }
+          if (-not $loaded) {
+              [gc]::Collect()
+              reg unload "HKU\$sid" | Out-Null
+          }
+      }
+
+      # Remove default user Run entry too
+      reg load 'HKU\DefaultUser' 'C:\Users\Default\NTUSER.DAT' 2>$null | Out-Null
+      $val = reg query 'HKU\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Run' /v OneDrive 2>$null
+      if ($val) {
+          reg delete 'HKU\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Run' /v OneDrive /f | Out-Null
+          $changed = $true
+      }
+      reg unload 'HKU\DefaultUser' | Out-Null
+
+      # Remove scheduled tasks
+      Get-ScheduledTask -TaskPath '\' -TaskName '*OneDrive*' -ErrorAction SilentlyContinue |
+          Unregister-ScheduledTask -Confirm:$false
+
+      $Ansible.Changed = $changed
+
+- name: Uninstall Microsoft Teams
+  ansible.windows.win_powershell:
+    script: |
+      $changed = $false
+
+      # New Teams (MSIX / AppX package — Win11 preinstall)
+      $appx = Get-AppxPackage -AllUsers -Name '*MicrosoftTeams*' -ErrorAction SilentlyContinue
+      if ($appx) {
+          $appx | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+          $changed = $true
+      }
+
+      # Prevent Teams from re-provisioning for new users
+      $prov = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+          Where-Object { $_.PackageName -like '*MicrosoftTeams*' }
+      if ($prov) {
+          $prov | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+          $changed = $true
+      }
+
+      # Classic Teams (MSI installer — older builds)
+      $msi = Get-Package -Name '*Teams*' -ProviderName msi -ErrorAction SilentlyContinue
+      if ($msi) {
+          $msi | Uninstall-Package -Force -ErrorAction SilentlyContinue
+          $changed = $true
+      }
+
+      # Per-user Teams installs (Machine-Wide Installer drops these)
+      $profiles = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\*' |
+          Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.ProfileImagePath }
+      foreach ($profile in $profiles) {
+          $teamsPath = Join-Path $profile.ProfileImagePath 'AppData\Local\Microsoft\Teams'
+          if (Test-Path "$teamsPath\Update.exe") {
+              Start-Process "$teamsPath\Update.exe" -ArgumentList '--uninstall -s' -Wait -NoNewWindow -ErrorAction SilentlyContinue
+              $changed = $true
+          }
+      }
+
+      # Remove Teams Machine-Wide Installer
+      $mwi = Get-Package -Name '*Teams Machine-Wide*' -ErrorAction SilentlyContinue
+      if ($mwi) {
+          $mwi | Uninstall-Package -Force -ErrorAction SilentlyContinue
+          $changed = $true
+      }
+
+      $Ansible.Changed = $changed
+
+- name: Disable lock screen and screen timeout
+  ansible.windows.win_powershell:
+    script: |
+      $changed = $false
+
+      # Disable lock screen via Group Policy
+      $persPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+      if (-not (Test-Path $persPath)) {
+          New-Item -Path $persPath -Force | Out-Null
+          $changed = $true
+      }
+      $val = Get-ItemProperty -Path $persPath -Name NoLockScreen -ErrorAction SilentlyContinue
+      if (-not $val -or $val.NoLockScreen -ne 1) {
+          Set-ItemProperty -Path $persPath -Name NoLockScreen -Value 1 -Type DWord
+          $changed = $true
+      }
+
+      # Disable screen saver and lock-on-resume via Group Policy
+      $ssPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Control Panel\Desktop'
+      if (-not (Test-Path $ssPath)) {
+          New-Item -Path $ssPath -Force | Out-Null
+          $changed = $true
+      }
+      foreach ($entry in @(@('ScreenSaveActive','0'), @('ScreenSaverIsSecure','0'))) {
+          $val = Get-ItemProperty -Path $ssPath -Name $entry[0] -ErrorAction SilentlyContinue
+          if (-not $val -or $val.($entry[0]) -ne $entry[1]) {
+              Set-ItemProperty -Path $ssPath -Name $entry[0] -Value $entry[1] -Type String
+              $changed = $true
+          }
+      }
+
+      # Set monitor and standby timeouts to never (AC power)
+      $currentMonitor = (powercfg /query SCHEME_CURRENT SUB_VIDEO VIDEOIDLE | Select-String 'Current AC Power Setting Index:\s+0x(\S+)' | ForEach-Object { [int]"0x$($_.Matches.Groups[1].Value)" })
+      $currentStandby = (powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE | Select-String 'Current AC Power Setting Index:\s+0x(\S+)' | ForEach-Object { [int]"0x$($_.Matches.Groups[1].Value)" })
+      if ($currentMonitor -ne 0) {
+          powercfg /change monitor-timeout-ac 0
+          $changed = $true
+      }
+      if ($currentStandby -ne 0) {
+          powercfg /change standby-timeout-ac 0
+          $changed = $true
+      }
+
+      $Ansible.Changed = $changed
+
+- name: Show all system tray icons (disable auto-hide)
+  ansible.windows.win_powershell:
+    script: |
+      $changed = $false
+      $subPath = 'Software\Microsoft\Windows\CurrentVersion\Explorer'
+
+      # --- Default User hive ---
+      reg load 'HKU\DefaultUser' 'C:\Users\Default\NTUSER.DAT' 2>$null | Out-Null
+      $current = reg query "HKU\DefaultUser\$subPath" /v EnableAutoTray 2>$null
+      if ($current -notmatch '\s0x0\s*$') {
+          reg add "HKU\DefaultUser\$subPath" /v EnableAutoTray /t REG_DWORD /d 0 /f | Out-Null
+          $changed = $true
+      }
+      reg unload 'HKU\DefaultUser' | Out-Null
+
+      # --- Existing user profiles ---
+      $profiles = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\*' |
+          Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.ProfileImagePath }
+      foreach ($profile in $profiles) {
+          $sid = $profile.PSChildName
+          $hivePath = Join-Path $profile.ProfileImagePath 'NTUSER.DAT'
+          $loaded = Test-Path "Registry::HKU\$sid"
+          if (-not $loaded) {
+              if (-not (Test-Path $hivePath)) { continue }
+              reg load "HKU\$sid" $hivePath 2>$null | Out-Null
+          }
+          $regPath = "Registry::HKU\$sid\$subPath"
+          $val = Get-ItemProperty -Path $regPath -Name EnableAutoTray -ErrorAction SilentlyContinue
+          if (-not $val -or $val.EnableAutoTray -ne 0) {
+              Set-ItemProperty -Path $regPath -Name EnableAutoTray -Value 0 -Type DWord
+              $changed = $true
+          }
+          if (-not $loaded) {
+              [gc]::Collect()
+              reg unload "HKU\$sid" | Out-Null
+          }
+      }
+
+      $Ansible.Changed = $changed
+
+# ── Desktop shortcuts (Public Desktop — visible to all users) ───────────
+
+- name: Create desktop shortcut — AD Users & Computers
+  community.windows.win_shortcut:
+    src: '%SystemRoot%\System32\dsa.msc'
+    dest: 'C:\Users\Public\Desktop\AD Users & Computers.lnk'
+    description: 'Active Directory Users and Computers'
+  when: desktop_shortcuts | default(true)
+
+- name: Create desktop shortcut — AD Sites & Services
+  community.windows.win_shortcut:
+    src: '%SystemRoot%\System32\dssite.msc'
+    dest: 'C:\Users\Public\Desktop\AD Sites & Services.lnk'
+    description: 'Active Directory Sites and Services'
+  when: desktop_shortcuts | default(true)
+
+- name: Create desktop shortcut — DNS Manager
+  community.windows.win_shortcut:
+    src: '%SystemRoot%\System32\dnsmgmt.msc'
+    dest: 'C:\Users\Public\Desktop\DNS Manager.lnk'
+    description: 'DNS Manager'
+  when: desktop_shortcuts | default(true)
+
+- name: Create desktop shortcut — Group Policy Management
+  community.windows.win_shortcut:
+    src: '%SystemRoot%\System32\gpmc.msc'
+    dest: 'C:\Users\Public\Desktop\Group Policy Management.lnk'
+    description: 'Group Policy Management Console'
+  when: desktop_shortcuts | default(true)
+
+- name: Create desktop shortcut — Certification Authority
+  community.windows.win_shortcut:
+    src: '%SystemRoot%\System32\certsrv.msc'
+    dest: 'C:\Users\Public\Desktop\Certification Authority.lnk'
+    description: 'Certification Authority Management'
+  when: desktop_shortcuts | default(true)
+
+- name: Create desktop shortcut — Certificates (Local Computer)
+  community.windows.win_shortcut:
+    src: '%SystemRoot%\System32\mmc.exe'
+    dest: 'C:\Users\Public\Desktop\Certificates (Local).lnk'
+    args: '%SystemRoot%\System32\certlm.msc'
+    description: 'Local Computer Certificate Store'
+  when: desktop_shortcuts | default(true)
+
+- name: Create desktop shortcut — Server Manager
+  community.windows.win_shortcut:
+    src: '%SystemRoot%\System32\ServerManager.exe'
+    dest: 'C:\Users\Public\Desktop\Server Manager.lnk'
+    description: 'Server Manager'
+  when: desktop_shortcuts | default(true)
+
+- name: Create desktop shortcut — PKI Management (custom MSC)
+  community.windows.win_shortcut:
+    src: '%SystemRoot%\System32\mmc.exe'
+    dest: 'C:\Users\Public\Desktop\PKI Management.lnk'
+    args: '/s C:\Software\pki-mgmt.msc'
+    description: 'PKI Management Console'
+  when:
+    - desktop_shortcuts | default(true)
+    - software_source is defined
+
+- name: Create desktop shortcut — Stray Admin (custom MSC)
+  community.windows.win_shortcut:
+    src: '%SystemRoot%\System32\mmc.exe'
+    dest: 'C:\Users\Public\Desktop\Stray Admin.lnk'
+    args: '/s C:\Software\strayadmin.msc'
+    description: 'Straylight Admin Console'
+  when:
+    - desktop_shortcuts | default(true)
+    - software_source is defined

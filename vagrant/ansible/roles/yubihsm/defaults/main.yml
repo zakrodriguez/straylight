@@ -1,0 +1,11 @@
+---
+yubihsm_sdk_version: "2026-01"
+yubihsm_sdk_base_url: "https://developers.yubico.com/YubiHSM2/Releases"
+yubihsm_sdk_tarball: "yubihsm2-sdk-{{ yubihsm_sdk_version }}-ubuntu2204-amd64.tar.gz"
+yubihsm_sdk_url: "{{ yubihsm_sdk_base_url }}/{{ yubihsm_sdk_tarball }}"
+
+yubihsm_pkcs11_so: "/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so"
+yubihsm_connector_listen: "0.0.0.0:12345"
+
+yubihsm_mode: "connector"
+yubihsm_password: "password"

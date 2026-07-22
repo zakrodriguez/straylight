@@ -1,0 +1,11 @@
+name: ad-cs-one-tier
+description: |
+  Microsoft PKI lab — one-tier AD CS topology. Single CA (CA1) acts as
+  both root and issuing CA. Includes IIS web server + admin workstation
+  for typical AD CS workflows.
+
+components:
+  - dc1
+  - ca1
+  - web1
+  - manage1

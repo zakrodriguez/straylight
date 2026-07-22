@@ -1,0 +1,83 @@
+---
+# win_scheduled_task — stages the canonical "run a PowerShell payload under an
+# explicit security context via a one-shot scheduled task" helper used across
+# the Windows roles (CA install, template publishing, AD-trust publish, …).
+#
+# Why a scheduled task at all: WinRM's network logon can't double-hop to AD, so
+# tasks that must authenticate to AD as a privileged *user* (or that need true
+# local elevation) wrap their PowerShell in a scheduled task. See
+# roles/README.md "Windows identity model" for the full rationale.
+#
+# This role stages ONE reusable helper function, Invoke-StraylightAdminScheduledTask,
+# so each call site no longer copy-pastes the schtasks create/run/poll/delete/
+# read-back lifecycle. Dot-source it inside a win_powershell block via the
+# {{ schtask_admin_init }} var (defined in group_vars/all.yml), then call the
+# function with the per-site task name, payload script, and log/status paths.
+#
+# Idempotent: just (re)writes the helper script — cheap, safe to re-run.
+
+- name: Ensure straylight helper directory exists
+  ansible.windows.win_file:
+    path: C:\Users\Public\Logs\straylight
+    state: directory
+
+- name: Stage the shared admin-scheduled-task helper function
+  ansible.windows.win_copy:
+    dest: C:\Users\Public\Logs\straylight\Invoke-StraylightAdminScheduledTask.ps1
+    content: |
+      # Shared helper: run a PowerShell payload under an explicit domain-admin
+      # context via a one-shot scheduled task, polling to completion.
+      #
+      # Dot-source then call, e.g.:
+      #   . C:\Users\Public\Logs\straylight\Invoke-StraylightAdminScheduledTask.ps1
+      #   $log = Invoke-StraylightAdminScheduledTask `
+      #       -TaskName 'PublishStepCACert' -ScriptFile $scriptFile `
+      #       -TaskUser $taskUser -TaskPassword '<pw>' `
+      #       -LogFile $logFile -StatusFile $statusFile `
+      #       -FailureMessage 'step-ca cert publish failed'
+      #   if ($log) { $Ansible.Result = $log -join "`n" }
+      #
+      # Behaviour mirrors the previous inline copy-paste exactly: creates the
+      # task with /rl highest, runs it, throws if /run fails, polls schtasks
+      # /query for "Ready" up to -MaxWaitSeconds, deletes the task, reads back
+      # the status + log sidecar files, cleans up all temp files, and throws
+      # -FailureMessage (with the captured log appended) unless status=SUCCESS.
+      # Returns the log content so the caller can assign $Ansible.Result.
+      function Invoke-StraylightAdminScheduledTask {
+          [CmdletBinding()]
+          param(
+              [Parameter(Mandatory)] [string] $TaskName,
+              [Parameter(Mandatory)] [string] $ScriptFile,
+              [Parameter(Mandatory)] [string] $TaskUser,
+              [Parameter(Mandatory)] [string] $TaskPassword,
+              [Parameter(Mandatory)] [string] $LogFile,
+              [Parameter(Mandatory)] [string] $StatusFile,
+              [Parameter(Mandatory)] [string] $FailureMessage,
+              [int] $MaxWaitSeconds = 60
+          )
+
+          schtasks /create /tn "$TaskName" `
+              /tr "powershell.exe -ExecutionPolicy Bypass -File $ScriptFile" `
+              /sc once /st 00:00 /ru $TaskUser /rp "$TaskPassword" /rl highest /f 2>&1 | Out-Null
+          schtasks /run /tn "$TaskName" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "schtasks /run $TaskName failed (exit $LASTEXITCODE)" }
+
+          $waited = 0
+          while ($waited -lt $MaxWaitSeconds) {
+              Start-Sleep -Seconds 5; $waited += 5
+              $taskInfo = schtasks /query /tn "$TaskName" /fo csv /nh 2>$null
+              if ($taskInfo -match "Ready") { break }
+          }
+          schtasks /delete /tn "$TaskName" /f 2>$null
+
+          $log = Get-Content $LogFile -ErrorAction SilentlyContinue
+          $status = Get-Content $StatusFile -ErrorAction SilentlyContinue
+
+          # Clean up temp files
+          Remove-Item $ScriptFile -Force -ErrorAction SilentlyContinue
+          Remove-Item $LogFile -Force -ErrorAction SilentlyContinue
+          Remove-Item $StatusFile -Force -ErrorAction SilentlyContinue
+
+          if ($status -ne "SUCCESS") { throw ("{0}. Log: {1}" -f $FailureMessage, ($log -join '; ')) }
+          return $log
+      }

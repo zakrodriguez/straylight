@@ -1,0 +1,80 @@
+---
+# adcs_pqc_audit role: audit Windows Server 2025 CNG PQC primitives + AD CS gap
+# Purely diagnostic - no changes to the CA configuration.
+#
+# Differentiates two layers, since they ship on different MS schedules:
+#   - CNG primitives (BCrypt) - GA via KB5068861 (Nov 2025), in 26100.7171+
+#   - CertEnroll / AD CS issuance - still pending (targeted early 2026, slipping)
+#
+# Probes via direct BCrypt P/Invoke because certutil -csptest does not surface
+# CNG-only algorithms (the prior version of this role produced false-negative
+# "NOT FOUND" verdicts for ML-DSA / ML-KEM that were actually registered).
+
+- name: Create pqc-audit working directory
+  ansible.windows.win_file:
+    path: C:\tmp\pqc-audit
+    state: directory
+
+- name: Copy PQC audit script to host
+  ansible.windows.win_copy:
+    src: Invoke-PqcAudit.ps1
+    dest: C:\tmp\pqc-audit\Invoke-PqcAudit.ps1
+
+- name: Run PQC gap audit
+  ansible.windows.win_powershell:
+    script: |
+      $out = & powershell.exe -ExecutionPolicy Bypass -File C:\tmp\pqc-audit\Invoke-PqcAudit.ps1 2>&1
+      $Ansible.Result = ($out -join "`n")
+  register: pqc_audit_result
+
+- name: Display audit run result
+  ansible.builtin.debug:
+    var: pqc_audit_result.result
+
+- name: Read report for display
+  ansible.windows.win_powershell:
+    script: |
+      $content = Get-Content "C:\tmp\pqc-audit\pqc-audit-report.txt" -Raw -ErrorAction Stop
+      $Ansible.Result = $content
+      $Ansible.Changed = $false
+  register: pqc_report_content
+
+- name: Display PQC audit report
+  ansible.builtin.debug:
+    msg: "{{ pqc_report_content.result }}"
+
+- name: Fetch PQC audit report to controller
+  ansible.builtin.fetch:
+    src: C:\tmp\pqc-audit\pqc-audit-report.txt
+    dest: "{{ playbook_dir }}/../../cbom-output/pqc-audit-{{ inventory_hostname }}.txt"
+    flat: true
+
+# ── Ingest the audit into OpenSearch ────────────────────────────────────────
+# Previously the audit was a text-file dead-end. The PS1 now also writes a
+# structured JSON sidecar (adcs_pqc_audit/v1); fetch it and pipe it through
+# cbom_ingest.py from the controller (the Windows CA host has no toolkit). The
+# controller's group_vars supply observe_ip / beats_* (same wiring as the
+# host-side cbom-pipeline.sh).
+- name: Fetch PQC audit JSON sidecar to controller
+  ansible.builtin.fetch:
+    src: C:\tmp\pqc-audit\pqc-audit-report.json
+    dest: "{{ playbook_dir }}/../../cbom-output/pqc-audit-{{ inventory_hostname }}.json"
+    flat: true
+
+- name: Ingest AD CS PQC audit into OpenSearch
+  ansible.builtin.command:
+    cmd: >-
+      python3 {{ playbook_dir }}/../../cbom-toolkit/python/cbom_ingest.py
+      {{ playbook_dir }}/../../cbom-output/pqc-audit-{{ inventory_hostname }}.json
+      --opensearch-url https://{{ adcs_pqc_audit_observe_ip }}:{{ adcs_pqc_audit_beats_tls_port }}
+      --username {{ adcs_pqc_audit_opensearch_user }}
+      --password {{ adcs_pqc_audit_opensearch_pass }}
+      {{ '--insecure' if adcs_pqc_audit_opensearch_insecure else '' }}
+  delegate_to: localhost
+  become: false
+  register: adcs_audit_ingest
+  changed_when: adcs_audit_ingest.rc == 0
+  # Non-fatal: observe1 may be absent in this profile (e.g. pqc-adcs-two-tier
+  # has no observe1) or briefly down. The audit text/JSON still land on the
+  # controller either way.
+  failed_when: false

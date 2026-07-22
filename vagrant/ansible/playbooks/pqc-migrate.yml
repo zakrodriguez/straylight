@@ -1,0 +1,39 @@
+---
+# pqc-migrate.yml — Top-level PQC migration orchestrator.
+#
+# Runs all 5 phases in dependency order:
+#   1. Foundation (EJBCA PQC + chimera CAs)
+#   2. TLS (chimera leaves + pure-PQC + AD trust distribution)
+#   3. SSH (OpenSSH 10 + ML-KEM hybrid KEX)
+#   4. GPG (GnuPG 2.5 + Kyber subkey)
+#   5. Posture (CBOM scanner sweep)
+#
+# Each phase is independently runnable from its own playbook file. This
+# orchestrator is the "all-in-one" entry point. Idempotent — re-running
+# after a partial failure re-verifies completed phases (cheap) and re-runs
+# the failed one.
+#
+# Usage (against a live pqc-full lab):
+#   LAB_PROFILE=pqc-full ansible-playbook \
+#     -i ansible/inventory/$LAB_PROFILE/pqc.ini \
+#     ansible/playbooks/pqc-migrate.yml
+
+- name: PQC migration — start banner
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "═══ PQC migration starting (5 phases) ═══"
+
+- import_playbook: pqc-migrate-foundation.yml
+- import_playbook: pqc-migrate-tls.yml
+- import_playbook: pqc-migrate-ssh.yml
+- import_playbook: pqc-migrate-gpg.yml
+- import_playbook: pqc-migrate-posture.yml
+
+- name: PQC migration — end banner
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "═══ PQC migration complete (5 phases ran) ═══"

@@ -1,0 +1,45 @@
+---
+# DC2 - Secondary Domain Controller
+# Joins existing forest and promotes as additional domain controller
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Include common role
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        dns_servers:
+          - "{{ dc_ip }}"
+          - "8.8.8.8"
+
+    - name: Include secondary_controller role
+      ansible.builtin.include_role:
+        name: secondary_controller
+
+    - name: Include sysinternals role
+      ansible.builtin.include_role:
+        name: sysinternals
+
+    - name: Include bginfo role
+      ansible.builtin.include_role:
+        name: bginfo
+      vars:
+        vm_role: dc
+
+    - name: Include windows_logging role
+      ansible.builtin.include_role:
+        name: windows_logging
+
+    - name: Include sysmon role
+      ansible.builtin.include_role:
+        name: sysmon
+
+    - name: Include winlogbeat role
+      ansible.builtin.include_role:
+        name: winlogbeat
+      vars:
+        winlogbeat_dc_channels: true

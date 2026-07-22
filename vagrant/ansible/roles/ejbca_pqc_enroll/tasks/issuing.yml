@@ -1,0 +1,225 @@
+---
+# ejbca_pqc_enroll role: issue ML-DSA-65 certificates from EJBCA PQC Issuing CA
+#
+# Strategy: generate ML-DSA-65 key pair + CSR on EJBCA via gencsr CLI, then
+# issue the cert via createcert CLI. Deploy cert + key + CA chain to target VM.
+#
+# Required vars:
+#   ejbca_token_password  — EJBCA end-entity password (default: foo123)
+#   lab_domain            — DNS domain (e.g. yourlab.local)
+#
+# Delegate target: ejbca1 (must be in [ejbca] inventory group)
+
+- name: Set per-host PQC certificate variables
+  ansible.builtin.set_fact:
+    pqc_cert_cn: "{{ inventory_hostname }}.{{ lab_domain }}"
+    pqc_cert_dir: /opt/pqc-certs
+    ejbca_export_dir: /opt/ejbca/data/export
+    pqc_username: "{{ inventory_hostname }}-pqc"
+    pqc_password: "{{ ejbca_token_password | default('foo123') }}"
+
+# =========================================================================
+# Target VM — create certificate landing directory
+# =========================================================================
+
+- name: Create PQC certificate directory on target VM
+  ansible.builtin.file:
+    path: "{{ pqc_cert_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# =========================================================================
+# EJBCA — add end-entity (delegate_to: ejbca1)
+# =========================================================================
+
+# EJBCA's addendentity is a silent no-op ("already exists") if the username
+# is taken. When the caller specifies a profile (cert or ee) that differs
+# from what's stored, the next createcert quietly reuses the old profile and
+# emits a cert with the wrong EKUs (Client Auth instead of Server Auth, for
+# instance). EJBCA's CLI doesn't expose profile-name→id mapping cheaply, so
+# we just delete the existing end-entity unconditionally when a profile is
+# specified, then recreate it below. Cost is ~2 sec per run; correctness
+# beats save-a-roundtrip here.
+- name: Delete existing end-entity when caller specifies a profile
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra delendentity
+      --username "{{ pqc_username }}" -force
+  register: ejbca_delee
+  changed_when: ejbca_delee.rc == 0
+  failed_when:
+    - ejbca_delee.rc != 0
+    - "'No such end entity' not in ejbca_delee.stdout"
+    - "'No such end entity' not in ejbca_delee.stderr"
+  delegate_to: ejbca1
+  when: pqc_enroll_certprofile is defined or pqc_enroll_eeprofile is defined
+
+- name: Add end-entity on EJBCA for {{ inventory_hostname }}
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra addendentity
+      --username "{{ pqc_username }}"
+      --dn "CN={{ pqc_cert_cn }}"
+      --caname EJBCA-PQC-Issuing-CA
+      --type 1
+      --token P12
+      --password "{{ pqc_password }}"
+      {% if pqc_enroll_certprofile is defined %}--certprofile "{{ pqc_enroll_certprofile }}"{% endif %}
+      {% if pqc_enroll_eeprofile is defined %}--eeprofile "{{ pqc_enroll_eeprofile }}"{% endif %}
+  register: ejbca_addee
+  failed_when:
+    - ejbca_addee.rc != 0
+    - "'already exists' not in ejbca_addee.stderr"
+    - "'already exists' not in ejbca_addee.stdout"
+  changed_when: ejbca_addee.rc == 0
+  delegate_to: ejbca1
+
+- name: Set cleartext password for {{ inventory_hostname }}
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra setclearpwd
+      --username "{{ pqc_username }}"
+      --password "{{ pqc_password }}"
+  changed_when: true
+  delegate_to: ejbca1
+
+- name: Set end-entity status to NEW for {{ inventory_hostname }}
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra setendentitystatus
+      --username "{{ pqc_username }}"
+      -S 10
+  changed_when: true
+  delegate_to: ejbca1
+
+# =========================================================================
+# EJBCA — generate ML-DSA-65 CSR + key pair via gencsr
+# =========================================================================
+
+- name: Create per-host export directory on EJBCA
+  ansible.builtin.command:
+    cmd: docker exec ejbca-ce mkdir -p /mnt/export/{{ pqc_username }}
+  changed_when: true
+  delegate_to: ejbca1
+
+- name: Generate ML-DSA-65 CSR and key pair for {{ inventory_hostname }}
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh gencsr
+      --keyalg ML-DSA-65
+      --sigalg ML-DSA-65
+      --subjectdn "CN={{ pqc_cert_cn }}"
+      --destination /mnt/export/{{ pqc_username }}
+  changed_when: true
+  delegate_to: ejbca1
+
+# =========================================================================
+# EJBCA — issue cert from PQC Issuing CA using the CSR
+# =========================================================================
+
+- name: Issue PQC certificate for {{ inventory_hostname }}
+  ansible.builtin.command:
+    cmd: >-
+      docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh createcert
+      --username "{{ pqc_username }}"
+      --password "{{ pqc_password }}"
+      -c /mnt/export/{{ pqc_username }}/certificateSigningRequest.csr
+      -f /mnt/export/{{ pqc_username }}/cert.pem
+  changed_when: true
+  delegate_to: ejbca1
+
+# =========================================================================
+# Controller — stage files from ejbca1
+# =========================================================================
+
+- name: Ensure local staging directory exists on controller
+  ansible.builtin.file:
+    path: /tmp/pqc-certs/{{ pqc_username }}
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Fetch PQC cert from ejbca1
+  ansible.builtin.fetch:
+    src: "{{ ejbca_export_dir }}/{{ pqc_username }}/cert.pem"
+    dest: /tmp/pqc-certs/{{ pqc_username }}/cert.pem
+    flat: true
+  delegate_to: ejbca1
+
+- name: Fetch PQC private key from ejbca1
+  ansible.builtin.fetch:
+    src: "{{ ejbca_export_dir }}/{{ pqc_username }}/privkey.pem"
+    dest: /tmp/pqc-certs/{{ pqc_username }}/privkey.pem
+    flat: true
+  delegate_to: ejbca1
+
+- name: Fetch PQC CA chain from ejbca1
+  ansible.builtin.fetch:
+    src: "{{ ejbca_export_dir }}/ejbca-pqc-root-ca.pem"
+    dest: /tmp/pqc-certs/ejbca-pqc-root-ca.pem
+    flat: true
+  delegate_to: ejbca1
+
+- name: Fetch PQC Issuing CA cert from ejbca1
+  ansible.builtin.fetch:
+    src: "{{ ejbca_export_dir }}/ejbca-pqc-issuing-ca.pem"
+    dest: /tmp/pqc-certs/ejbca-pqc-issuing-ca.pem
+    flat: true
+  delegate_to: ejbca1
+
+# =========================================================================
+# Target VM — deploy cert, key, and CA chain
+# =========================================================================
+
+- name: Deploy PQC certificate to target VM
+  ansible.builtin.copy:
+    src: /tmp/pqc-certs/{{ pqc_username }}/cert.pem
+    dest: "{{ pqc_cert_dir }}/{{ pqc_username }}-cert.pem"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy PQC private key to target VM
+  ansible.builtin.copy:
+    src: /tmp/pqc-certs/{{ pqc_username }}/privkey.pem
+    dest: "{{ pqc_cert_dir }}/{{ pqc_username }}-key.pem"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Deploy PQC Root CA certificate to target VM
+  ansible.builtin.copy:
+    src: /tmp/pqc-certs/ejbca-pqc-root-ca.pem
+    dest: "{{ pqc_cert_dir }}/ejbca-pqc-root-ca.pem"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy PQC Issuing CA certificate to target VM
+  ansible.builtin.copy:
+    src: /tmp/pqc-certs/ejbca-pqc-issuing-ca.pem
+    dest: "{{ pqc_cert_dir }}/ejbca-pqc-issuing-ca.pem"
+    owner: root
+    group: root
+    mode: "0644"
+
+# =========================================================================
+# Verify
+# =========================================================================
+
+- name: Stat PQC cert on target VM
+  ansible.builtin.stat:
+    path: "{{ pqc_cert_dir }}/{{ pqc_username }}-cert.pem"
+  register: cert_stat
+
+- name: Display enrollment result
+  ansible.builtin.debug:
+    msg:
+      - "Host      : {{ inventory_hostname }}"
+      - "CN        : {{ pqc_cert_cn }}"
+      - "Cert      : {{ pqc_cert_dir }}/{{ pqc_username }}-cert.pem ({{ cert_stat.stat.size | default('?') }} bytes)"
+      - "Key       : {{ pqc_cert_dir }}/{{ pqc_username }}-key.pem"
+      - "CA chain  : {{ pqc_cert_dir }}/ejbca-pqc-root-ca.pem + ejbca-pqc-issuing-ca.pem"

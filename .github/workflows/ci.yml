@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Minimum-privilege default. All jobs in this workflow only read source.
+# If a future job needs to post statuses/comments/releases, grant the
+# specific permission AT THE JOB LEVEL — do not widen this default.
+permissions:
+  contents: read
+
+# Cancel older runs of the same ref when a new commit lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ansible-lint + yamllint + shellcheck + ruby -c)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Actions pinned to full commit SHAs for supply-chain hardening,
+      # matching profile-build.yml. Floating tags (@v4/@v5) are mutable and
+      # can be re-pointed at malicious commits; the trailing comment records
+      # the human-readable version the SHA corresponds to.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Set up Python (ansible-lint + yamllint)
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install lint tools
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install 'ansible-core>=2.14' 'ansible-lint>=24' yamllint
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck
+
+      - name: Install required Ansible collections
+        run: ansible-galaxy collection install -r vagrant/ansible/requirements.yml
+
+      - name: ansible-lint
+        # Run from inside vagrant/ansible/ so the ansible.cfg there (which
+        # sets roles_path = roles) is auto-discovered. Otherwise ansible-lint
+        # can't resolve role references like `ejbca_admin_bootstrap` and
+        # marks every playbook that uses them as a syntax failure.
+        run: |
+          set -euo pipefail
+          cd vagrant/ansible
+          ansible-lint .
+
+      - name: yamllint
+        run: yamllint .
+
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          # Top-level helper scripts + the scripts/ subtree.
+          # -S error: project lint policy is "errors only" — info/style/warning
+          # surface as annotations but don't block merge.
+          # -e SC1091: source path resolution varies by working dir; not load-bearing.
+          shellcheck -S error -e SC1091 \
+            vagrant/*.sh \
+            vagrant/scripts/*.sh \
+            vagrant/scripts/lib/*.sh \
+            scripts/*.sh
+
+      - name: ruby -c (Vagrantfile + lib/)
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
+        with:
+          ruby-version: '3.2'
+          bundler-cache: false
+      - name: Ruby syntax check
+        run: |
+          set -euo pipefail
+          ruby -c vagrant/Vagrantfile
+          for f in vagrant/lib/*.rb; do ruby -c "$f"; done
+
+  ruby-tests:
+    name: Ruby tests (lab_profile resolver)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
+        with:
+          ruby-version: '3.2'
+          bundler-cache: false
+      - name: Run Ruby tests (profile resolver + topology consistency + doc freshness)
+        run: |
+          set -euo pipefail
+          cd vagrant
+          ruby -I lib test/lab_profile_test.rb
+          ruby -I lib test/topology_test.rb        # VM source-of-truth consistency
+          ruby -I lib test/doc_inventory_test.rb   # ARCHITECTURE.md ↔ topology.yml freshness
+          ruby -I lib test/ram_budget_test.rb      # RAM preflight + VM_CLASS ↔ Vagrantfile drift
+
+  profile-resolve:
+    name: Profile resolve (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - ad-cs-minimal
+          - ad-cs-one-tier
+          - ad-cs-two-tier
+          - cbom-pipeline
+          - core
+          - ejbca-only
+          - full
+          - oauth-oidc
+          - observability
+          - pqc-adcs-two-tier
+          - pqc-full
+          - pqc-linux
+          - sql-cert-labs
+          - stepca-only
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
+        with:
+          ruby-version: '3.2'
+          bundler-cache: false
+      - name: Resolve profile
+        run: |
+          set -euo pipefail
+          cd vagrant
+          ./up.sh --show-profile '${{ matrix.profile }}'

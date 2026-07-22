@@ -1,0 +1,170 @@
+---
+# pqc-migrate-tls.yml — Phase 2/5 of the PQC migration orchestrator.
+# Wraps pqc-pure-leaf.yml (pure ML-DSA-65 leaf on observe1:8444 + stepca1:9444
+# + ejbca1:8444 + hydra1:8444) and pqc-chimera.yml (chimera leaves on
+# observe1+web1 + AD Trusted Root distribution via dc1), then verifies the
+# migration outcomes.
+#
+# Pure-leaf runs FIRST because it only depends on EJBCA-PQC-Issuing-CA (a
+# pure-PQC CA). Chimera runs second because EJBCA-Chimera-Root-CA's catoken
+# has a known upstream "offline after alt-sig" bug that blocks signing — see
+# pqc-verification-gotchas memory. clear_host_errors between the two lets a
+# chimera failure leave the pure-PQC listeners (already up) reportable in
+# verification, rather than poisoning the affected hosts.
+#
+# Standalone usage (Foundation must have run first):
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-migrate-tls.yml
+
+- name: Phase 2/5 banner
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "═══ Phase 2/5: TLS migration ═══"
+
+- import_playbook: pqc-pure-leaf.yml
+
+- name: Clear host errors before chimera (chimera may fail upstream)
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - ansible.builtin.meta: clear_host_errors
+
+- import_playbook: pqc-chimera.yml
+
+- name: Clear host errors before verification (chimera may have failed)
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - ansible.builtin.meta: clear_host_errors
+
+- name: Phase 2 verification — observe1:8444 pure-PQC leaf (independent of chimera)
+  hosts: observe1
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    # The pure-PQC TLS-leaf probe is the SINGLE source of
+    # truth in scripts/lib/pqc-verify/tls-pure-leaf.sh, shared verbatim with
+    # validate.sh (scripts/checks/pqc-chimera.sh runs the same file for the
+    # stepca1/ejbca1/hydra1 pure-leaf loop). No more hand-sync. The script
+    # takes PORT from the environment; on observe1 the pure-PQC listener is
+    # :8444. It checks the systemd unit, listener, full handshake + chain
+    # validation, leaf key/sig algorithm, and that legacy openssl is rejected.
+    # Emits PASS:/FAIL: lines and always exits 0, so failed_when keys off FAIL:.
+    - name: TLS — observe1:8444 pure-PQC leaf is ML-DSA-65 (shared verifier)
+      ansible.builtin.script: ../../scripts/lib/pqc-verify/tls-pure-leaf.sh
+      args:
+        executable: /bin/bash
+      environment:
+        PORT: "8444"
+      register: tls_pure_probe
+      changed_when: false
+      failed_when: "'FAIL:' in tls_pure_probe.stdout"
+
+    - name: TLS — observe1:8444 probe results
+      ansible.builtin.debug:
+        msg: "{{ tls_pure_probe.stdout_lines }}"
+
+- name: Phase 2 verification — observe1:8443 chimera (depends on chimera signing)
+  hosts: observe1
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: TLS — observe1:8443 chimera cert issuer is EJBCA-Chimera-Root-CA
+      ansible.builtin.shell: |
+        set -e
+        issuer=$(echo | openssl s_client -connect localhost:8443 -servername observe1 2>/dev/null \
+                 | openssl x509 -noout -issuer 2>/dev/null)
+        echo "  issuer: $issuer"
+        echo "$issuer" | grep -q 'EJBCA-Chimera-Root-CA' || {
+          echo "FAIL: observe1:8443 issuer '$issuer' (expected EJBCA-Chimera-Root-CA)"; exit 1;
+        }
+      changed_when: false
+
+    - name: TLS — observe1:8443 chimera leaf has alt-sig OID 2.16.840.1.101.3.4.3.18
+      # System openssl on Ubuntu 22.04 doesn't know ML-DSA-65 by name and
+      # asn1parse won't recurse into the altSignatureAlgorithm OCTET STRING,
+      # so the dotted OID never appears in the parse tree. Probe for the DER
+      # encoding of the OID instead (BER-encoded as 06 09 60 86 48 01 65 03
+      # 04 03 12) inside the cert's hex dump.
+      ansible.builtin.shell: |
+        set -e
+        tmp=$(mktemp /tmp/chimera_check.XXXXXX.der)
+        echo | openssl s_client -connect localhost:8443 -servername observe1 -showcerts 2>/dev/null \
+            | openssl x509 -outform DER 2>/dev/null > "$tmp"
+        hex=$(xxd -p -c 9999 "$tmp")
+        rm -f "$tmp"
+        # 06 09 = OBJECT IDENTIFIER length 9
+        # 60 86 48 01 65 03 04 03 12 = encoded 2.16.840.1.101.3.4.3.18 (ML-DSA-65)
+        echo "$hex" | grep -qi '0609608648016503040312' || {
+          echo "FAIL: observe1:8443 leaf missing ML-DSA-65 alt-sig OID encoding"; exit 1;
+        }
+      changed_when: false
+
+- name: Phase 2 verification — web1 IIS chimera (self-probed on web1)
+  # Probed from web1 itself rather than manage1 — manage1 isn't in
+  # pqc.ini and the cross-host probe would silently skip with "no hosts
+  # matched". Self-probing also avoids needing chimera root trust on the
+  # probe machine: we accept any cert and validate the issuer string.
+  #
+  # lab_domain comes from inventory/<profile>/group_vars/all.yml (rendered by
+  # Vagrantfile). The play-level default override was removed
+  # because, once group_vars resolves lab_domain, a self-referencing
+  # `lab_domain: "{{ lab_domain | default(...) }}"` triggers Jinja2's
+  # recursive-loop guard. If you ever run this standalone outside a
+  # vagrant-rendered inventory, pass -e lab_domain=... explicitly.
+  hosts: web1
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: TLS — web1:8443 IIS cert issued by EJBCA-Chimera-Root-CA
+      ansible.windows.win_shell: |
+        $client = $null
+        $stream = $null
+        try {
+            $client = [System.Net.Sockets.TcpClient]::new()
+            $client.Connect('web1.{{ lab_domain }}', 8443)
+            $stream = New-Object System.Net.Security.SslStream(
+                $client.GetStream(), $false, { $true })
+            $stream.AuthenticateAsClient('web1.{{ lab_domain }}')
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+                $stream.RemoteCertificate)
+            $issuer = $cert.Issuer
+            Write-Output "  issuer: $issuer"
+            if ($issuer -notmatch 'EJBCA-Chimera-Root-CA') {
+                throw "FAIL: web1:8443 issuer '$issuer' (expected EJBCA-Chimera-Root-CA)"
+            }
+        } finally {
+            if ($stream) { $stream.Close() }
+            if ($client) { $client.Close() }
+        }
+
+- name: Phase 2 verification — AD Trusted Root distribution (dc1)
+  hosts: dc1
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: TLS — EJBCA-Chimera-Root-CA in AD Trusted Root container
+      # ADSI LDAP paths concatenate components with commas, not slashes —
+      # putting the leaf CN= at the FRONT of the full DN. The earlier
+      # "$trustedRootDN/CN=EJBCA-..." form silently returned an unbound
+      # ADSI object (Path was empty) and cACertificate appeared missing
+      # even though `certutil -dspublish RootCA` had populated it.
+      ansible.windows.win_shell: |
+        $rootDSE = [ADSI]'LDAP://RootDSE'
+        $configNC = $rootDSE.configurationNamingContext.Value
+        $dn = "CN=EJBCA-Chimera-Root-CA,CN=Certification Authorities,CN=Public Key Services,CN=Services,$configNC"
+        $container = [ADSI]"LDAP://$dn"
+        if (-not $container.cACertificate) {
+            throw "FAIL: EJBCA-Chimera-Root-CA not in AD Trusted Root ($dn)"
+        }
+        $der = $container.cACertificate.Value
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($der)
+        Write-Output "  EJBCA-Chimera-Root-CA in AD Trusted Root, thumbprint: $($cert.Thumbprint)"
+
+- name: Phase 2 summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - debug:
+        msg: "Phase 2/5 (TLS) complete"

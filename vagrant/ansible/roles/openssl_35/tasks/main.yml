@@ -1,0 +1,152 @@
+---
+# OpenSSL 3.5 from source — installs to /opt/openssl-3.5 alongside system OpenSSL.
+# Provides PQC key exchange (ML-KEM) and signature (ML-DSA) support for the KEX probe.
+# Does NOT replace the system OpenSSL — /usr/bin/openssl remains 3.0.x.
+#
+# IMPORTANT: Do NOT add /opt/openssl-3.5/lib64 to ldconfig — it would override
+# the system libssl/libcrypto and break sshd and other system services.
+# Instead, the binary is built with RPATH so it finds its own libs.
+#
+# Caching: saves ~9 min on cold-builds after the first.
+# First cold-build builds from source AND saves the binary tree as a tarball to
+# `{{ software_source_linux }}/scanner-cache/openssl-{{ openssl_35_version }}.tar.gz`
+# (which is mapped to the host's `vagrant/resources/software/scanner-cache/` via
+# VBox synced folder). Subsequent cold-builds restore from the tarball in ~10s.
+
+- name: Check if OpenSSL 3.5 is already installed
+  ansible.builtin.command:
+    cmd: "{{ openssl_35_install_prefix }}/bin/openssl version"
+  register: openssl35_check
+  changed_when: false
+  # NOTE: `failed_when: false` is load-bearing and intentionally kept. On a fresh
+  # build the binary does not exist yet, so this probe returns non-zero (command
+  # not found). Every install/restore task below gates on `openssl35_check.rc != 0`,
+  # so a non-zero rc here is the *expected* signal to install — not a fatal error.
+  # Removing `failed_when: false` would abort the role before OpenSSL is ever built.
+  failed_when: false
+
+- name: Check for cached OpenSSL 3.5 build artifact
+  ansible.builtin.stat:
+    path: "{{ software_source_linux }}/scanner-cache/openssl-{{ openssl_35_version }}.tar.gz"
+  register: openssl35_cache
+  when:
+    - openssl35_check.rc != 0 or openssl_35_version not in (openssl35_check.stdout | default(''))
+    - software_source_linux is defined
+
+- name: Restore OpenSSL 3.5 from cache
+  ansible.builtin.unarchive:
+    src: "{{ software_source_linux }}/scanner-cache/openssl-{{ openssl_35_version }}.tar.gz"
+    dest: /opt
+    remote_src: true
+    owner: root
+    group: root
+  when:
+    - openssl35_check.rc != 0 or openssl_35_version not in (openssl35_check.stdout | default(''))
+    - software_source_linux is defined
+    - openssl35_cache.stat.exists | default(false)
+  register: openssl35_restored
+
+- name: Install build dependencies
+  ansible.builtin.apt:
+    name:
+      - build-essential
+      - libz-dev
+      - perl
+    state: present
+    update_cache: true
+  when:
+    - openssl35_check.rc != 0 or openssl_35_version not in (openssl35_check.stdout | default(''))
+    - not (openssl35_restored.changed | default(false))
+
+# SHA256 from https://www.openssl.org/source/openssl-3.5.0.tar.gz.sha256 — update when bumping openssl_35_version
+- name: Download OpenSSL 3.5.0 source
+  ansible.builtin.get_url:
+    url: "https://github.com/openssl/openssl/releases/download/openssl-{{ openssl_35_version }}/openssl-{{ openssl_35_version }}.tar.gz"
+    dest: "/tmp/openssl-{{ openssl_35_version }}.tar.gz"
+    mode: "0644"
+    checksum: "sha256:344d0a79f1a9b08029b0744e2cc401a43f9c90acd1044d09a530b4885a8e9fc0"
+  when:
+    - openssl35_check.rc != 0 or openssl_35_version not in (openssl35_check.stdout | default(''))
+    - not (openssl35_restored.changed | default(false))
+
+- name: Extract OpenSSL 3.5.0 source
+  ansible.builtin.unarchive:
+    src: "/tmp/openssl-{{ openssl_35_version }}.tar.gz"
+    dest: /tmp
+    remote_src: true
+  when:
+    - openssl35_check.rc != 0 or openssl_35_version not in (openssl35_check.stdout | default(''))
+    - not (openssl35_restored.changed | default(false))
+
+- name: Configure OpenSSL 3.5.0 with RPATH
+  ansible.builtin.command:
+    cmd: ./Configure --prefix={{ openssl_35_install_prefix }} --openssldir={{ openssl_35_install_prefix }}/ssl -Wl,-rpath,{{ openssl_35_install_prefix }}/lib64
+    chdir: "/tmp/openssl-{{ openssl_35_version }}"
+  when:
+    - openssl35_check.rc != 0 or openssl_35_version not in (openssl35_check.stdout | default(''))
+    - not (openssl35_restored.changed | default(false))
+
+- name: Build OpenSSL 3.5.0
+  ansible.builtin.command:
+    cmd: make -j{{ ansible_processor_vcpus | default(2) }}
+    chdir: "/tmp/openssl-{{ openssl_35_version }}"
+  when:
+    - openssl35_check.rc != 0 or openssl_35_version not in (openssl35_check.stdout | default(''))
+    - not (openssl35_restored.changed | default(false))
+
+- name: Install OpenSSL 3.5.0
+  ansible.builtin.command:
+    cmd: make install_sw
+    chdir: "/tmp/openssl-{{ openssl_35_version }}"
+  when:
+    - openssl35_check.rc != 0 or openssl_35_version not in (openssl35_check.stdout | default(''))
+    - not (openssl35_restored.changed | default(false))
+
+# Use tar via command (not community.general.archive — that collection isn't
+# in this lab's requirements.yml and module-not-found fires at parse time,
+# bypassing ignore_errors). Tar is available on all Ubuntu Linux VMs.
+- name: Save built OpenSSL 3.5 to cache (for next cold-build)
+  ansible.builtin.command:
+    cmd: tar -czf "{{ software_source_linux }}/scanner-cache/openssl-{{ openssl_35_version }}.tar.gz" -C /opt "openssl-3.5"
+  when:
+    - openssl35_check.rc != 0 or openssl_35_version not in (openssl35_check.stdout | default(''))
+    - not (openssl35_restored.changed | default(false))
+    - software_source_linux is defined
+  ignore_errors: true   # cache miss on first build is fine; failure to write cache shouldn't fail the role
+  changed_when: false
+
+- name: Remove ldconfig override if present from prior install
+  ansible.builtin.file:
+    path: /etc/ld.so.conf.d/openssl-3.5.conf
+    state: absent
+  register: ldconfig_cleanup
+
+- name: Refresh ldconfig after removing override
+  ansible.builtin.command:
+    cmd: ldconfig
+  when: ldconfig_cleanup.changed
+  changed_when: false
+
+- name: Symlink openssl 3.5 as openssl35 in /usr/local/bin
+  ansible.builtin.file:
+    src: /opt/openssl-3.5/bin/openssl
+    dest: /usr/local/bin/openssl35
+    state: link
+
+- name: Verify OpenSSL 3.5 installation
+  ansible.builtin.command:
+    cmd: /opt/openssl-3.5/bin/openssl version
+  register: openssl35_version
+  changed_when: false
+
+- name: Display OpenSSL 3.5 version
+  ansible.builtin.debug:
+    msg: "{{ openssl35_version.stdout }}"
+
+- name: Clean up build artifacts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/openssl-3.5.0
+    - /tmp/openssl-3.5.0.tar.gz

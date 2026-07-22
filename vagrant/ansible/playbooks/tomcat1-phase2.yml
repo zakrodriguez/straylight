@@ -1,0 +1,45 @@
+---
+# TOMCAT1 Phase 2 — application roles (run after vagrant-reload restores VBoxSF)
+- hosts: all
+  gather_facts: false
+  vars:
+    ansible_winrm_operation_timeout_sec: 1800
+    ansible_winrm_read_timeout_sec: 1860
+  tasks:
+    - name: Include tomcat role
+      ansible.builtin.include_role:
+        name: tomcat
+
+    - name: Include gui_tools role (NetTools)
+      ansible.builtin.include_role:
+        name: gui_tools
+
+    - name: Include desktop_customize role
+      ansible.builtin.include_role:
+        name: desktop_customize
+
+    - name: Include bginfo role
+      ansible.builtin.include_role:
+        name: bginfo
+      vars:
+        vm_role: tomcat
+
+    - name: Include machine_cert role
+      ansible.builtin.include_role:
+        name: machine_cert
+
+    - name: Include sysinternals role
+      ansible.builtin.include_role:
+        name: sysinternals
+
+    - name: Include windows_logging role
+      ansible.builtin.include_role:
+        name: windows_logging
+
+    - name: Include sysmon role
+      ansible.builtin.include_role:
+        name: sysmon
+
+    - name: Include winlogbeat role
+      ansible.builtin.include_role:
+        name: winlogbeat

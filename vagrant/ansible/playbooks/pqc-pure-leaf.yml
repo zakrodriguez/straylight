@@ -1,0 +1,55 @@
+---
+# pqc-pure-leaf.yml — pure ML-DSA-65 leaf on observe1:8444
+#
+# Demonstrates a wire-protected service with a pure post-quantum certificate.
+# Sits alongside the existing observe1:8443 (chimera dual-sig).
+#
+# Implementation note: nginx (OpenSSL 3.3 in 1.27-alpine) cannot load
+# ML-DSA-65 keys ("ee key too small" + "decode error"). We use openssl 3.5's
+# s_server as a systemd unit instead — same lab role (openssl_35) the KEX
+# probe scanner already uses. nmap can't handshake with a pure-PQC cert
+# either (scanner1 system openssl is 3.0), so this endpoint is intentionally
+# only reachable by PQC-aware clients — the demo's whole point.
+#
+# 1. Enroll a pure ML-DSA-65 leaf for observe1 from EJBCA-PQC-Issuing-CA
+# 2. Install OpenSSL 3.5 (idempotent, no-op if present)
+# 3. Run openssl s_server on :8444 as a systemd unit serving the leaf
+#
+# Prereqs:
+#   - ejbca1 + EJBCA-PQC-Issuing-CA (ejbca_pqc role)
+#   - observe1 reachable
+#
+# Usage:
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-pure-leaf.yml \
+#     -e "ejbca_token_password=foo123 lab_domain=yourlab.local"
+
+- name: Enroll pure ML-DSA-65 leaf on each PQC pure-leaf endpoint
+  # hosts come from inventory group pqc_pure_leaf_endpoints; each host carries
+  # its own openssl_pqc_port hostvar (8444 for observe1, 9444 for stepca1).
+  hosts: pqc_pure_leaf_endpoints
+  gather_facts: true
+  become: true
+  ignore_unreachable: true
+  vars:
+    pqc_enroll_mode: issuing
+    # SERVER cert profile ships with EJBCA out-of-the-box and includes Server
+    # Auth EKU, required for openssl s_server. Default ENDUSER profile only
+    # has Client Auth + Email Protection (verify code 26: unsuitable purpose).
+    pqc_enroll_certprofile: SERVER
+    pqc_enroll_eeprofile: EMPTY
+  roles:
+    - ejbca_pqc_enroll
+
+- name: Install OpenSSL 3.5 + serve PQC leaf
+  hosts: pqc_pure_leaf_endpoints
+  gather_facts: true
+  become: true
+  ignore_unreachable: true
+  vars:
+    openssl_pqc_unit_name: openssl-pqc-pure
+    # openssl_pqc_port is a per-host inventory var
+    openssl_pqc_cert_path: "/opt/pqc-certs/{{ inventory_hostname }}-pqc-cert.pem"
+    openssl_pqc_key_path:  "/opt/pqc-certs/{{ inventory_hostname }}-pqc-key.pem"
+  roles:
+    - openssl_35
+    - openssl_pqc_demo

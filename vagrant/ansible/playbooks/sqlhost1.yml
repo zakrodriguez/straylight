@@ -1,0 +1,55 @@
+---
+# SQLHOST1 - SQL Server 2022 Developer on Windows Server 2025
+# Provides a SQL Server 2022 host for certificate-binding labs.
+#
+# Flow:
+#   1. PSFramework (logging dependency)
+#   2. common (timezone, hosts file, base config)
+#   3. domain_join (yourlab.local)
+#   4. sql_server (unattended install + firewall)
+#   5. sysinternals + bginfo (operator tooling)
+#   6. windows_logging + winlogbeat (observability)
+#
+# Prereqs:
+#   - dc1 must be promoted before sqlhost1 (svc-sql account created there)
+#   - issueca optional — cert provisioning happens in the lab walkthroughs
+
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Include common role
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        dns_servers:
+          - "{{ dc_ip }}"
+
+    - name: Include domain_join role
+      ansible.builtin.include_role:
+        name: domain_join
+
+    - name: Include sql_server role (unattended SQL install)
+      ansible.builtin.include_role:
+        name: sql_server
+
+    - name: Include sysinternals role
+      ansible.builtin.include_role:
+        name: sysinternals
+
+    - name: Include bginfo role
+      ansible.builtin.include_role:
+        name: bginfo
+      vars:
+        vm_role: sql
+
+    - name: Include windows_logging role
+      ansible.builtin.include_role:
+        name: windows_logging
+
+    - name: Include winlogbeat role
+      ansible.builtin.include_role:
+        name: winlogbeat

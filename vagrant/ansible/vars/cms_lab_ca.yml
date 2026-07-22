@@ -1,0 +1,22 @@
+---
+# Single source of truth for the CMS lab's AD CS enrollment targets.
+# Loaded via include_vars by BOTH cms_lab_linux (scanner1) and cms_lab_windows
+# (manage1) so the CA host / config string / template names live in exactly
+# one place. Previously these four strings were copy-pasted into each role's
+# defaults/main.yml; this file de-duplicates them here.
+#
+# Each role's defaults/main.yml defines its own role-scoped aliases that
+# reference these canonical vars (lazy Jinja → resolved after include_vars),
+# preserving every existing var name used in task files.
+
+# Classical AD CS issuing CA (RSA). Domain Computers has Enroll/AutoEnroll on
+# the Straylight-Machine template; WebServer is restricted to admins.
+cms_lab_ca_host_classical: issueca
+cms_lab_ca_config_classical: "issueca.{{ lab_domain }}\\YOURLAB-Issuing-CA"
+cms_lab_template_classical: Straylight-Machine-1Y-RSA2048-SHA256-v1
+
+# PQC AD CS issuing CA (ML-DSA-65). ISSUECAPQC hostname has the hyphen
+# stripped (NetBIOS 15-char limit).
+cms_lab_ca_host_pqc: issueca-pqc
+cms_lab_ca_config_pqc: "ISSUECAPQC.{{ lab_domain }}\\YOURLAB-PQC-Issuing-CA"
+cms_lab_template_pqc: Straylight-PQC-Machine-MLDSA65-v1

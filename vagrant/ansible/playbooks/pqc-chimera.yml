@@ -1,0 +1,86 @@
+---
+# pqc-chimera.yml — end-to-end chimera cert pipeline
+#
+# 1. Bootstrap a SuperAdmin P12 on ejbca1 (idempotent)
+# 2. Drive the EJBCA admin UI via Playwright to create chimera profiles
+# 3. Issue a chimera cert to observe1 from EJBCA-Chimera-Root-CA
+# 4. Bring up an nginx demo on observe1:8443 presenting that cert
+#
+# Prerequisites:
+#   - ejbca1 running with EJBCA-Chimera-Root-CA already created (ejbca_pqc role)
+#   - observe1 running with Docker installed (observe role)
+#
+# Usage:
+#   ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-chimera.yml \
+#     -e "ejbca_token_password=foo123 lab_domain=yourlab.local"
+
+- name: Bootstrap EJBCA admin + chimera profiles
+  hosts: ejbca1
+  gather_facts: false
+  become: true
+  roles:
+    - ejbca_admin_bootstrap
+    - ejbca_chimera_profile
+
+- name: Enroll chimera leaf certs
+  hosts: observe1
+  gather_facts: true
+  become: true
+  ignore_unreachable: true
+  vars:
+    pqc_enroll_mode: chimera
+  roles:
+    - ejbca_pqc_enroll
+
+- name: Deploy nginx demo with chimera cert
+  hosts: observe1
+  gather_facts: false
+  become: true
+  ignore_unreachable: true
+  vars:
+    nginx_pqc_cert_path: "/opt/pqc-certs/{{ inventory_hostname }}.chimera.crt"
+    nginx_pqc_key_path:  "/opt/pqc-certs/{{ inventory_hostname }}.chimera.key"
+  roles:
+    - nginx_pqc_demo
+
+- name: Deploy chimera leaf to IIS on Windows web1
+  # Codifies the former manual install as an
+  # Ansible role so vagrant destroy/rebuild reproduces web1:8443 cleanly.
+  hosts: web1
+  gather_facts: true
+  ignore_unreachable: true
+  roles:
+    - iis_chimera_demo
+
+- name: Publish EJBCA-Chimera-Root-CA to AD (forest-wide trust)
+  # Re-uses the parameterized ejbca_ad_trust role. Chimera Root goes into
+  # AD's Trusted Root store only (not NTAuth) — chimera CA issues TLS
+  # server certs, not user-auth certs. Domain machines pull the new root
+  # on next gpupdate (or 90-min auto refresh) — including manage1, client1,
+  # web1, tomcat1 — so chimera leaves anywhere in the lab validate without
+  # per-machine root imports.
+  hosts: dc1
+  gather_facts: false
+  # Standalone-run fallback. ejbca_ad_trust + win_scheduled_task consume the
+  # lab-wide STATIC vars psf_init / schtask_admin_init, which live only in the
+  # checked-in ansible/group_vars/all.yml. A bare
+  # `ansible-playbook -i inventory/<profile>/pqc.ini` (and pqc-migrate.yml run
+  # standalone) auto-discovers only the GENERATED per-profile group_vars — which
+  # render_inventory.rb's STATIC_OWNED deliberately strips psf_init from, and
+  # which never carried schtask_admin_init — so the play aborts with
+  # "'psf_init' is undefined", taking the rest of the orchestrator with it.
+  # Loading the canonical file here closes that gap for manual/standalone runs.
+  # These are STATIC constants, disjoint from the per-profile RUNTIME group_vars,
+  # so they can't clobber a runtime value; and the Vagrant provisioner's
+  # extra_vars still outrank vars_files, leaving provisioner runs unchanged.
+  vars_files:
+    - "{{ playbook_dir }}/../group_vars/all.yml"
+  vars:
+    ejbca_ad_trust_ca_name: EJBCA-Chimera-Root-CA
+    ejbca_ad_trust_slug: ejbca-chimera-root-ca
+    ejbca_ad_trust_task_name: PublishEJBCAChimeraCert
+    ejbca_ad_trust_publish_ntauth: false
+  roles:
+    - psframework
+    - win_scheduled_task
+    - ejbca_ad_trust

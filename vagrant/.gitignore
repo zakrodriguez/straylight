@@ -1,0 +1,16 @@
+cbom-output/
+cbom-export/
+logs/
+.env
+
+# Per-profile Vagrant state directories (`.vagrant-<profile>/`). The default
+# `.vagrant/` is auto-ignored by Vagrant's own gitignore; this catches the
+# composable-lab variants (e.g. .vagrant-pqc-full/, .vagrant-ad-cs-two-tier/).
+.vagrant/
+.vagrant-*/
+
+# VBoxHeadless writes `<timestamp>-VBoxHeadless-<pid>.log` to its CWD when
+# VBoxManage startvm --type headless is invoked from this directory (e.g.
+# ad-hoc VM-by-id boots that bypass Vagrant). The files are short and
+# disposable; ignore by pattern so they stop showing up in git status.
+*-VBoxHeadless-*.log

@@ -1,0 +1,166 @@
+---
+# Install a single Windows hotfix / cumulative update by KB number.
+#
+# Pattern mirrors the sql_server role's cache-first + SYSTEM-schtask flow:
+#   1. Validate kb_number.
+#   2. Idempotency — skip everything if Get-HotFix shows the KB already
+#      present.
+#   3. Cache check — copy .msu from {{ msu_cache_path }} if present.
+#   4. Download fallback — pull from {{ msu_url }} with SHA256 pin; fail
+#      with an actionable message if cache miss + URL unset.
+#   5. Render install-kb.ps1 (templated) and run it.  The script wraps
+#      wusa.exe in a SYSTEM-context scheduled task — wusa.exe under
+#      WinRM Basic auth hits a restricted-token error (network logon +
+#      DPAPI); SYSTEM-schtask is the canonical straylight workaround.
+#   6. Map exit code: 0 = success, 3010 = reboot required,
+#      2359302 (0x240006) = already installed.  Anything else fails.
+#   7. Reboot if wusa requested it AND kb_install_reboot_if_needed.
+#   8. Verify the KB is present via a fresh Get-HotFix.
+#
+# All PowerShell complexity lives in templates/install-kb.ps1.j2 to keep
+# the YAML free of Jinja-vs-shell quoting hazards.
+
+- name: Validate kb_number is set and well-formed
+  ansible.builtin.assert:
+    that:
+      - kb_number is defined
+      - kb_number | length > 0
+      - kb_number is match('^KB[0-9]+$')
+    fail_msg: >-
+      kb_number must be a KB article id (e.g. KB5087539).
+      Got '{{ kb_number | default('<unset>') }}'
+
+- name: Check whether KB is already installed
+  ansible.windows.win_shell: |
+    if (Get-HotFix -Id {{ kb_number }} -ErrorAction SilentlyContinue) { 'installed' } else { 'missing' }
+  register: kb_install_state
+  changed_when: false
+
+- name: Set kb_already_installed fact
+  ansible.builtin.set_fact:
+    kb_already_installed: "{{ kb_install_state.stdout_lines[-1] | trim == 'installed' }}"
+
+- name: Report KB install state
+  ansible.builtin.debug:
+    msg: "{{ kb_number }} is {{ 'already installed - skipping' if kb_already_installed else 'not present - installing' }}"
+
+# ---- Install path (only when KB is missing) ----
+
+- name: Create install working directory
+  ansible.windows.win_file:
+    path: "{{ kb_install_workdir }}"
+    state: directory
+  when: not kb_already_installed
+
+- name: Check for staged MSU in local software cache
+  ansible.windows.win_stat:
+    path: "{{ msu_cache_path }}"
+  register: msu_cache
+  when: not kb_already_installed
+
+- name: Copy MSU from local cache into install workdir
+  ansible.windows.win_copy:
+    src: "{{ msu_cache_path }}"
+    dest: "{{ kb_install_workdir }}\\{{ kb_number }}.msu"
+    remote_src: true
+  when:
+    - not kb_already_installed
+    - msu_cache.stat.exists | default(false)
+
+- name: Fail with actionable message when cache miss + no msu_url
+  ansible.builtin.fail:
+    msg: |
+      {{ kb_number }} is not installed, not cached at {{ msu_cache_path }},
+      and no msu_url was provided. Pick one:
+        1. (Preferred) Run the helper from the workstation; it scrapes the
+           catalog, verifies SHA256 against vagrant/resources/software/kb-pins.txt,
+           drops the .msu into the share that auto-mounts at
+           {{ software_source }}\{{ kb_number }}.msu:
+             ./vagrant/scripts/fetch-windows-kb.sh {{ kb_number }}
+        2. Manual: download from
+             https://catalog.update.microsoft.com/Search.aspx?q={{ kb_number }}
+           into {{ software_source }}\{{ kb_number }}.msu on the target host.
+        3. Pass -e msu_url=<direct .msu URL> and (recommended)
+             -e msu_sha256=<lowercase hex sha256> to the play / role.
+  when:
+    - not kb_already_installed
+    - not (msu_cache.stat.exists | default(false))
+    - msu_url | length == 0
+
+- name: Download MSU from msu_url
+  ansible.windows.win_get_url:
+    url: "{{ msu_url }}"
+    dest: "{{ kb_install_workdir }}\\{{ kb_number }}.msu"
+    checksum: "{{ ('sha256:' + msu_sha256) if (msu_sha256 | length > 0) else omit }}"
+    force: false
+  when:
+    - not kb_already_installed
+    - not (msu_cache.stat.exists | default(false))
+    - msu_url | length > 0
+
+- name: Render install-kb.ps1 onto the target
+  ansible.windows.win_template:
+    src: install-kb.ps1.j2
+    dest: "{{ kb_install_workdir }}\\install-{{ kb_number }}.ps1"
+  when: not kb_already_installed
+
+- name: Run the install script (wraps wusa.exe in SYSTEM-context schtask)
+  ansible.windows.win_command: >-
+    powershell.exe -NoProfile -ExecutionPolicy Bypass
+    -File "{{ kb_install_workdir }}\install-{{ kb_number }}.ps1"
+  register: wusa_result
+  changed_when: not kb_already_installed
+  when: not kb_already_installed
+
+- name: Read wusa.exe exit code for reboot decision
+  ansible.windows.win_shell: "Get-Content '{{ kb_install_workdir }}\\{{ kb_number }}.rc'"
+  register: wusa_rc
+  changed_when: false
+  when: not kb_already_installed
+
+- name: Reboot host if wusa.exe returned 3010
+  ansible.windows.win_reboot:
+    reboot_timeout: "{{ kb_install_reboot_timeout }}"
+    msg: "Rebooting to finalize {{ kb_number }} install"
+  when:
+    - not kb_already_installed
+    - kb_install_reboot_if_needed
+    - (wusa_rc.stdout_lines[-1] | trim) == '3010'
+
+# The 3010 reboot above can leave C:\Software as a stale symlink — the
+# directory entry survives but \\vboxsvr\C:_Software is no longer enumerable
+# until the symlink is recreated. Repair so downstream cache-first roles
+# (winlogbeat, sysmon, sysinternals) running later in the playbook don't fall
+# through to internet downloads. Idempotent; ~1s on healthy share.
+- name: Repair C:\Software symlink if KB-install reboot left it stale
+  ansible.builtin.include_role:
+    name: shared_folder_repair
+  when:
+    - not kb_already_installed
+    - kb_install_reboot_if_needed
+    - (wusa_rc.stdout_lines[-1] | trim) == '3010'
+    - software_source is defined and software_source != ""
+
+- name: Verify KB is now present via Get-HotFix
+  ansible.windows.win_shell: |
+    if (Get-HotFix -Id {{ kb_number }} -ErrorAction SilentlyContinue) { 'verified' } else { 'missing' }
+  register: kb_post_check
+  changed_when: false
+  when: not kb_already_installed
+
+- name: Fail if post-install verification cannot see KB
+  ansible.builtin.fail:
+    msg: |
+      Post-install verification failed: {{ kb_number }} is not present in
+      Get-HotFix after wusa.exe reported success. Inspect
+      {{ kb_install_workdir }}\{{ kb_number }}-install.log on the target.
+      Possible causes:
+        - The KB is superseded by a later cumulative already installed.
+        - wusa returned 2359302 (already installed) but Get-HotFix lists
+          the superseding KB under a different id - verify with
+          Get-HotFix | Where-Object Description -like '*Security*'
+        - Reboot was suppressed (kb_install_reboot_if_needed=false) but
+          the KB requires one before it registers.
+  when:
+    - not kb_already_installed
+    - (kb_post_check.stdout_lines[-1] | trim) != 'verified'

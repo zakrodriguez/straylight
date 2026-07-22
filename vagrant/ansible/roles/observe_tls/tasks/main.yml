@@ -1,0 +1,26 @@
+---
+# observe_tls role: terminate TLS for OpenSearch Dashboards on observe1.
+# Adds a host nginx reverse proxy on :443 fronting OSD's plain :5601,
+# using an ACME-issued cert from step-ca with auto-renewal via systemd
+# timer.
+#
+# Reuses the acme_client role for the trust-store seed and step CLI install.
+
+- name: Install step-ca root cert into system trust store
+  ansible.builtin.include_role:
+    name: acme_client
+    tasks_from: trust.yml
+
+- name: Install step CLI
+  ansible.builtin.include_role:
+    name: acme_client
+    tasks_from: step_cli.yml
+
+- name: Install host nginx and bootstrap webroot config
+  ansible.builtin.import_tasks: nginx.yml
+
+- name: Issue initial cert and enable TLS server block
+  ansible.builtin.import_tasks: cert_initial.yml
+
+- name: Install renewal hook script + systemd timer
+  ansible.builtin.import_tasks: renewal_timer.yml

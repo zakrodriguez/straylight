@@ -1,0 +1,158 @@
+---
+# cloudflare_pqc role — probes public Cloudflare PQC endpoints from scanner1.
+# See: the cloudflare-pqc walkthrough (content/walkthroughs-unverified branch)
+#
+# Pipeline:
+#   1. Build Go probe (uses Go stdlib's X25519MLKEM768 since 1.24;
+#      1.23 only had the draft X25519Kyber768Draft00)
+#   2. Stage probe.sh orchestrator (9 probes: 3 endpoints × 3 stacks)
+#   3. Install systemd timer (runs every 6h) + service
+#   4. Run probe once on provision so report.json exists before validate.sh
+
+- name: Create cloudflare_pqc directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ cloudflare_pqc_install_dir }}"
+    - "{{ cloudflare_pqc_install_dir }}/src"
+    - "{{ cloudflare_pqc_report_dir }}"
+
+- name: Stage cf-pqc-probe Go source
+  ansible.builtin.copy:
+    src: "cf-pqc-probe/"
+    dest: "{{ cloudflare_pqc_install_dir }}/src/"
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  register: cf_probe_src
+
+- name: Check Go toolchain is available (provided by cbom_lens role)
+  ansible.builtin.stat:
+    path: "{{ cloudflare_pqc_go_binary }}"
+  register: cf_go_stat
+
+- name: Fail with actionable message if Go is missing
+  ansible.builtin.fail:
+    msg: |
+      Go binary not found at {{ cloudflare_pqc_go_binary }}.
+      cloudflare_pqc depends on the Go toolchain installed by the
+      cbom_lens role. Ensure cbom_lens runs before cloudflare_pqc in
+      scanner1.yml (it should: cbom_lens is included earlier).
+  when: not cf_go_stat.stat.exists
+
+- name: Stat cf-pqc-probe binary
+  ansible.builtin.stat:
+    path: "{{ cloudflare_pqc_install_dir }}/cf-pqc-probe"
+  register: cf_bin_stat
+
+- name: Build cf-pqc-probe binary
+  ansible.builtin.command:
+    cmd: "{{ cloudflare_pqc_go_binary }} build -o {{ cloudflare_pqc_install_dir }}/cf-pqc-probe ."
+    chdir: "{{ cloudflare_pqc_install_dir }}/src"
+  environment:
+    GOCACHE: "{{ cloudflare_pqc_install_dir }}/.gocache"
+    GOPATH:  "{{ cloudflare_pqc_install_dir }}/.gopath"
+  register: cf_probe_build
+  changed_when: cf_probe_build.rc == 0
+  when: cf_probe_src.changed or not cf_bin_stat.stat.exists
+  retries: 3
+  delay: 5
+  until: cf_probe_build.rc == 0
+
+- name: Stage probe.sh orchestrator
+  ansible.builtin.copy:
+    src: probe.sh
+    dest: "{{ cloudflare_pqc_install_dir }}/probe.sh"
+    owner: root
+    group: root
+    mode: "0755"
+
+# ── cbom_ingest.py + pqc_classify.py on scanner1 ──────────────────────────
+# Needed by both the provision-time initial probe.sh run below and the
+# systemd ExecStartPost= hook in cloudflare-pqc.service. The /vagrant synced
+# folder is disabled on scanner1, so we copy the slice of cbom-toolkit
+# required for ingest (two stdlib-only Python files) to a stable path.
+- name: Create cbom-toolkit Python dir on scanner1
+  ansible.builtin.file:
+    path: "{{ cloudflare_pqc_toolkit_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Stage cbom_ingest.py + pqc_classify.py for ExecStartPost ingest
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../cbom-toolkit/python/{{ item }}"
+    dest: "{{ cloudflare_pqc_toolkit_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - cbom_ingest.py
+    - pqc_classify.py
+
+- name: Run probe.sh once during provision (so validate.sh sees a report)
+  ansible.builtin.command:
+    cmd: "{{ cloudflare_pqc_install_dir }}/probe.sh"
+  register: probe_initial
+  changed_when: true
+  # Don't fail provision if internet is offline — validate.sh handles that gracefully.
+  failed_when: false
+
+- name: Show probe.sh result (debug)
+  ansible.builtin.debug:
+    msg: "probe.sh stdout: {{ probe_initial.stdout | default('(no output)') }} | stderr: {{ probe_initial.stderr | default('') }}"
+
+# Ingest the freshly-written report into OpenSearch so validate.sh's
+# `cloudflare_pqc-opensearch-ingest` check (and the OSD `Cloudflare Edge
+# PQC Posture` panel) have data without waiting up to 6h for the first
+# timer-driven run. Idempotent: cbom_ingest derives deterministic _id from
+# (cbom_bom_ref, cbom_location, cbom_scan_time), so re-running with the
+# same report.json upserts the same docs.
+- name: Ingest provision-time report.json into OpenSearch
+  ansible.builtin.command:
+    cmd: >-
+      python3 {{ cloudflare_pqc_toolkit_dir }}/cbom_ingest.py
+      {{ cloudflare_pqc_report_path }}
+      --scanner {{ cloudflare_pqc_scanner_id }}
+      --opensearch-url {{ cloudflare_pqc_opensearch_url }}
+      --username {{ cloudflare_pqc_opensearch_user }}
+      --password {{ cloudflare_pqc_opensearch_pass }}
+      {{ '--insecure' if cloudflare_pqc_opensearch_insecure else '' }}
+  register: probe_initial_ingest
+  changed_when: probe_initial_ingest.rc == 0
+  # Same forgiveness as the probe itself: offline cold-builds, OpenSearch
+  # not yet up on observe1, etc. validate.sh catches the missing-docs case.
+  failed_when: false
+  when: probe_initial.rc == 0
+
+- name: Show provision-time ingest result (debug)
+  ansible.builtin.debug:
+    msg: "cbom_ingest stdout: {{ probe_initial_ingest.stdout | default('(skipped — probe.sh failed)') }} | stderr: {{ probe_initial_ingest.stderr | default('') }}"
+
+# Recurring probe + ingest wiring is delegated to the reusable observe_timer
+# role: timer fires probe.sh on a cadence, ExecStartPost pipes the report
+# through cbom_ingest.py. The .service / .timer templates are shared via that
+# role rather than hand-rolled here.
+- name: Install cloudflare-pqc timer + ingest hook (observe_timer)
+  ansible.builtin.include_role:
+    name: observe_timer
+  vars:
+    observe_timer_name: cloudflare-pqc
+    observe_timer_description: Cloudflare PQC observation probe
+    observe_timer_documentation: "file://{{ cloudflare_pqc_install_dir }}/probe.sh"
+    observe_timer_exec_start: "{{ cloudflare_pqc_install_dir }}/probe.sh"
+    observe_timer_oncalendar: "{{ cloudflare_pqc_timer_oncalendar }}"
+    observe_timer_ingest_path: "{{ cloudflare_pqc_report_path }}"
+    observe_timer_ingest_script: "{{ cloudflare_pqc_toolkit_dir }}/cbom_ingest.py"
+    observe_timer_ingest_args: >-
+      {{ ['--scanner', cloudflare_pqc_scanner_id,
+          '--opensearch-url', cloudflare_pqc_opensearch_url,
+          '--username', cloudflare_pqc_opensearch_user,
+          '--password', cloudflare_pqc_opensearch_pass]
+         + (['--insecure'] if cloudflare_pqc_opensearch_insecure else []) }}

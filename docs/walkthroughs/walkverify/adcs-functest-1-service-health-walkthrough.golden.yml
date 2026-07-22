@@ -1,0 +1,128 @@
+lab: adcs-functest-1-service-health-walkthrough
+profile: ad-cs-two-tier
+parameters: {}
+normalizers: {}
+steps:
+- step: host-connectivity-precheck
+  host: lab
+  command: 'vagrant status dc1 issueca manage1 | grep -E ''^(dc1|issueca|manage1)
+    ''
+
+    # Expected: all three show "running"'
+  rc: 0
+  expect:
+  - running
+  strict: false
+  captured: 'dc1                       running (virtualbox)
+
+    issueca                   running (virtualbox)
+
+    manage1                   running (virtualbox)
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: setup-ca
+  host: issueca
+  command: '$CA  = "ISSUECA.yourlab.local\YOURLAB-Issuing-CA"
+
+    $reg = ''HKLM:\System\CurrentControlSet\Services\CertSvc\Configuration\YOURLAB-Issuing-CA'''
+  rc: 0
+  expect: []
+  strict: false
+  captured: '[lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: signing-key-provider
+  host: issueca
+  command: 'certutil -config $CA -getreg CA\CSP\Provider
+
+    # Expected (software KSP):
+
+    #   Provider REG_SZ = Microsoft Software Key Storage Provider
+
+    # (HSM example for contrast: "SafeNet Key Storage Provider" or
+
+    #  "Thales Luna Key Storage Provider".)
+
+
+    certutil -config $CA -getreg CA\CSP\ProviderType
+
+    # Expected (software KSP): ProviderType REG_DWORD = 0 (= KSP, not CAPI CSP)
+
+
+    certutil -config $CA -getreg CA\CSP\HashAlgorithm
+
+    # HashAlgorithm REG_DWORD: 0x800c (SHA256) if explicitly set; on a
+
+    # straylight-provisioned Server 2025 CA it commonly reads 0xffffffff (-1),
+
+    # meaning "use the provider default" (still SHA256). Either is healthy;
+
+    # 0x8004 (SHA-1) on an active CA would be a finding to escalate.'
+  rc: 0
+  expect:
+  - Microsoft Software Key Storage Provider
+  - ProviderType REG_DWORD = 0
+  strict: false
+  captured: "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\CertSvc\\Configuration\\\
+    YOURLAB-Issuing-CA\\CSP:\n\n  Provider REG_SZ = Microsoft Software Key Storage\
+    \ Provider\nCertUtil: -getreg command completed successfully.\nHKEY_LOCAL_MACHINE\\\
+    SYSTEM\\CurrentControlSet\\Services\\CertSvc\\Configuration\\YOURLAB-Issuing-CA\\\
+    CSP:\n\n  ProviderType REG_DWORD = 0\nCertUtil: -getreg command completed successfully.\n\
+    HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\CertSvc\\Configuration\\\
+    YOURLAB-Issuing-CA\\CSP:\n\n  HashAlgorithm REG_DWORD = ffffffff (-1)\n    CALG_OID_INFO_CNG_ONLY\n\
+    CertUtil: -getreg command completed successfully.\n[lab_profile] active: ad-cs-two-tier\
+    \ (5 VMs, source=lab_profile)\n"
+- step: signature-test
+  host: issueca
+  command: "certutil -store My '*YOURLAB-Issuing-CA*' |\n    Select-String -Pattern\
+    \ 'Key Container|Provider|Encryption test|Signature test'\n# Expected lines:\n\
+    #   Key Container = {GUID}\n#   Provider = Microsoft Software Key Storage Provider\n\
+    #   Signature test passed\n#   Encryption test passed   (or \"not supported\"\
+    \ for signing-only keys)"
+  rc: 0
+  expect:
+  - Key Container
+  - Microsoft Software Key Storage Provider
+  strict: false
+  captured: "\n  Key Container = YOURLAB-Issuing-CA\n  Provider = Microsoft Software\
+    \ Key Storage Provider\nSignature test passed\n  Key Container = YOURLAB-Issuing-CA\n\
+    \  Provider = Microsoft Software Key Storage Provider\nSignature test FAILED\n\
+    \n\n[lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)\n"
+- step: certsvc-status-preflight
+  host: issueca
+  command: 'Get-Service CertSvc | Select-Object Name, Status, StartType
+
+    # Expected: Status = Running, StartType = Automatic'
+  rc: 0
+  expect:
+  - Running
+  - Automatic
+  strict: false
+  captured: '
+
+    Name     Status StartType
+
+    ----     ------ ---------
+
+    CertSvc Running Automatic
+
+
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: certsvc-restart-cycle
+  host: issueca
+  command: "$stop = Measure-Command { Stop-Service CertSvc }\n$start = Measure-Command\
+    \ { Start-Service CertSvc }\n[PSCustomObject]@{\n    StopMs  = [int]$stop.TotalMilliseconds\n\
+    \    StartMs = [int]$start.TotalMilliseconds\n    State   = (Get-Service CertSvc).Status\n\
+    }\n# Expected:\n#   StopMs StartMs State\n#   ------ ------- -----\n#       ~500\
+    \   ~3000 Running"
+  rc: 0
+  expect:
+  - Running
+  strict: false
+  captured: "\nStopMs StartMs   State\n------ -------   -----\n   340      32 Running\n\
+    \n\n[lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)\n"

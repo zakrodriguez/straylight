@@ -1,0 +1,109 @@
+---
+# EJBCA AD Trust role: download an EJBCA-issued CA cert and publish it to AD.
+# Runs on DC1 after EJBCA1 is provisioned. Uses scheduled task for
+# certutil -dspublish (WinRM double-hop workaround).
+#
+# Parameterized so the same role can be invoked twice in one playbook to
+# publish multiple CAs (e.g. EJBCA-Root-CA *and* EJBCA-Chimera-Root-CA).
+# See defaults/main.yml for the knobs.
+
+- name: Download {{ ejbca_ad_trust_ca_name }} certificate from EJBCA public endpoint
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+      $certUrl = "http://{{ ejbca_ip }}:8080/ejbca/publicweb/webdist/certdist?cmd=cacert&issuer=CN%3D{{ ejbca_ad_trust_ca_name }}%2CO%3D{{ ejbca_organization }}&level=0"
+      $certFile = "C:\tmp\{{ ejbca_ad_trust_slug }}.cer"
+
+      Write-PSFMessage -Level Host -Message "Downloading {{ ejbca_ad_trust_ca_name }} cert from $certUrl" -Tag 'ejbca-trust'
+      try {
+          Invoke-WebRequest -Uri $certUrl -OutFile $certFile -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+      } catch {
+          Write-PSFMessage -Level Warning -Message "Failed to download {{ ejbca_ad_trust_ca_name }} cert: $_" -Tag 'ejbca-trust'
+          Wait-PSFMessage
+          throw "Failed to download {{ ejbca_ad_trust_ca_name }} cert from $certUrl : $_"
+      }
+
+      if (-not (Test-Path $certFile)) {
+          Write-PSFMessage -Level Error -Message 'Certificate file not created' -Tag 'ejbca-trust'
+          Wait-PSFMessage
+          throw "Certificate file not created at $certFile"
+      }
+
+      # Verify it's a valid cert
+      $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certFile)
+      Write-PSFMessage -Level Host -Message "Downloaded cert: $($cert.Subject) (Thumbprint: $($cert.Thumbprint))" -Tag 'ejbca-trust'
+      $Ansible.Result = "Downloaded cert: $($cert.Subject) (Thumbprint: $($cert.Thumbprint))"
+      Wait-PSFMessage
+  retries: 6
+  delay: 10
+  register: cert_download
+  until: cert_download is not failed
+
+- name: Publish {{ ejbca_ad_trust_ca_name }} cert to AD via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      $taskUser = "{{ lab_netbios }}\Administrator"
+
+      $scriptFile = "C:\tmp\publish-{{ ejbca_ad_trust_slug }}.ps1"
+      $logFile = "C:\tmp\publish-{{ ejbca_ad_trust_slug }}.log"
+      $statusFile = "C:\tmp\publish-{{ ejbca_ad_trust_slug }}-status.txt"
+
+      $wrapper = @"
+      {{ psf_init }}
+      try {
+          Write-PSFMessage -Level Host -Message 'Publishing {{ ejbca_ad_trust_ca_name }} cert to AD' -Tag 'ejbca-trust'
+          `$certFile = "C:\tmp\{{ ejbca_ad_trust_slug }}.cer"
+
+          # Always publish to Trusted Root CAs — every CA needs this for chain validation
+          certutil.exe -dspublish -f `$certFile RootCA *> $logFile
+          if (`$LASTEXITCODE -ne 0) {
+              Write-PSFMessage -Level Error -Message 'certutil -dspublish RootCA failed' -Tag 'ejbca-trust'
+              'FAILED' | Out-File $statusFile
+              Wait-PSFMessage
+              return
+          }
+
+          {% if ejbca_ad_trust_publish_ntauth %}
+          # Publish to NTAuth store (enables certificate-based authentication)
+          certutil.exe -dspublish -f `$certFile NTAuthCA *>> $logFile
+          if (`$LASTEXITCODE -ne 0) {
+              Write-PSFMessage -Level Error -Message 'certutil -dspublish NTAuthCA failed' -Tag 'ejbca-trust'
+              'FAILED' | Out-File $statusFile
+              Wait-PSFMessage
+              return
+          }
+          {% else %}
+          # Skipping NTAuth publish — {{ ejbca_ad_trust_ca_name }} issues TLS certs only, not user-auth.
+          {% endif %}
+
+          Write-PSFMessage -Level Host -Message '{{ ejbca_ad_trust_ca_name }} cert published to AD' -Tag 'ejbca-trust'
+          'SUCCESS' | Out-File $statusFile
+      } catch {
+          Write-PSFMessage -Level Error -Message 'EJBCA cert publish failed' -ErrorRecord `$_ -Tag 'ejbca-trust'
+          `$_.Exception.Message | Out-File $logFile -Append
+          'FAILED' | Out-File $statusFile
+      }
+      Wait-PSFMessage
+      "@
+      $wrapper | Out-File -FilePath $scriptFile -Encoding ASCII -Force
+      Remove-Item $statusFile -ErrorAction SilentlyContinue
+
+      # Shared schtasks lifecycle (create/run/poll/delete/read-back/cleanup).
+      {{ schtask_admin_init }}
+      $log = Invoke-StraylightAdminScheduledTask `
+          -TaskName "{{ ejbca_ad_trust_task_name }}" -ScriptFile $scriptFile `
+          -TaskUser $taskUser -TaskPassword '{{ admin_password }}' `
+          -LogFile $logFile -StatusFile $statusFile -MaxWaitSeconds 60 `
+          -FailureMessage "{{ ejbca_ad_trust_ca_name }} cert publish failed"
+      if ($log) { $Ansible.Result = $log -join "`n" }
+  no_log: true
+
+- name: Force Group Policy update
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Forcing Group Policy update' -Tag 'ejbca-trust'
+      gpupdate /force 2>&1 | Out-Null
+      $Ansible.Changed = $false
+      Wait-PSFMessage

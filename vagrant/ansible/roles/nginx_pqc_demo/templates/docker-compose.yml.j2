@@ -1,0 +1,11 @@
+services:
+  nginx:
+    image: {{ nginx_pqc_image }}
+    container_name: {{ nginx_pqc_service_name }}
+    restart: unless-stopped
+    ports:
+      - "{{ nginx_pqc_port }}:{{ nginx_pqc_port }}"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./cert/server.crt:/etc/nginx/cert/server.crt:ro
+      - ./cert/server.key:/etc/nginx/cert/server.key:ro

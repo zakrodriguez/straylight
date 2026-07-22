@@ -1,0 +1,43 @@
+---
+# Parameters for the windows_kb_install role.
+#
+# Required: kb_number (e.g., "KB5087539").  No default — every caller must set
+# it explicitly so a typo can't silently install the wrong update.
+#
+# Source resolution order for the .msu file on the target:
+#   1. {{ msu_cache_path }} on disk (default: C:\Software\<KB>.msu).
+#   2. Download from {{ msu_url }} with optional SHA256 pin.
+#   3. Fail with an actionable message if neither is set.
+#
+# Pre-seeding the cache (preferred for offline / repeatable cold-builds):
+#   1. From the workstation, run the helper that scrapes the catalog +
+#      verifies SHA256 against the pinned hash in kb-pins.txt:
+#        ./vagrant/scripts/fetch-windows-kb.sh KB<n>
+#      The helper drops the .msu into vagrant/resources/software/<KB>.msu,
+#      which the VirtualBox share auto-mounts as C:\Software\<KB>.msu on
+#      every Windows VM in the active profile.
+#   2. Re-provision: the role takes the cache branch and skips the download.
+#
+# Manual catalog walk if fetch-windows-kb.sh fails:
+#   1. https://catalog.update.microsoft.com/Search.aspx?q=<KB>
+#   2. Drop the .msu into {{ software_source }}\<KB>.msu on the target VM.
+
+# msu_url and msu_sha256 are optional — leave empty to require cache hit
+msu_url: ""
+msu_sha256: ""
+
+# Cache lookup path on the target.  software_source resolves to C:\Software
+# in straylight's inventory/group_vars/all.yml.
+msu_cache_path: "{{ software_source }}\\{{ kb_number }}.msu"
+
+# Working directory on the target for the install + log + status file.
+kb_install_workdir: 'C:\Windows\Temp\kb_install'
+
+# Reboot the target if wusa.exe returns 3010 (reboot required).  Most
+# cumulative updates do request a reboot before they take effect.
+kb_install_reboot_if_needed: true
+kb_install_reboot_timeout: 1800   # 30 min
+
+# Maximum wait for the SYSTEM-context wusa.exe scheduled task to finish.
+# Cumulative updates can be slow — KB5087539 in testing takes ~25 minutes.
+kb_install_wusa_timeout: 3600     # 60 min

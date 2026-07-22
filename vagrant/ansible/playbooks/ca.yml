@@ -1,0 +1,218 @@
+---
+# CA - Certificate Authority (all types, classical RSA *and* ML-DSA PQC)
+# Dispatches to the correct role based on ca_type, and to RSA vs ML-DSA crypto
+# based on ca_crypto_provider (set per-VM in the Vagrantfile for the PQC CAs;
+# absent => RSA). ca_is_pqc below is the single PQC switch.
+#   EnterpriseRootCA        -> enterprise_ca (one-tier CA1)
+#   StandaloneRootCA        -> standalone_ca + publish_ca_artifacts (two-tier ROOTCA / ROOTCA-PQC)
+#   EnterpriseSubordinateCA -> subordinate_ca + (classical: cert_templates +
+#                              machine_cert + ca_services | PQC: cert_templates_pqc)
+# PQC CAs additionally install KB5087539 (windows_kb_install) first — self-gated
+# on kb_prereq, which only the PQC CA VMs set.
+- hosts: all
+  gather_facts: false
+  vars:
+    # True when this CA signs with an ML-DSA provider (e.g. "ML-DSA:65#...").
+    ca_is_pqc: "{{ 'ML-DSA' in (ca_crypto_provider | default('')) }}"
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Include common role
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        dns_servers:
+          - "{{ dc_ip }}"
+
+    # Pre-install ADCS feature (all CA types need this)
+    - name: Pre-install ADCS Cert Authority feature
+      ansible.windows.win_feature:
+        name: ADCS-Cert-Authority
+        include_management_tools: true
+        state: present
+
+    # Enterprise/subordinate CAs need the full suite of enrollment features
+    - name: Pre-install additional ADCS features
+      ansible.windows.win_feature:
+        name:
+          - ADCS-Web-Enrollment
+          - ADCS-Device-Enrollment
+          - ADCS-Enroll-Web-Pol
+          - ADCS-Enroll-Web-Svc
+        include_management_tools: true
+        state: present
+      when: ca_type != 'StandaloneRootCA'
+
+    # Install KB5087539 (ML-DSA AD CS support) BEFORE configuring the CA. The
+    # ML-DSA CNG provider does not exist until this update is applied, so the
+    # standalone_ca / subordinate_ca ML-DSA preflight would otherwise fail.
+    # kb_prereq is set per-VM in the Vagrantfile (ROOT_CA_PQC_VARS /
+    # ISSUING_CA_PQC_VARS) — classical CA VMs don't set it, so this no-ops there.
+    - name: Install ML-DSA AD CS prerequisite update
+      ansible.builtin.include_role:
+        name: windows_kb_install
+      vars:
+        kb_number: "{{ kb_prereq }}"
+      when: kb_prereq is defined and kb_prereq | length > 0
+
+    # Restart Winmgmt to recover from ADCS-feature-install WMI destabilization.
+    # The domain_join role's WMI/CIM stability probe and a launch stagger between
+    # CA VMs both help, but a CA VM can still hit
+    # `WS-Management ... InvalidSelectors HTTP 500` at the actual `Join domain`
+    # call — the probe passes (WMI looks OK), but the membership module's later
+    # CIM call hits a transient race that re-fires when the WMI repository hasn't
+    # fully recovered from the multi-feature ADCS install burst above. An explicit
+    # service restart forces a clean WMI state before downstream CIM calls run.
+    # The probe inside domain_join still runs after this, so a slow restart
+    # doesn't immediately fail — it just gets caught by the probe.
+    - name: Restart Winmgmt to clear post-ADCS-install WMI race window
+      ansible.windows.win_powershell:
+        script: |
+          {{ psf_init }}
+          # Service has dependencies (WMI Performance Adapter, Security Center, etc.).
+          # Restart-Service with -Force cascades stop+start through the dep tree.
+          try {
+              Restart-Service -Name Winmgmt -Force -ErrorAction Stop
+              Write-PSFMessage -Level Host -Message 'Winmgmt restarted after ADCS feature install' -Tag 'wmi-reset'
+          } catch {
+              # Non-fatal: even if restart fails, the WMI probe inside domain_join
+              # will catch the residual race. Log + continue.
+              Write-PSFMessage -Level Warning -Message "Winmgmt restart failed (non-fatal): $($_.Exception.Message)" -Tag 'wmi-reset'
+          }
+          # Settle the new service worker so subsequent CIM calls hit a warm WMI
+          Start-Sleep -Seconds 10
+          Wait-PSFMessage
+      when: ca_type != 'StandaloneRootCA'
+
+    - name: Include domain_join role
+      ansible.builtin.include_role:
+        name: domain_join
+      when: ca_type != 'StandaloneRootCA'
+
+    # Long settle pause after CA-VM domain-join reboot.
+    # Server 2025's WMI service comes up in a non-deterministic state after the
+    # domain-join reboot, especially on VMs that just had the ADCS feature install
+    # destabilize WMI pre-Join. Symptoms: post-Join CIM probe fails on first
+    # attempt with `WS-Management ... InvalidSelectors HTTP 500`, and Ansible's
+    # `until/retries` doesn't catch transport-level errors (zero retries log).
+    # Trying to recover via `raw` Restart-Service fails the same way (the WinRM
+    # dispatch itself errors with InvalidSelectors): broken WinRM can't be
+    # recovered from Ansible, so just wait it out.
+    #
+    # 240s = empirical: WMI typically stabilizes within 2-3 min of post-reboot
+    # idle on cold-build. Pause is a control-side no-op (no WinRM touch).
+    # Only fires on CA VMs (ca1/rootca/issueca via ca.yml) since other Windows
+    # VMs don't pre-install ADCS features and don't see the WMI corruption.
+    - name: Settle 4 min after CA-VM domain-join reboot (WMI naturally recovers)
+      ansible.builtin.pause:
+        seconds: 240
+        prompt: 'Waiting for Server 2025 WMI to fully initialize after the domain-join reboot before further provisioning'
+      when: ca_type != 'StandaloneRootCA'
+
+    - name: Include standalone_ca role
+      ansible.builtin.include_role:
+        name: standalone_ca
+      when: ca_type == 'StandaloneRootCA'
+
+    - name: Include enterprise_ca role
+      ansible.builtin.include_role:
+        name: enterprise_ca
+      when: ca_type == 'EnterpriseRootCA'
+
+    # Bounded readiness probe replacing a blind fixed pause. The subordinate
+    # (EnterpriseSubordinateCA / issueca) must not begin its install until its
+    # topology prerequisites are actually ready — the root CA cert is present
+    # (so the chain validates) and the CDP/AIA endpoint on web1 is reachable.
+    # The probe waits at most host_ready_retries * host_ready_delay seconds
+    # (default 5 min) then FAILS CLEARLY, instead of sleeping a fixed interval and
+    # then proceeding regardless of whether the dependency is up. Capabilities
+    # come from this host's topology `requires_ready` (issueca: root_ca_cert,
+    # cdp_aia), falling back to root_ca_cert if the map is absent.
+    - name: Block until subordinate-CA prerequisites are ready (topology requires_ready)
+      ansible.builtin.include_role:
+        name: host_ready
+      vars:
+        host_ready_capabilities: "{{ topology_requires_ready[inventory_hostname] | default(['root_ca_cert']) }}"
+      when: ca_type == 'EnterpriseSubordinateCA' and not ca_is_pqc
+
+    # PQC issuing CA keeps the blind fixed settle (the host_ready capability map
+    # is not yet wired for the PQC hierarchy). Same rationale as the classical
+    # probe: the machine account's AD security context must propagate before
+    # ADCS validates CAType against schema, else
+    # Install-AdcsCertificationAuthority hits ERROR_DS_RANGE_CONSTRAINT (0x80072082).
+    - name: Wait for AD security context to settle before subordinate CA install (PQC)
+      ansible.builtin.pause:
+        seconds: 180
+        prompt: 'Letting AD replication settle after domain_join reboot before subordinate_ca install'
+      when: ca_type == 'EnterpriseSubordinateCA' and ca_is_pqc
+
+    - name: Include subordinate_ca role
+      ansible.builtin.include_role:
+        name: subordinate_ca
+      when: ca_type == 'EnterpriseSubordinateCA'
+
+    - name: Include publish_ca_artifacts role (publish the root cert + CRL to WEB1)
+      ansible.builtin.include_role:
+        name: publish_ca_artifacts
+      vars:
+        publish_tag: publish-root-ca
+        publish_subdir: "{{ 'pqc' if ca_is_pqc else '' }}"  # PQC root → \crl\pqc, \aia\pqc
+      when: ca_type == 'StandaloneRootCA'
+
+    # cert_templates must run BEFORE ca_services. ca_services' "Bind machine
+    # Server Auth cert to IIS:443" task looks up an existing Server Auth cert
+    # in LocalMachine\My, which only exists after autoenrollment grants this
+    # host one — and autoenrollment requires the Straylight-Machine-1Y
+    # template to be published with Autoenroll permission for Domain
+    # Computers. That's cert_templates' job. machine_cert then triggers the
+    # autoenroll and waits for the cert to arrive.
+    - name: Include cert_templates role
+      ansible.builtin.include_role:
+        name: cert_templates
+      when: ca_type != 'StandaloneRootCA' and not ca_is_pqc
+
+    # PQC issuing CA: publish the ML-DSA-65 leaf template + prove issuance.
+    # Classical cert_templates is NOT run for PQC — it publishes RSA-keyed
+    # templates; cert_templates_pqc keeps the two hierarchies' template sets
+    # disjoint. (machine_cert + ca_services are classical-only, matching the
+    # former pqc-ca.yml which ran neither on the PQC issuing CA.)
+    - name: Include cert_templates_pqc role
+      ansible.builtin.include_role:
+        name: cert_templates_pqc
+      when: ca_type == 'EnterpriseSubordinateCA' and ca_is_pqc
+
+    - name: Include machine_cert role (CA enrolls its own Server Auth cert)
+      ansible.builtin.include_role:
+        name: machine_cert
+      when: ca_type != 'StandaloneRootCA' and not ca_is_pqc
+
+    - name: Include ca_services role
+      ansible.builtin.include_role:
+        name: ca_services
+      when: ca_type != 'StandaloneRootCA' and not ca_is_pqc
+
+    - name: Include sysinternals role
+      ansible.builtin.include_role:
+        name: sysinternals
+
+    - name: Include bginfo role
+      ansible.builtin.include_role:
+        name: bginfo
+      vars:
+        vm_role: "{{ (ca_type == 'StandaloneRootCA') | ternary('rootca', (ca_type == 'EnterpriseSubordinateCA') | ternary('issueca', 'ca')) }}"
+
+    - name: Include windows_logging role
+      ansible.builtin.include_role:
+        name: windows_logging
+
+    - name: Include sysmon role
+      ansible.builtin.include_role:
+        name: sysmon
+
+    - name: Include winlogbeat role
+      ansible.builtin.include_role:
+        name: winlogbeat
+      vars:
+        winlogbeat_ca_channels: true

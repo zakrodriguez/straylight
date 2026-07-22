@@ -1,0 +1,11 @@
+name: stepca-only
+description: |
+  step-ca + ACME demo without AD. observe1's nginx TLS proxy is the
+  canonical "real service uses ACME-issued cert" example, so it's
+  included as the consumer side. acme1 demonstrates step CLI +
+  acme.sh + certbot against step-ca via HTTP-01.
+
+components:
+  - stepca1
+  - acme1
+  - observe1

@@ -1,0 +1,31 @@
+---
+# pqc_machine_cert role defaults
+#
+# Enrolls an ML-DSA-65 Server-Auth machine cert from a PQC enterprise CA on
+# any domain-joined Windows Server 2025 host (the Server 2025 GPO autoenroll
+# engine does not yet process ML-DSA templates — Win11 24H2/25H2 + KB5067036
+# does; on Server 2025 we drive certreq under a SYSTEM scheduled task).
+#
+# Required vars (no defaults — every caller must supply explicitly so a typo
+# can't silently enroll against the wrong CA / template):
+#
+#   pqc_ca_config       — ICertConfig string: "<ca-host>.<domain>\<ca-cn>"
+#                          e.g. "ISSUECAPQC.yourlab.local\YOURLAB-PQC-Issuing-CA"
+#   pqc_template_name   — AD certificate template DisplayName
+#                          e.g. "Straylight-PQC-Machine-MLDSA65-v1"
+#
+# Hardcoded constants (lifted from cert_templates_pqc, scoped to this role):
+
+# NIST id-ml-dsa-65 — the leaf signing algorithm.
+pqc_mldsa65_oid: '2.16.840.1.101.3.4.3.18'
+
+# Server Authentication EKU — required so the idempotency check + INF
+# template match the cert this role produces (and so the role does NOT
+# false-positive against an existing PQC sub-CA cert in the same store,
+# which shares the key OID but has no Server-Auth EKU).
+pqc_server_auth_oid: '1.3.6.1.5.5.7.3.1'
+
+# CNG provider string used in the INF (KeyAlgorithm#ProviderName format).
+# Microsoft's documented PQC TLS template procedure. KSP is the standard
+# Software KSP; the ML-DSA primitives are added by KB5087539.
+pqc_inf_crypto_provider: 'ML-DSA:65#Microsoft Software Key Storage Provider'

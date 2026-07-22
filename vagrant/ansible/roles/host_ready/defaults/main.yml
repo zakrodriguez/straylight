@@ -1,0 +1,6 @@
+# host_ready role — bounded readiness probes replacing blind pauses.
+# Never hangs: waits at most host_ready_retries * host_ready_delay seconds,
+# then fails with a clear error.
+host_ready_capabilities: []   # capability tags to wait for (from topology requires_ready)
+host_ready_retries: 30
+host_ready_delay: 10

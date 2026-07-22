@@ -1,0 +1,49 @@
+---
+# Install acme.sh from upstream git, with --no-cron so renewals stay
+# manual (the whole point is to *see* the protocol, not have cron hide it).
+# We install as root so the walkthrough commands work without sudo dancing.
+
+- name: Set acme.sh version
+  ansible.builtin.set_fact:
+    acme_sh_version: "3.1.0"
+
+- name: Check if acme.sh is already installed at the pinned version
+  ansible.builtin.command:
+    cmd: /root/.acme.sh/acme.sh --version
+  register: acme_sh_check
+  failed_when: false
+  changed_when: false
+  become: true
+
+- name: Clone acme.sh repository
+  # Pinned to 3.1.0 (HEAD as of 2026-05-26) — update via 'git ls-remote' when bumping
+  ansible.builtin.git:
+    repo: https://github.com/acmesh-official/acme.sh.git
+    dest: /opt/acme.sh
+    version: "5d6f1bd2d7d1dbb2ac880dbf59d3eee7a79fb1bb"
+    update: false
+  when: acme_sh_check.rc != 0 or acme_sh_version not in acme_sh_check.stdout
+
+- name: Run acme.sh installer with --no-cron --no-profile
+  ansible.builtin.command:
+    cmd: ./acme.sh --install --no-cron --no-profile --home /root/.acme.sh
+    chdir: /opt/acme.sh
+    creates: /root/.acme.sh/acme.sh
+  become: true
+
+- name: Remove any cron entry acme.sh installed despite the flag
+  ansible.builtin.cron:
+    name: acme.sh cron job
+    state: absent
+    user: root
+
+- name: Verify acme.sh is callable
+  ansible.builtin.command:
+    cmd: /root/.acme.sh/acme.sh --version
+  register: acme_sh_post
+  changed_when: false
+  become: true
+
+- name: Show acme.sh version
+  ansible.builtin.debug:
+    var: acme_sh_post.stdout_lines

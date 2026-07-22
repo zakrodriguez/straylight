@@ -1,0 +1,201 @@
+---
+# SQL Server install role — sqlhost1
+#
+# Flow:
+#   1. Skip everything if SQL is already installed (idempotency)
+#   2. Create working + data + log dirs
+#   3. Download SSEI bootstrapper from Microsoft
+#   4. Run SSEI to download the full installer media
+#   5. Render ConfigurationFile.ini with our lab-specific values
+#   6. Run setup.exe /ConfigurationFile=... — unattended install
+#   7. Open Windows Firewall port 1433
+#   8. Set TCP/IP port + restart SQL service to bind the new config
+#   9. Install sqlcmd if absent (most SQL installs include it, but Server Core may not)
+
+- name: Check if SQL Server service is already installed
+  ansible.windows.win_service:
+    name: "{{ 'MSSQLSERVER' if sql_instance_name == 'MSSQLSERVER' else 'MSSQL$' + sql_instance_name }}"
+  register: sql_service_check
+  failed_when: false
+  changed_when: false
+
+- name: Set fact for SQL Server presence
+  ansible.builtin.set_fact:
+    sql_already_installed: "{{ sql_service_check.exists | default(false) }}"
+
+- name: Report SQL Server install state
+  ansible.builtin.debug:
+    msg: >-
+      SQL Server instance {{ sql_instance_name }} is
+      {{ 'already installed — skipping install steps' if sql_already_installed
+         else 'not present — running unattended install' }}
+
+# ---- Install path (only runs on fresh provisioning) ----
+
+- name: Create install + data + log directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ sql_install_workdir }}"
+    - "{{ sql_install_workdir }}\\media"
+    - "{{ sql_data_dir }}"
+    - "{{ sql_log_dir }}"
+  when: not sql_already_installed
+
+- name: Check for staged SQL ISO in local software cache
+  ansible.windows.win_stat:
+    path: "{{ software_source }}\\SQLServer{{ sql_server_version }}-x64-ENU-Dev.iso"
+  register: sql_iso_cache
+  when: not sql_already_installed
+
+- name: Copy SQL ISO from local cache (skips ~1 GB SSEI download)
+  ansible.windows.win_copy:
+    src: "{{ software_source }}\\SQLServer{{ sql_server_version }}-x64-ENU-Dev.iso"
+    dest: "{{ sql_install_workdir }}\\media\\SQLServer{{ sql_server_version }}-x64-ENU-Dev.iso"
+    remote_src: true
+  when:
+    - not sql_already_installed
+    - sql_iso_cache.stat.exists | default(false)
+
+# SHA256 computed locally on 2026-05-26 from https://go.microsoft.com/fwlink/?linkid=2215158
+# Microsoft fwlink does not publish standalone checksums — re-compute when bumping
+- name: Download SQL Server SSEI bootstrapper
+  ansible.windows.win_get_url:
+    url: "{{ sql_server_ssei_url }}"
+    dest: "{{ sql_install_workdir }}\\SQLSSEI.exe"
+    checksum: "sha256:5d9d277dccef80f2395f915664bd8e63fe7496b7b9c005c2f0c78a3c70d03813"
+    force: false
+  when:
+    - not sql_already_installed
+    - not (sql_iso_cache.stat.exists | default(false))
+
+- name: Run SSEI to download full installer media (this fetches ~1.5 GB and takes 5-15 min)
+  ansible.windows.win_command: >-
+    "{{ sql_install_workdir }}\\SQLSSEI.exe"
+    /Action=Download
+    /MediaPath="{{ sql_install_workdir }}\\media"
+    /MediaType=ISO
+    /Quiet
+  args:
+    creates: "{{ sql_install_workdir }}\\media\\SQLServer{{ sql_server_version }}-x64-ENU-Dev.iso"
+  when:
+    - not sql_already_installed
+    - not (sql_iso_cache.stat.exists | default(false))
+
+- name: Mount the downloaded ISO
+  community.windows.win_disk_image:
+    image_path: "{{ sql_install_workdir }}\\media\\SQLServer{{ sql_server_version }}-x64-ENU-Dev.iso"
+    state: present
+  register: sql_iso_mount
+  when: not sql_already_installed
+
+- name: Render ConfigurationFile.ini for unattended install
+  ansible.windows.win_template:
+    src: ConfigurationFile.ini.j2
+    dest: "{{ sql_install_workdir }}\\ConfigurationFile.ini"
+  when: not sql_already_installed
+
+- name: Run SQL Server setup.exe via scheduled task as SYSTEM (unattended; ~10-20 min)
+  # SQL setup needs DPAPI to encrypt sensitive config values. Under WinRM
+  # Basic auth the connection runs as a Network logon with a restricted
+  # token and DPAPI raises 'CryptographicException: Access is denied'.
+  # Wrapping setup.exe in a scheduled task that runs as SYSTEM (Batch
+  # logon, full token) sidesteps this. Same pattern enterprise_ca uses
+  # for Install-AdcsCertificationAuthority.
+  ansible.windows.win_powershell:
+    script: |
+      $iso = "{{ sql_iso_mount.mount_paths[0] | default('D:\\') }}"
+      $configFile = "{{ sql_install_workdir }}\ConfigurationFile.ini"
+      $statusFile = "{{ sql_install_workdir }}\setup-status.txt"
+      $logFile = "{{ sql_install_workdir }}\setup-task.log"
+      Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
+
+      $cmd = @"
+      `$ErrorActionPreference = 'Continue'
+      `$args = @(
+          "/ConfigurationFile=$configFile",
+          "/SQLSVCPASSWORD={{ sql_engine_password }}",
+          "/SAPWD={{ sql_sa_password }}",
+          "/IACCEPTSQLSERVERLICENSETERMS"
+      )
+      `$proc = Start-Process -FilePath "${iso}setup.exe" -ArgumentList `$args -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$logFile.out" -RedirectStandardError "$logFile.err"
+      "rc=`$(`$proc.ExitCode)" | Out-File "$statusFile" -Encoding ascii
+      "@
+      $taskScript = "{{ sql_install_workdir }}\setup-task.ps1"
+      $cmd | Out-File $taskScript -Encoding ascii
+
+      $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+          -Argument "-ExecutionPolicy Bypass -File $taskScript"
+      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' `
+          -LogonType ServiceAccount -RunLevel Highest
+      Register-ScheduledTask -TaskName 'SqlServerSetup' `
+          -Action $action -Principal $principal -Force | Out-Null
+      Start-ScheduledTask -TaskName 'SqlServerSetup'
+
+      # Wait up to 30 min for completion (SQL setup can take 15+ min)
+      $maxWait = 1800; $waited = 0
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 10; $waited += 10
+          $task = Get-ScheduledTask -TaskName 'SqlServerSetup'
+          if ($task.State -eq 'Ready') { break }
+      }
+      Unregister-ScheduledTask -TaskName 'SqlServerSetup' -Confirm:$false -ErrorAction SilentlyContinue
+
+      if (-not (Test-Path $statusFile)) {
+          throw "SQL setup task did not write status file (timeout after $waited seconds)"
+      }
+      $rc = (Get-Content $statusFile).Split('=')[1].Trim()
+      $Ansible.Result = "SQL setup exit code: $rc"
+      if ($rc -notin @('0', '3010')) {
+          throw "SQL setup failed with rc=$rc (see $logFile.err and SQL Setup Bootstrap log)"
+      }
+  when:
+    - not sql_already_installed
+    - sql_iso_mount is defined
+
+- name: Unmount the SQL Server ISO
+  community.windows.win_disk_image:
+    image_path: "{{ sql_install_workdir }}\\media\\SQLServer{{ sql_server_version }}-x64-ENU-Dev.iso"
+    state: absent
+  when:
+    - not sql_already_installed
+    - sql_iso_mount is defined
+
+# ---- Always-on configuration (runs even on subsequent provisions) ----
+
+- name: Open Windows Firewall for SQL Server (TCP {{ sql_tcp_port }})
+  community.windows.win_firewall_rule:
+    name: "SQL Server ({{ sql_instance_name }}) TCP {{ sql_tcp_port }}"
+    enabled: true
+    state: present
+    localport: "{{ sql_tcp_port }}"
+    action: allow
+    direction: in
+    protocol: tcp
+    program: any
+    profiles:
+      - domain
+      - private
+
+- name: Ensure SQL Server service is set to auto-start and is running
+  ansible.windows.win_service:
+    name: "{{ 'MSSQLSERVER' if sql_instance_name == 'MSSQLSERVER' else 'MSSQL$' + sql_instance_name }}"
+    start_mode: auto
+    state: started
+
+- name: Grant svc-sql 'Log on as a service' right (SeServiceLogonRight)
+  ansible.windows.win_user_right:
+    name: SeServiceLogonRight
+    users:
+      - "{{ sql_engine_account }}"
+    action: add
+
+- name: Show post-install info
+  ansible.builtin.debug:
+    msg: >-
+      SQL Server {{ sql_server_version }} {{ sql_server_edition }} on sqlhost1 ready.
+      Instance: {{ sql_instance_name }}. Port: {{ sql_tcp_port }}.
+      Service account: {{ sql_engine_account }}.
+      sa password: (admin_password)
+      Connect from manage1:  sqlcmd -S sqlhost1.{{ lab_domain }} -E -Q "SELECT @@VERSION"

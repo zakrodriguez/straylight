@@ -1,0 +1,584 @@
+---
+# Subordinate CA role: enterprise subordinate CA installation and configuration.
+#
+# Crypto-provider agnostic: classical RSA issuing CAs (ca_crypto_provider unset
+# -> RSA default) and ML-DSA PQC issuing CAs (ca_crypto_provider set in the
+# Vagrantfile, e.g. "ML-DSA:65#Microsoft Software Key Storage Provider") share
+# this one role. The ML-DSA preflight + PQC CAPolicy variant only engage when
+# the provider is an ML-DSA one.
+
+- name: Install ADCS-Cert-Authority feature
+  ansible.windows.win_feature:
+    name: ADCS-Cert-Authority
+    include_management_tools: true
+    state: present
+
+- name: Preflight — confirm the ML-DSA CNG provider is registered
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      # ":65" is a parameter-set selector in the provider string; certutil
+      # -csplist lists the algorithm FAMILY ("ML-DSA"). Informational only —
+      # KB5087539 presence is verified by windows_kb_install before this role,
+      # so a csplist miss must NOT block the install (false-negative). Warn and
+      # let Install-AdcsCertificationAuthority be the authoritative test.
+      $provider = '{{ ca_crypto_provider }}'
+      $algorithm = ($provider -split '#')[0]
+      $family = ($algorithm -split ':')[0]
+      $ksp = ($provider -split '#')[1]
+      Write-PSFMessage -Level Host -Message "Checking KSP '$ksp' for algorithm family '$family' (provider '$algorithm')" -Tag 'subordinate-ca'
+      $csp = & certutil.exe -csplist 2>&1 | Out-String
+      if ($csp -match [regex]::Escape($family)) {
+          Write-PSFMessage -Level Host -Message "ML-DSA family '$family' present in CNG provider list" -Tag 'subordinate-ca'
+      } else {
+          Write-PSFMessage -Level Warning -Message "certutil -csplist did not surface '$family'; KB5087539 already verified installed, proceeding to Install-AdcsCertificationAuthority as the authoritative test." -Tag 'subordinate-ca'
+      }
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  when: "'ML-DSA' in (ca_crypto_provider | default(''))"
+
+- name: Deploy CAPolicy.inf for Subordinate CA
+  ansible.windows.win_template:
+    src: "CAPolicy-{{ 'pqc-subordinate' if 'ML-DSA' in (ca_crypto_provider | default('')) else 'subordinate' }}.inf.j2"
+    dest: C:\Windows\CAPolicy.inf
+
+- name: Check if CA service is already running
+  ansible.windows.win_service_info:
+    name: CertSvc
+  register: certsvc_info
+  failed_when: false
+
+- name: Install Enterprise Subordinate CA via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      # Build the install command — OFFLINE request variant (#213).
+      # Deliberately NO -ParentCA: the online path submits the request over the
+      # DCOM ICertRequest interface, whose endpoint-mapper tower enumeration can
+      # bind the shared VirtualBox NAT IP (10.0.2.15) on these multihomed guests
+      # and hang the cmdlet forever (no internal timeout) — same failure class
+      # certreq fixed for machine enrollment in #178. With -OutputCertRequestFile
+      # the cmdlet installs the CA, generates C:\tmp\subca.req, and returns
+      # "installation is incomplete" (ErrorId 398) BY DESIGN; the wrapper then
+      # submits with certreq -submit -config (direct named-host RPC bind, fails
+      # fast, retryable) and finishes with certutil -installcert.
+      #
+      # Note: -ValidityPeriod/-ValidityPeriodUnits are NOT used for subordinate CAs.
+      # The parent CA's registry settings determine the subordinate cert's validity.
+      #
+      # -Credential is built inside the scheduled task wrapper (below): the CA's
+      # AD DS registration (Enterprise sub CA) needs the Enterprise Admins SID,
+      # which the Batch-logon Kerberos context can arrive without — yielding
+      # 0x8007052e ERROR_LOGON_FAILURE. The explicit -Credential uses NTLM with
+      # the full Administrator identity. certreq/certutil inherit the task's
+      # batch-logon identity, which authenticates fine against the workgroup
+      # root CA (matching local Administrator).
+      $installCmd = "Install-AdcsCertificationAuthority" +
+          " -CAType EnterpriseSubordinateCA" +
+          " -CACommonName '{{ ca_common_name }}'" +
+          " -KeyLength {{ ca_key_length }}" +
+          " -HashAlgorithmName {{ ca_hash_algorithm }}" +
+          " -CryptoProviderName '{{ ca_crypto_provider | default('RSA#Microsoft Software Key Storage Provider') }}'" +
+          " -OutputCertRequestFile `$reqFile" +
+          " -Credential `$adCred" +
+          " -OverwriteExistingCAinDS" +
+          " -OverwriteExistingKey" +
+          " -Force" +
+          " -ErrorAction Stop"
+
+      $taskUser = "{{ lab_netbios }}\Administrator"
+
+      # Write install script to a temp file
+      $scriptFile = "C:\tmp\install-ca.ps1"
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+
+      # The scheduled task runs with Batch logon credentials, which
+      # can authenticate outbound via DCOM/NTLM. WinRM Basic auth
+      # (Network logon) cannot — so we must wait for the parent CA
+      # inside the scheduled task, not from an Ansible task.
+      $wrapperScript = @"
+      {{ psf_init }}
+      # Wait for parent CA enrollment endpoint (up to 25 min).
+      # A root CA cold provision can take well over 10 min, and if issueca
+      # gives up before rootca is ready the failure cascades: web1/manage1
+      # then miss the Root CA cert, which only gets published AFTER issueca's
+      # subordinate install succeeds. 25 min covers a worst-case rootca cold
+      # provision (Server 2025 + CA install + CRL publish + reboots) with margin.
+      `$parentCA = '{{ parent_ca_ip }}\{{ parent_ca_name }}'
+      Write-PSFMessage -Level Host -Message 'Waiting for parent CA enrollment endpoint (up to 25 min)' -Tag 'subordinate-ca'
+      for (`$i = 0; `$i -lt 75; `$i++) {
+          `$null = certutil.exe -ping -config `$parentCA 2>&1
+          if (`$LASTEXITCODE -eq 0) { break }
+          Start-Sleep -Seconds 20
+      }
+      if (`$LASTEXITCODE -ne 0) {
+          Write-PSFMessage -Level Error -Message 'Parent CA not reachable after 25 minutes' -Tag 'subordinate-ca'
+          'Parent CA not reachable after 25 minutes' | Out-File C:\tmp\ca-install.log
+          'FAILED' | Out-File C:\tmp\ca-install-status.txt
+          Wait-PSFMessage
+          return
+      }
+      Write-PSFMessage -Level Host -Message 'Parent CA is reachable' -Tag 'subordinate-ca'
+
+      # Wait for CRL distribution point (up to 10 min).
+      # CertSvc verifies the cert chain on startup, including CRL.
+      # During parallel builds the CDP (WEB1 + DNS) may not be ready yet.
+      # WEB1 must: boot → join domain → reboot → install IIS → receive
+      # root cert/CRL from ROOTCA. This chain can exceed 5 min easily.
+      {% if crl_url is defined %}
+      Write-PSFMessage -Level Host -Message 'Waiting for CRL distribution point' -Tag 'subordinate-ca'
+      for (`$j = 0; `$j -lt 30; `$j++) {
+          try {
+              `$null = Invoke-WebRequest -Uri '{{ crl_url }}/' -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+              break
+          } catch {
+              Start-Sleep -Seconds 20
+          }
+      }
+      if (`$j -ge 30) {
+          Write-PSFMessage -Level Warning -Message 'CRL distribution point not reachable after 10 minutes — CA install may rely on CRL-offline workaround' -Tag 'subordinate-ca'
+      }
+      {% endif %}
+
+      # Build PSCredential for Install-AdcsCertificationAuthority -Credential.
+      # Backtick-escaped so it materializes in the wrapper, not the outer script.
+      `$adCred = New-Object System.Management.Automation.PSCredential(
+          '{{ lab_netbios }}\Administrator',
+          (ConvertTo-SecureString '{{ admin_password }}' -AsPlainText -Force)
+      )
+
+      try {
+          Write-PSFMessage -Level Host -Message 'Starting Subordinate CA installation (offline request + certreq submit)' -Tag 'subordinate-ca'
+          `$reqFile = 'C:\tmp\subca.req'
+          `$cerFile = 'C:\tmp\subca.cer'
+          `$p7bFile = 'C:\tmp\subca.p7b'
+          # certreq also writes <cer-basename>.rsp; a leftover from a prior
+          # attempt makes -submit fail ERROR_FILE_EXISTS on every retry.
+          `$rspFile = 'C:\tmp\subca.rsp'
+          Remove-Item `$reqFile, `$cerFile, `$p7bFile, `$rspFile -Force -ErrorAction SilentlyContinue
+
+          # Phase 1: install the CA and generate the offline request. With
+          # -OutputCertRequestFile the cmdlet returns ErrorId 398 /
+          # "installation is incomplete" as a RESULT, not an exception —
+          # the request file on disk is the success signal.
+          'Phase 1: Install-AdcsCertificationAuthority (offline request)' | Out-File C:\tmp\ca-install.log
+          try {
+              `$setup = $installCmd
+          } catch {
+              if (`$_.Exception.Message -match 'already installed') {
+                  # A prior attempt completed Phase 1 (CA configured, cert
+                  # pending) and then failed later — setup refuses to run over
+                  # that state even with -Force/-Overwrite* (#218). Uninstall
+                  # the incomplete role config and retry once; a fresh key +
+                  # request is generated and the parent simply issues again.
+                  Write-PSFMessage -Level Warning -Message 'Incomplete CA from a prior attempt - uninstalling role config and retrying Phase 1' -Tag 'subordinate-ca'
+                  'Phase 1 retry: uninstalling incomplete CA from prior attempt' | Out-File C:\tmp\ca-install.log -Append
+                  `$null = Uninstall-AdcsCertificationAuthority -Force
+                  `$setup = $installCmd
+              } else { throw }
+          }
+          if (`$setup) { "Setup result: ErrorId=`$(`$setup.ErrorId) `$(`$setup.ErrorString)" | Out-File C:\tmp\ca-install.log -Append }
+          if (-not (Test-Path `$reqFile)) { throw "Install-AdcsCertificationAuthority did not generate `$reqFile" }
+
+          # Phase 2: submit to the parent over certreq's direct RPC bind.
+          # Fails fast (unlike the DCOM path, which hangs); bounded retries
+          # absorb transient parent-CA restarts. 15 x 20s = 5 min budget on
+          # top of the 25-min reachability wait above.
+          'Phase 2: certreq -submit -config to parent CA' | Out-File C:\tmp\ca-install.log -Append
+          `$submitted = `$false
+          `$submitOut = ''
+          for (`$k = 0; `$k -lt 15; `$k++) {
+              # Fresh slate per attempt: a partial earlier attempt's outputs
+              # (.cer/.p7b/.rsp) otherwise fail the retry with FILE_EXISTS.
+              Remove-Item `$cerFile, `$p7bFile, `$rspFile -Force -ErrorAction SilentlyContinue
+              # Third output arg = full PKCS#7 chain — the offline replacement
+              # for what the old DCOM -ParentCA path installed implicitly.
+              `$submitOut = & certreq.exe -submit -q -config `$parentCA `$reqFile `$cerFile `$p7bFile 2>&1 | Out-String
+              if (`$LASTEXITCODE -eq 0 -and (Test-Path `$cerFile)) { `$submitted = `$true; break }
+              if (`$submitOut -match 'Taken Under Submission') {
+                  # Parent is in manual-approval mode (RequestDisposition=0 —
+                  # the post-build posture this role's always-block restores).
+                  # Cold builds never hit this (standalone_ca sets auto-issue
+                  # before we run); a post-build issueca rebuild does. Retrying
+                  # cannot help — surface the exact operator remediation.
+                  `$submitOut | Out-File C:\tmp\ca-install.log -Append
+                  throw ("Parent CA took the request under submission (manual-approval mode). " +
+                      "On `$parentCA run: certutil -setreg policy\RequestDisposition 1; Restart-Service CertSvc — then re-run this provision. certreq output: `$submitOut")
+              }
+              Write-PSFMessage -Level Warning -Message "certreq -submit attempt `$(`$k + 1)/15 failed (rc=`$LASTEXITCODE) - retrying in 20s" -Tag 'subordinate-ca'
+              Start-Sleep -Seconds 20
+          }
+          if (-not `$submitted) {
+              `$submitOut | Out-File C:\tmp\ca-install.log -Append
+              throw "certreq -submit failed after 15 attempts (rc=`$LASTEXITCODE): `$submitOut"
+          }
+
+          # Phase 3: trust the chain, install the issued cert, start the CA.
+          # On a COLD build the root cert is not yet in LocalMachine\Root
+          # (AD publication happens later in this very role) — without it,
+          # certutil -installcert dies CERT_E_CHAINING. The old DCOM path
+          # installed the chain from the online response; the offline
+          # equivalent is the PKCS#7 from certreq. Split it into Root/CA
+          # stores via .NET (no UI, no network). certutil ALSO needs
+          # -f -silent: in a non-console session a bare -installcert raises
+          # a hidden UI prompt and blocks forever with ~0 CPU.
+          'Phase 3: trust chain + certutil -f -silent -installcert + Start-Service CertSvc' | Out-File C:\tmp\ca-install.log -Append
+          if (Test-Path `$p7bFile) {
+              `$chain = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+              `$chain.Import(`$p7bFile)
+              foreach (`$c in `$chain) {
+                  `$storeName = if (`$c.Subject -eq `$c.Issuer) { 'Root' } else { 'CA' }
+                  `$store = New-Object System.Security.Cryptography.X509Certificates.X509Store(`$storeName, 'LocalMachine')
+                  `$store.Open('ReadWrite')
+                  `$store.Add(`$c)
+                  `$store.Close()
+                  "chained: `$(`$c.Subject) -> `$storeName store" | Out-File C:\tmp\ca-install.log -Append
+              }
+          } else {
+              Write-PSFMessage -Level Warning -Message 'certreq returned no PKCS#7 chain - relying on pre-trusted root' -Tag 'subordinate-ca'
+          }
+          `$instOut = & certutil.exe -f -silent -installcert `$cerFile 2>&1 | Out-String
+          if (`$LASTEXITCODE -ne 0) { throw "certutil -installcert failed (rc=`$LASTEXITCODE): `$instOut" }
+          Start-Service CertSvc -ErrorAction Stop
+
+          Write-PSFMessage -Level Host -Message 'Subordinate CA installation succeeded' -Tag 'subordinate-ca'
+          'SUCCESS' | Out-File C:\tmp\ca-install-status.txt
+      } catch {
+          # If the parent already issued the cert but the local finish failed
+          # (classic cause: CDP unreachable, so chain validation / CertSvc
+          # startup revocation checks fail), apply the ignore-offline flag,
+          # finish the install, and retry the service start.
+          `$cert = Get-ChildItem Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+              Where-Object { `$_.Subject -match '{{ ca_common_name }}' }
+          if (`$cert -or (Test-Path `$cerFile)) {
+              Write-PSFMessage -Level Warning -Message 'Install failed post-issuance, applying CRL offline workaround' -Tag 'subordinate-ca'
+              certutil.exe -setreg CA\CRLFlags +4 2>&1 | Out-Null  # CRLF_REVCHECK_IGNORE_OFFLINE
+              if (-not `$cert -and (Test-Path `$cerFile)) {
+                  # -installcert was the failing step — force-retry it with the flag set.
+                  # -silent is load-bearing: without it certutil can raise a hidden
+                  # UI prompt in this non-console session and block forever.
+                  `$null = & certutil.exe -f -silent -installcert `$cerFile 2>&1
+              }
+              Start-Service CertSvc -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 5
+              if ((Get-Service CertSvc).Status -eq 'Running') {
+                  Write-PSFMessage -Level Host -Message 'CertSvc started after CRL offline workaround' -Tag 'subordinate-ca'
+                  'SUCCESS' | Out-File C:\tmp\ca-install-status.txt
+                  Wait-PSFMessage
+                  return
+              }
+          }
+          # Capture full error detail so attribute-constraint violations
+          # surface clearly.
+          Write-PSFMessage -Level Error -Message 'Subordinate CA installation failed' -ErrorRecord `$_ -Tag 'subordinate-ca'
+          `$detail = @(
+              "=== Install-AdcsCertificationAuthority full error detail ==="
+              "Message: `$(`$_.Exception.Message)"
+              "InnerException: `$(`$_.Exception.InnerException)"
+              "Category: `$(`$_.CategoryInfo.Reason)"
+              "FullyQualifiedErrorId: `$(`$_.FullyQualifiedErrorId)"
+              "ScriptStackTrace: `$(`$_.ScriptStackTrace)"
+              "TargetObject: `$(`$_.TargetObject)"
+              ""
+              "=== ADCS setup log (if present) ==="
+          )
+          `$detail | Out-File C:\tmp\ca-install.log -Append
+          foreach (`$logPath in @('C:\Windows\Logs\Setup\AdcsSetup.log', 'C:\Windows\certocm.log', 'C:\Windows\debug\netsetup.log')) {
+              if (Test-Path `$logPath) {
+                  "--- `$logPath (last 40 lines) ---" | Out-File C:\tmp\ca-install.log -Append
+                  Get-Content `$logPath -Tail 40 | Out-File C:\tmp\ca-install.log -Append
+              }
+          }
+          `$_.Exception.Message | Out-File C:\tmp\ca-install.log -Append
+          'FAILED' | Out-File C:\tmp\ca-install-status.txt
+      }
+      Wait-PSFMessage
+      "@
+      $wrapperScript | Out-File -FilePath $scriptFile -Encoding ASCII -Force
+
+      Remove-Item C:\tmp\ca-install-status.txt -ErrorAction SilentlyContinue
+
+      schtasks /create /tn "InstallSubordinateCA" `
+          /tr "powershell.exe -ExecutionPolicy Bypass -File $scriptFile" `
+          /sc once /st 00:00 /ru $taskUser /rp '{{ admin_password }}' /rl highest /f 2>&1 | Out-Null
+
+      schtasks /run /tn "InstallSubordinateCA" 2>&1 | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "schtasks /run InstallSubordinateCA failed (exit $LASTEXITCODE)" }
+
+      # Wait for task to complete. A 900s ceiling can fire during a healthy
+      # install: parent CA wait (~10 min built into the script) +
+      # Install-AdcsCertificationAuthority (5-10 min on a slow disk) can
+      # cumulatively exceed 15 min, and the schtasks /delete below then kills
+      # the still-running install — yielding an empty ca-install.log and a fatal
+      # "Subordinate CA installation failed. Log: " with no payload. Set to
+      # 1800s (30 min) and check whether we hit the timeout; if so, capture
+      # the schtasks /query /v detail so the failure mode is distinguishable from
+      # an actual install error.
+      $maxWait = 1800
+      $waited = 0
+      $timedOut = $true
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 5
+          $waited += 5
+          $taskInfo = schtasks /query /tn "InstallSubordinateCA" /fo csv /nh 2>$null
+          if ($taskInfo -match "Ready") { $timedOut = $false; break }
+      }
+
+      # If we timed out, capture the task's last-known state BEFORE deleting it,
+      # then kill the wrapper's process: schtasks /delete does NOT stop a
+      # running task instance, and an orphaned hung install otherwise survives
+      # into the next provision attempt still holding CA setup state (#213 —
+      # the 2026-07-06 recovery needed a manual Stop-Process for exactly this).
+      $timeoutDiag = ''
+      if ($timedOut) {
+          $timeoutDiag = "schtasks-wait timed out after ${maxWait}s. Task state at timeout: " +
+                        ((schtasks /query /tn "InstallSubordinateCA" /v /fo list 2>&1 | Out-String) -replace "`r?`n", " | ")
+          schtasks /end /tn "InstallSubordinateCA" 2>$null | Out-Null
+          Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+              Where-Object { $_.CommandLine -match 'install-ca\.ps1' } |
+              ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+      }
+
+      schtasks /delete /tn "InstallSubordinateCA" /f 2>$null
+
+      # Check result
+      $status = Get-Content C:\tmp\ca-install-status.txt -ErrorAction SilentlyContinue
+      $log = Get-Content C:\tmp\ca-install.log -ErrorAction SilentlyContinue
+      if ($log) { $Ansible.Result = $log -join "`n" }
+
+      # Clean up temp files
+      Remove-Item C:\tmp\install-ca.ps1 -Force -ErrorAction SilentlyContinue
+      Remove-Item C:\tmp\ca-install.log -Force -ErrorAction SilentlyContinue
+      Remove-Item C:\tmp\ca-install-status.txt -Force -ErrorAction SilentlyContinue
+
+      if ($status -ne "SUCCESS") {
+          $msg = "Subordinate CA installation failed. Log: $($log -join '; ')"
+          if ($timeoutDiag) { $msg += " ; $timeoutDiag" }
+          throw $msg
+      }
+  # `no_log: true` is intentionally not set here — when the parent CA wait
+  # times out, censored output would bury the root cause. The install command
+  # contains the parent CA name + IP which are already in the inventory; not
+  # sensitive.
+  when: certsvc_info.services is not defined or certsvc_info.services | length == 0 or certsvc_info.services[0].state != 'started'
+
+- name: Wait for CA service to be ready
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $svc = Get-Service CertSvc -ErrorAction SilentlyContinue
+      if (-not $svc -or $svc.Status -ne 'Running') {
+          Write-PSFMessage -Level Warning -Message 'CertSvc is not running yet' -Tag 'subordinate-ca'
+          Wait-PSFMessage
+          throw "CertSvc is not running"
+      }
+      Write-PSFMessage -Level Host -Message 'CertSvc is running' -Tag 'subordinate-ca'
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  retries: 12
+  delay: 10
+  register: ca_svc_ready
+  until: ca_svc_ready is not failed
+
+- name: Publish Root CA certificate to AD via scheduled task
+  ansible.windows.win_powershell:
+    script: |
+      # The Root CA is standalone (not domain-joined), so its cert isn't
+      # automatically published to AD. Domain machines need it in the
+      # Certification Authorities container to trust the chain.
+      # Export from local Root store and publish with certutil -dspublish.
+      $taskUser = "{{ lab_netbios }}\Administrator"
+
+      $scriptFile = "C:\tmp\publish-root-cert.ps1"
+      $logFile = "C:\tmp\publish-root-cert.log"
+      $statusFile = "C:\tmp\publish-root-cert-status.txt"
+      New-Item -Path C:\tmp -ItemType Directory -Force | Out-Null
+
+      $wrapper = @"
+      {{ psf_init }}
+      try {
+          Write-PSFMessage -Level Host -Message 'Publishing Root CA certificate to AD' -Tag 'subordinate-ca'
+          `$rootCert = Get-ChildItem Cert:\LocalMachine\Root | Where-Object {
+              `$_.Subject -match '{{ parent_ca_name }}'
+          } | Select-Object -First 1
+
+          if (-not `$rootCert) {
+              Write-PSFMessage -Level Error -Message 'Root CA cert not found in local store' -Tag 'subordinate-ca'
+              'Root CA cert not found in local store' | Out-File $logFile
+              'FAILED' | Out-File $statusFile
+              Wait-PSFMessage
+              return
+          }
+
+          `$certFile = "C:\tmp\RootCA{{ 'PQC' if 'ML-DSA' in (ca_crypto_provider | default('')) else '' }}.crt"
+          Export-Certificate -Cert `$rootCert -FilePath `$certFile -Force | Out-Null
+          # Capture stdout+stderr explicitly and check `$LASTEXITCODE rather
+          # than `*> $logFile`, which redirected ALL streams (including the
+          # error stream) and let non-terminating certutil failures slip
+          # past the outer catch as SUCCESS.
+          `$dsOutput = & certutil.exe -dspublish -f `$certFile RootCA 2>&1
+          `$dsOutput | Out-File $logFile
+          if (`$LASTEXITCODE -ne 0) {
+              throw "certutil -dspublish failed (rc=`$LASTEXITCODE): `$dsOutput"
+          }
+          Write-PSFMessage -Level Host -Message 'Root CA certificate published to AD' -Tag 'subordinate-ca'
+          'SUCCESS' | Out-File $statusFile
+      } catch {
+          Write-PSFMessage -Level Error -Message 'Root CA cert publish failed' -ErrorRecord `$_ -Tag 'subordinate-ca'
+          `$_.Exception.Message | Out-File $logFile -Append
+          'FAILED' | Out-File $statusFile
+      }
+      Wait-PSFMessage
+      "@
+      $wrapper | Out-File -FilePath $scriptFile -Encoding ASCII -Force
+      Remove-Item $statusFile -ErrorAction SilentlyContinue
+
+      schtasks /create /tn "PublishRootCert" `
+          /tr "powershell.exe -ExecutionPolicy Bypass -File $scriptFile" `
+          /sc once /st 00:00 /ru $taskUser /rp '{{ admin_password }}' /rl highest /f 2>&1 | Out-Null
+      schtasks /run /tn "PublishRootCert" | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "schtasks /run PublishRootCert failed (exit $LASTEXITCODE)" }
+
+      $maxWait = 120; $waited = 0
+      while ($waited -lt $maxWait) {
+          Start-Sleep -Seconds 5; $waited += 5
+          $taskInfo = schtasks /query /tn "PublishRootCert" /fo csv /nh 2>$null
+          if ($taskInfo -match "Ready") { break }
+      }
+      schtasks /delete /tn "PublishRootCert" /f 2>$null
+
+      $log = Get-Content $logFile -ErrorAction SilentlyContinue
+      if ($log) { $Ansible.Result = $log -join "`n" }
+      $status = Get-Content $statusFile -ErrorAction SilentlyContinue
+
+      # Clean up temp files
+      Remove-Item $scriptFile -Force -ErrorAction SilentlyContinue
+      Remove-Item $logFile -Force -ErrorAction SilentlyContinue
+      Remove-Item $statusFile -Force -ErrorAction SilentlyContinue
+
+      if ($status -ne "SUCCESS") { throw "Root CA publish failed. Log: $($log -join '; ')" }
+  no_log: true
+
+- block:
+    - name: Configure CDP and AIA
+      ansible.windows.win_powershell:
+        script: |
+          {{ psf_init }}
+          Write-PSFMessage -Level Host -Message 'Configuring CDP and AIA extensions' -Tag 'subordinate-ca'
+
+          # Remove default CDP entries
+          Get-CACRLDistributionPoint | ForEach-Object {
+              Remove-CACRLDistributionPoint -Uri $_.Uri -Force
+          }
+
+          # Add local CDP (required for certsrv.msc)
+          Add-CACRLDistributionPoint -Uri "C:\Windows\System32\CertSrv\CertEnroll\%3%8%9.crl" -PublishToServer -PublishDeltaToServer -Force
+
+          # Add HTTP CDP
+          {% if crl_url is defined %}
+          Write-PSFMessage -Level Host -Message 'Adding HTTP CDP: {{ crl_url }}' -Tag 'subordinate-ca'
+          $cdpUri = "{{ crl_url }}/%3%8%9.crl"
+          Add-CACRLDistributionPoint -Uri $cdpUri -AddToCertificateCDP -AddToFreshestCrl -Force
+          {% endif %}
+
+          # Remove default AIA entries
+          Get-CAAuthorityInformationAccess | ForEach-Object {
+              Remove-CAAuthorityInformationAccess -Uri $_.Uri -Force
+          }
+
+          # Add HTTP AIA
+          {% if aia_url is defined %}
+          Write-PSFMessage -Level Host -Message 'Adding HTTP AIA: {{ aia_url }}' -Tag 'subordinate-ca'
+          $aiaUri = "{{ aia_url }}/%3%4.crt"
+          Add-CAAuthorityInformationAccess -Uri $aiaUri -AddToCertificateAia -Force
+          {% endif %}
+
+          Write-PSFMessage -Level Host -Message 'CDP and AIA configured' -Tag 'subordinate-ca'
+          Wait-PSFMessage
+
+    - name: Configure CA registry settings
+      ansible.windows.win_powershell:
+        script: |
+          {{ psf_init }}
+          Write-PSFMessage -Level Host -Message 'Configuring CA registry (audit, validity)' -Tag 'subordinate-ca'
+          certutil.exe -setreg CA\AuditFilter 127
+          if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\AuditFilter failed (exit $LASTEXITCODE)" }
+          certutil.exe -setreg CA\ValidityPeriodUnits 2
+          if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\ValidityPeriodUnits failed (exit $LASTEXITCODE)" }
+          certutil.exe -setreg CA\ValidityPeriod "Years"
+          if ($LASTEXITCODE -ne 0) { throw "certutil -setreg CA\ValidityPeriod failed (exit $LASTEXITCODE)" }
+          Write-PSFMessage -Level Host -Message 'CA registry settings configured' -Tag 'subordinate-ca'
+          Wait-PSFMessage
+
+    - name: Restart CA service and publish CRL
+      ansible.windows.win_powershell:
+        script: |
+          {{ psf_init }}
+          Write-PSFMessage -Level Host -Message 'Restarting CertSvc and publishing CRL' -Tag 'subordinate-ca'
+          Restart-Service CertSvc -ErrorAction Stop
+
+          # Restart-Service returns when SCM reports Running, but CertSvc
+          # opens its RPC endpoint a few seconds later. certutil hits
+          # RPC_S_SERVER_UNAVAILABLE if called immediately.
+          # Poll certutil -ping (local LRPC, no double-hop) up to 60s.
+          $ready = $false
+          for ($i = 0; $i -lt 12; $i++) {
+              & certutil.exe -ping *>$null
+              if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+              Start-Sleep -Seconds 5
+          }
+          if (-not $ready) { throw "CertSvc RPC endpoint not ready after 60s" }
+
+          certutil.exe -crl
+          if ($LASTEXITCODE -ne 0) { throw "certutil -crl failed (exit $LASTEXITCODE)" }
+          Write-PSFMessage -Level Host -Message 'CRL published' -Tag 'subordinate-ca'
+          Wait-PSFMessage
+
+    - name: Publish CA artifacts (cert + CRL) to WEB1
+      ansible.builtin.include_role:
+        name: publish_ca_artifacts
+      vars:
+        publish_tag: subordinate-ca
+        publish_subdir: "{{ 'pqc' if 'ML-DSA' in (ca_crypto_provider | default('')) else '' }}"
+
+    - name: Schedule daily CRL republish (online issuing CA)
+      ansible.builtin.include_role:
+        name: ca_crl_republish
+      vars:
+        publish_subdir: "{{ 'pqc' if 'ML-DSA' in (ca_crypto_provider | default('')) else '' }}"
+        republish_task_name: "{{ 'straylight-crl-republish-pqc' if 'ML-DSA' in (ca_crypto_provider | default('')) else 'straylight-crl-republish' }}"
+
+    - name: Clear CRLF_REVCHECK_IGNORE_OFFLINE if previously set
+      ansible.windows.win_powershell:
+        script: |
+          {{ psf_init }}
+          $caKey = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\*\CA" -ErrorAction SilentlyContinue
+          if ($caKey -and ($caKey.CRLFlags -band 4)) {
+              Write-PSFMessage -Level Host -Message 'Clearing CRLF_REVCHECK_IGNORE_OFFLINE flag' -Tag 'subordinate-ca'
+              certutil.exe -setreg CA\CRLFlags -4
+              Restart-Service CertSvc -ErrorAction Stop
+          } else {
+              $Ansible.Changed = $false
+          }
+          Wait-PSFMessage
+
+  always:
+    - name: Revert Root CA to manual approval mode
+      ansible.windows.win_powershell:
+        script: |
+          certutil.exe -setreg policy\RequestDisposition 0
+          Restart-Service CertSvc
+      delegate_to: "{{ parent_ca_ip }}"
+      vars:
+        # Apply THIS host's (issueca's) WinRM connection settings to the
+        # delegated task against the parent CA IP. Pull each via
+        # hostvars[inventory_hostname] — NOT bare `{{ ansible_connection }}`,
+        # which self-references the task var and trips Jinja2's recursion guard
+        # ("Recursive loop detected ... 'connection'"). Same self-reference trap
+        # the PQC orchestrator hit.
+        ansible_host: "{{ parent_ca_ip }}"
+        ansible_user: "{{ hostvars[inventory_hostname].ansible_user }}"
+        ansible_password: "{{ hostvars[inventory_hostname].ansible_password }}"
+        ansible_port: "{{ hostvars[inventory_hostname].ansible_port }}"
+        ansible_winrm_transport: "{{ hostvars[inventory_hostname].ansible_winrm_transport }}"
+        ansible_winrm_scheme: "{{ hostvars[inventory_hostname].ansible_winrm_scheme }}"
+        ansible_connection: "{{ hostvars[inventory_hostname].ansible_connection }}"

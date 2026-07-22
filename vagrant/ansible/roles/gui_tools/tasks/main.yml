@@ -1,0 +1,76 @@
+---
+# GUI tools role: installs tools from software cache on Desktop Experience VMs
+# For winget-based installs, see the apps role.
+# Skipped entirely when lab_desktop_enabled=false (LAB_DESKTOP_ENABLED=false env).
+
+- name: Skip gui_tools when desktop UX disabled
+  ansible.builtin.meta: end_role
+  when: not (lab_desktop_enabled | default(true) | bool)
+
+# ── NetTools ─────────────────────────────────────────────────────────────
+
+- name: Create temp download directory
+  ansible.windows.win_file:
+    path: C:\tmp
+    state: directory
+
+- name: Check if NetTools is already installed
+  ansible.windows.win_stat:
+    path: 'C:\Tools\NetTools\NetTools.exe'
+  register: nettools_installed
+
+- name: Check for staged NetTools ZIP in local software cache
+  ansible.windows.win_stat:
+    path: '{{ software_source }}\NetTools.zip'
+  register: nettools_local
+  when:
+    - not nettools_installed.stat.exists
+    - software_source is defined
+
+- name: Copy NetTools ZIP from local cache
+  ansible.windows.win_copy:
+    src: '{{ software_source }}\NetTools.zip'
+    dest: 'C:\tmp\NetTools.zip'
+    remote_src: true
+  when:
+    - not nettools_installed.stat.exists
+    - software_source is defined
+    - nettools_local.stat.exists | default(false)
+
+- name: Download NetTools
+  ansible.windows.win_get_url:
+    url: "https://nettools.net/?sdm_process_download=1&download_id=4726"
+    dest: 'C:\tmp\NetTools.zip'
+    follow_redirects: all
+    # Checksum omitted: ansible.windows.win_get_url 3.5.0 has a string-comparison
+    # bug that mismatches every checksum value because the "<algo>:" prefix never
+    # gets stripped before comparison. See roles/winlogbeat/tasks/main.yml for the
+    # full rationale. SHA-256 computed locally 2026-05-26 from the same URL:
+    # sha256:d4a9e09a9d205f6f60716183d16e4071dc5e7c81f6764127ff10ccef10e26a1b
+    # Re-add the checksum once ansible.windows >= 3.6 is in use.
+  when:
+    - not nettools_installed.stat.exists
+    - software_source is not defined or not (nettools_local.stat.exists | default(false))
+
+- name: Extract NetTools
+  community.windows.win_unzip:
+    src: 'C:\tmp\NetTools.zip'
+    dest: 'C:\Tools\NetTools'
+    creates: 'C:\Tools\NetTools\NetTools.exe'
+  when: not nettools_installed.stat.exists
+
+- name: Add NetTools to system PATH
+  ansible.windows.win_path:
+    elements:
+      - 'C:\Tools\NetTools'
+    scope: machine
+    state: present
+
+# ── Browsers ────────────────────────────────────────────────────────────
+
+- name: Install desktop apps via Chocolatey
+  chocolatey.chocolatey.win_chocolatey:
+    name:
+      - firefox
+      - notepadplusplus
+    state: present

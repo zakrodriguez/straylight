@@ -1,0 +1,19 @@
+---
+# observe_timer role defaults — reusable systemd timer + ingest hook.
+# Required (no default): observe_timer_name, observe_timer_description,
+# observe_timer_exec_start.
+
+# Cadence — every 6 hours, matching the other scanner1 observation jobs.
+observe_timer_oncalendar: "*-*-* 00/6:00:00"
+
+# Service identity / ordering.
+observe_timer_user: root
+observe_timer_after: network-online.target
+observe_timer_documentation: ""
+
+# Optional ingest hook. Leave observe_timer_ingest_path empty to skip the
+# ExecStartPost ingest entirely (probe writes a report but nothing pipes it).
+observe_timer_ingest_path: ""
+observe_timer_ingest_python: /usr/bin/python3
+observe_timer_ingest_script: /opt/cbom-toolkit/python/cbom_ingest.py
+observe_timer_ingest_args: []

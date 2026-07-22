@@ -1,0 +1,84 @@
+---
+# Publish CA artifacts role: copy a CA's cert(s) + CRL(s) from its local
+# CertEnroll to WEB1's PKI$ share (AIA + CDP) via SMB. Shared by every CA that
+# publishes to WEB1 — the standalone root, the one-tier enterprise CA, and the
+# two-tier issuing CA — which would otherwise each carry a byte-identical copy
+# of these two tasks. Caller sets publish_tag for
+# PSFramework log attribution.
+#
+# Note: a standalone root is not domain-joined and cannot use pass-through SMB
+# auth to a domain-joined WEB1, so we authenticate explicitly with net use
+# using WEB1's local vagrant account (works for the domain-joined callers too).
+
+- name: Wait for WEB1 SMB share and authenticate
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $sharePath = "\\{{ web_ip }}\PKI$"
+
+      Write-PSFMessage -Level Host -Message "Waiting for SMB share $sharePath" -Tag '{{ publish_tag }}'
+
+      # Establish SMB session with explicit credentials (ROOTCA is not domain-joined)
+      net use $sharePath /user:vagrant vagrant 2>&1 | Out-Null
+
+      $available = Test-Path $sharePath -ErrorAction SilentlyContinue
+      if (-not $available) {
+          net use $sharePath /delete /y 2>&1 | Out-Null
+          Write-PSFMessage -Level Warning -Message "Share $sharePath not available yet" -Tag '{{ publish_tag }}'
+          Wait-PSFMessage
+          throw "Share $sharePath not available yet"
+      }
+      Write-PSFMessage -Level Host -Message "SMB share $sharePath is available" -Tag '{{ publish_tag }}'
+      $Ansible.Changed = $false
+      Wait-PSFMessage
+  retries: 30
+  delay: 10
+  register: share_ready
+  until: share_ready is not failed
+
+- name: Copy cert and CRL to WEB1 and verify
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      $sharePath = "\\{{ web_ip }}\PKI$"
+      $certEnroll = "C:\Windows\System32\CertSrv\CertEnroll"
+
+      # PQC hierarchy publishes into a \pqc subdir so the classical and
+      # ML-DSA CRL/AIA namespaces don't collide on the shared web1 host. Empty
+      # subdir = classical, publishes to the share root as before.
+      $subdir = "{{ publish_subdir }}"
+      $aiaDir = if ($subdir) { "$sharePath\aia\$subdir" } else { "$sharePath\aia" }
+      $crlDir = if ($subdir) { "$sharePath\crl\$subdir" } else { "$sharePath\crl" }
+
+      # Re-authenticate in case session expired
+      net use $sharePath /user:vagrant vagrant 2>&1 | Out-Null
+
+      # Ensure the (possibly nested) destination dirs exist before copying.
+      foreach ($d in @($aiaDir, $crlDir)) {
+          if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+      }
+
+      # Copy CA certificate(s) to AIA
+      $certs = Get-ChildItem "$certEnroll\*.crt"
+      Write-PSFMessage -Level Host -Message "Copying $($certs.Count) cert(s) to $aiaDir\" -Tag '{{ publish_tag }}'
+      foreach ($cert in $certs) {
+          Copy-Item $cert.FullName "$aiaDir\" -Force
+      }
+
+      # Copy CRL(s) to CRL
+      $crls = Get-ChildItem "$certEnroll\*.crl"
+      Write-PSFMessage -Level Host -Message "Copying $($crls.Count) CRL(s) to $crlDir\" -Tag '{{ publish_tag }}'
+      foreach ($crl in $crls) {
+          Copy-Item $crl.FullName "$crlDir\" -Force
+      }
+
+      # Verify
+      $aiaFiles = Get-ChildItem "$aiaDir\*.crt" -ErrorAction SilentlyContinue
+      $crlFiles = Get-ChildItem "$crlDir\*.crl" -ErrorAction SilentlyContinue
+
+      if ($aiaFiles.Count -eq 0) { throw "No AIA files published to $aiaDir" }
+      if ($crlFiles.Count -eq 0) { throw "No CRL files published to $crlDir" }
+
+      Write-PSFMessage -Level Host -Message "Published $($aiaFiles.Count) cert(s) + $($crlFiles.Count) CRL(s) to $sharePath (subdir='$subdir')" -Tag '{{ publish_tag }}'
+      $Ansible.Result = "Published $($aiaFiles.Count) cert(s) + $($crlFiles.Count) CRL(s) to $sharePath (subdir='$subdir')"
+      Wait-PSFMessage

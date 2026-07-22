@@ -1,0 +1,120 @@
+---
+# Sysmon role: install Microsoft Sysmon with SwiftOnSecurity config on Windows VMs.
+# Uses local cache (C:\Software) when available, downloads from Sysinternals otherwise.
+
+- name: Skip Sysmon role if logging disabled
+  ansible.builtin.meta: end_role
+  when: not (logging_enabled | default(true) and sysmon_enabled | default(true))
+
+- name: Check if Sysmon64 service exists
+  ansible.windows.win_service:
+    name: Sysmon64
+  register: sysmon_service
+  failed_when: false
+
+- name: Create temp download directory
+  ansible.windows.win_file:
+    path: C:\tmp
+    state: directory
+  when: not sysmon_service.exists
+
+- name: Check for staged Sysmon ZIP in local software cache
+  ansible.windows.win_stat:
+    path: '{{ software_source }}\Sysmon.zip'
+  register: sysmon_local
+  when:
+    - not sysmon_service.exists
+    - software_source is defined
+
+- name: Check for SysinternalsSuite ZIP in local software cache
+  ansible.windows.win_stat:
+    path: '{{ software_source }}\SysinternalsSuite.zip'
+  register: sysinternals_local
+  when:
+    - not sysmon_service.exists
+    - software_source is defined
+    - not (sysmon_local.stat.exists | default(false))
+
+- name: Copy Sysmon ZIP from local cache
+  ansible.windows.win_copy:
+    src: '{{ software_source }}\Sysmon.zip'
+    dest: 'C:\tmp\Sysmon.zip'
+    remote_src: true
+  when:
+    - not sysmon_service.exists
+    - software_source is defined
+    - sysmon_local.stat.exists | default(false)
+
+- name: Extract Sysmon64.exe from SysinternalsSuite ZIP
+  ansible.windows.win_powershell:
+    script: |
+      Add-Type -AssemblyName System.IO.Compression.FileSystem
+      $zip = [System.IO.Compression.ZipFile]::OpenRead('{{ software_source }}\SysinternalsSuite.zip')
+      try {
+        $entry = $zip.Entries | Where-Object { $_.Name -eq 'Sysmon64.exe' }
+        if (-not $entry) { throw 'Sysmon64.exe not found in SysinternalsSuite.zip' }
+        New-Item -Path 'C:\Tools\Sysmon' -ItemType Directory -Force | Out-Null
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, 'C:\Tools\Sysmon\Sysmon64.exe', $true)
+      } finally { $zip.Dispose() }
+  when:
+    - not sysmon_service.exists
+    - software_source is defined
+    - not (sysmon_local.stat.exists | default(false))
+    - sysinternals_local.stat.exists | default(false)
+
+# Best-effort fallback ONLY (cache-miss path) — same rationale as the
+# Sysinternals Suite download: Microsoft serves Sysmon.zip as a rolling release
+# with no stable per-file checksum, so a pinned SHA256 rots and hard-fails the
+# fallback. The trusted path is the operator-populated cache (Sysmon.zip or
+# Sysmon64.exe extracted from the cached SysinternalsSuite.zip above).
+- name: Download Sysmon from Sysinternals (best-effort fallback, no stable upstream checksum)
+  ansible.windows.win_get_url:
+    url: "https://download.sysinternals.com/files/Sysmon.zip"
+    dest: 'C:\tmp\Sysmon.zip'
+  when:
+    - not sysmon_service.exists
+    - not (sysmon_local.stat.exists | default(false))
+    - not (sysinternals_local.stat.exists | default(false))
+
+- name: Extract Sysmon from downloaded ZIP
+  community.windows.win_unzip:
+    src: 'C:\tmp\Sysmon.zip'
+    dest: 'C:\Tools\Sysmon'
+    creates: 'C:\Tools\Sysmon\Sysmon64.exe'
+  when:
+    - not sysmon_service.exists
+    - not (sysinternals_local.stat.exists | default(false))
+
+- name: Deploy Sysmon configuration file
+  ansible.windows.win_copy:
+    src: sysmonconfig.xml
+    dest: 'C:\Tools\Sysmon\sysmonconfig.xml'
+  register: sysmon_config
+
+- name: Install Sysmon service
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Installing Sysmon64 service' -Tag 'sysmon'
+
+      & 'C:\Tools\Sysmon\Sysmon64.exe' -accepteula -i 'C:\Tools\Sysmon\sysmonconfig.xml' 2>&1
+      if ($LASTEXITCODE) { throw "Sysmon64.exe install failed (exit $LASTEXITCODE)" }
+
+      Write-PSFMessage -Level Host -Message 'Sysmon64 service installed' -Tag 'sysmon'
+      Wait-PSFMessage
+  when: not sysmon_service.exists
+
+- name: Update Sysmon config
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Updating Sysmon64 configuration' -Tag 'sysmon'
+
+      & 'C:\Tools\Sysmon\Sysmon64.exe' -c 'C:\Tools\Sysmon\sysmonconfig.xml' 2>&1
+      if ($LASTEXITCODE) { throw "Sysmon64.exe config update failed (exit $LASTEXITCODE)" }
+
+      Write-PSFMessage -Level Host -Message 'Sysmon64 configuration updated' -Tag 'sysmon'
+      Wait-PSFMessage
+  when:
+    - sysmon_service.exists
+    - sysmon_config.changed

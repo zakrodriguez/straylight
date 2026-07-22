@@ -1,0 +1,32 @@
+# Periodic CRL republish on an ONLINE issuing CA.
+#
+# certutil -CRL regenerates the CRL into CertEnroll; we then copy it to web1's
+# PKI$ share so the HTTP CDP stays fresh WITHOUT relying on the long (26-week)
+# CRL base validity as a substitute for republish automation. Runs daily as
+# SYSTEM via a scheduled task; logs to the standard lab log dir for triage.
+$ErrorActionPreference = 'Stop'
+$logDir = 'C:\Users\Public\Logs\straylight'
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+$log = Join-Path $logDir 'crl-republish.log'
+function Write-Log($m) { ('{0}  {1}' -f (Get-Date -Format o), $m) | Add-Content -Path $log }
+
+try {
+    Write-Log 'Running certutil -CRL'
+    & certutil -CRL | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "certutil -CRL exited $LASTEXITCODE" }
+
+    $sharePath = '\\{{ web_ip }}\PKI$'
+    $subdir    = '{{ publish_subdir }}'
+    $crlDir    = if ($subdir) { "$sharePath\crl\$subdir" } else { "$sharePath\crl" }
+
+    # web1's local vagrant account — root/issuing CAs both authenticate explicitly.
+    net use $sharePath /user:vagrant vagrant 2>&1 | Out-Null
+    if (-not (Test-Path $crlDir)) { New-Item -ItemType Directory -Path $crlDir -Force | Out-Null }
+
+    $crls = Get-ChildItem 'C:\Windows\System32\CertSrv\CertEnroll\*.crl'
+    foreach ($crl in $crls) { Copy-Item $crl.FullName "$crlDir\" -Force }
+    Write-Log "Republished $($crls.Count) CRL(s) to $crlDir"
+} catch {
+    Write-Log "FAILED: $_"
+    exit 1
+}

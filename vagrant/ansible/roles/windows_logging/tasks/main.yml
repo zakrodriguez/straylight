@@ -1,0 +1,81 @@
+---
+# Windows Logging role: enable advanced audit and diagnostic logging policies
+# - PowerShell ScriptBlock Logging (all Windows VMs)
+# - PowerShell Module Logging with wildcard capture (all Windows VMs)
+# - DNS Server Analytical log (DCs only)
+# - AD CS audit policy (CA VMs only)
+
+- name: Enable PowerShell ScriptBlock Logging
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging
+    name: EnableScriptBlockLogging
+    data: 1
+    type: dword
+  when: logging_enabled | default(true)
+
+- name: Enable PowerShell Module Logging
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging
+    name: EnableModuleLogging
+    data: 1
+    type: dword
+  when: logging_enabled | default(true)
+
+- name: Enable Module Logging wildcard (log all modules)
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames
+    name: '*'
+    data: '*'
+    type: string
+  when: logging_enabled | default(true)
+
+- name: Enable DNS Server Analytical log
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Enabling DNS Server Analytical log' -Tag 'windows_logging'
+
+      $logName = 'Microsoft-Windows-DNSServer/Analytical'
+      $log = Get-WinEvent -ListLog $logName -ErrorAction SilentlyContinue
+      if (-not $log) {
+          Write-PSFMessage -Level Warning -Message 'DNS Server Analytical log not found — DNS role may not be installed' -Tag 'windows_logging'
+          $Ansible.Changed = $false
+          Wait-PSFMessage
+          return
+      }
+
+      if ($log.IsEnabled) {
+          Write-PSFMessage -Level Host -Message 'DNS Server Analytical log already enabled' -Tag 'windows_logging'
+          $Ansible.Changed = $false
+      } else {
+          wevtutil sl $logName /e:true /rt:true /ms:67108864 /q:true
+          if ($LASTEXITCODE) { throw "Failed to enable DNS Analytical log (exit $LASTEXITCODE)" }
+          Write-PSFMessage -Level Host -Message 'DNS Server Analytical log enabled (64 MB max)' -Tag 'windows_logging'
+      }
+
+      Wait-PSFMessage
+  when:
+    - logging_enabled | default(true)
+    - inventory_hostname in ['dc1', 'dc2']
+
+- name: Enable AD CS audit policy (Certification Services)
+  ansible.windows.win_powershell:
+    script: |
+      {{ psf_init }}
+      Write-PSFMessage -Level Host -Message 'Enabling AD CS audit policy' -Tag 'windows_logging'
+
+      # Check current audit state for Certification Services
+      $output = auditpol /get /subcategory:"Certification Services" 2>&1
+      if ($output -match 'Success and Failure') {
+          Write-PSFMessage -Level Host -Message 'AD CS audit policy already set to Success and Failure' -Tag 'windows_logging'
+          $Ansible.Changed = $false
+      } else {
+          auditpol /set /subcategory:"Certification Services" /success:enable /failure:enable
+          if ($LASTEXITCODE) { throw "auditpol failed (exit $LASTEXITCODE)" }
+          Write-PSFMessage -Level Host -Message 'AD CS audit policy enabled (Success + Failure)' -Tag 'windows_logging'
+      }
+
+      Wait-PSFMessage
+  when:
+    - logging_enabled | default(true)
+    - ca_type is defined

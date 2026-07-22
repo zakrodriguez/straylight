@@ -1,0 +1,258 @@
+---
+- name: Set vm.max_map_count in /etc/sysctl.conf
+  ansible.builtin.lineinfile:
+    path: /etc/sysctl.conf
+    regexp: '^vm\.max_map_count'
+    line: 'vm.max_map_count=262144'
+    state: present
+
+- name: Read current vm.max_map_count
+  ansible.builtin.command: sysctl -n vm.max_map_count
+  register: vm_max_map_count_current
+  changed_when: false
+
+- name: Apply vm.max_map_count immediately
+  ansible.builtin.command: sysctl -w vm.max_map_count=262144
+  changed_when: (vm_max_map_count_current.stdout | trim) != "262144"
+
+- name: Create /opt/opensearch directory
+  ansible.builtin.file:
+    path: /opt/opensearch
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
+
+- name: Create OpenSearch data directory
+  ansible.builtin.file:
+    path: /opt/opensearch/data/opensearch
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/opensearch/docker-compose.yml
+    mode: "0644"
+
+- name: Deploy nginx Beats compatibility config
+  ansible.builtin.template:
+    src: nginx-beats-compat.conf.j2
+    dest: /opt/opensearch/nginx-beats-compat.conf
+    mode: "0644"
+  register: nginx_config
+
+- name: Start OpenSearch stack via Docker Compose
+  community.docker.docker_compose_v2:
+    project_src: /opt/opensearch
+    state: present
+    pull: missing
+
+- name: Restart beats-proxy if nginx config changed
+  community.docker.docker_container:
+    name: beats-proxy
+    state: started
+    restart: true
+  when: nginx_config is changed
+
+- name: Wait for OpenSearch to be healthy
+  ansible.builtin.uri:
+    url: http://localhost:9200/_cluster/health
+    status_code: 200
+  register: opensearch_health
+  retries: 60
+  delay: 10
+  until: opensearch_health.status == 200
+
+- name: Wait for OpenSearch Dashboards to be ready
+  ansible.builtin.uri:
+    url: http://localhost:5601/api/status
+    status_code: 200
+  register: osd_status
+  retries: 30
+  delay: 10
+  until: osd_status.status == 200
+
+# ── CBOM contract + retention ───────────────────────────────────────────────
+# The cbom_* field vocabulary is generated from the single source-of-truth
+# envelope (cbom-toolkit/schema/cbom_envelope.json) by gen_opensearch_mapping.py
+# so the index mapping and the ingest producer can never drift on field types.
+# Beats indices get an index template (locks types) and an ISM delete
+# policy (bounds disk on this single node).
+
+- name: Stage CBOM envelope schema + mapping generator on observe1
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../cbom-toolkit/{{ item.src }}"
+    dest: "/opt/opensearch/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: "schema/cbom_envelope.json", dest: "cbom_envelope.json" }
+    - { src: "python/gen_opensearch_mapping.py", dest: "gen_opensearch_mapping.py" }
+
+- name: Generate cbom index mapping body from the envelope schema
+  ansible.builtin.command:
+    cmd: >-
+      python3 /opt/opensearch/gen_opensearch_mapping.py
+      --schema /opt/opensearch/cbom_envelope.json
+      --kind create-index
+  register: cbom_mapping_gen
+  changed_when: false
+
+- name: Apply ISM retention policy (delete phase)
+  ansible.builtin.uri:
+    url: "http://localhost:9200/_plugins/_ism/policies/{{ observability_ism_policy_id }}"
+    method: PUT
+    headers:
+      Content-Type: application/json
+    body_format: json
+    body:
+      policy:
+        description: "straylight retention: roll/age out lab indices on a single node"
+        default_state: hot
+        states:
+          - name: hot
+            actions: []
+            transitions:
+              - state_name: delete
+                conditions:
+                  min_index_age: "{{ observability_retention_days }}d"
+          - name: delete
+            actions:
+              - delete: {}
+            transitions: []
+        ism_template:
+          - index_patterns: "{{ observability_ism_index_patterns }}"
+            priority: 100
+    # 200 create, 409 already exists (idempotent re-provision).
+    status_code: [200, 201, 409]
+
+- name: Create index template for Beats log indices (locks types)
+  ansible.builtin.uri:
+    url: "http://localhost:9200/_index_template/{{ observability_logs_template_name }}"
+    method: PUT
+    headers:
+      Content-Type: application/json
+    body_format: json
+    body:
+      index_patterns: "{{ observability_logs_index_patterns }}"
+      template:
+        settings:
+          number_of_replicas: 0
+          # Bind new log indices to the retention policy at creation time.
+          plugins.index_state_management.policy_id: "{{ observability_ism_policy_id }}"
+        mappings:
+          properties:
+            "@timestamp": { "type": "date" }
+            lab_source: { "type": "keyword" }
+            lab_domain: { "type": "keyword" }
+            log_type: { "type": "keyword" }
+            message: { "type": "text" }
+    status_code: [200, 201]
+
+- name: Create index template for the cbom index (generated mapping)
+  ansible.builtin.uri:
+    url: "http://localhost:9200/_index_template/{{ observability_cbom_template_name }}"
+    method: PUT
+    headers:
+      Content-Type: application/json
+    body_format: json
+    body:
+      index_patterns: ["cbom", "cbom-*"]
+      template:
+        settings:
+          number_of_replicas: 0
+          plugins.index_state_management.policy_id: "{{ observability_ism_policy_id }}"
+        mappings: "{{ (cbom_mapping_gen.stdout | from_json).mappings }}"
+    status_code: [200, 201]
+
+- name: Create cbom index (mapping now supplied by the index template)
+  ansible.builtin.uri:
+    url: http://localhost:9200/cbom
+    method: PUT
+    headers:
+      Content-Type: application/json
+    # Template applies the generated mapping; 400 = already exists.
+    status_code: [200, 400]
+
+- name: Create logs-default index pattern in OSD
+  ansible.builtin.uri:
+    url: http://localhost:5601/api/saved_objects/index-pattern/logs-default
+    method: POST
+    headers:
+      Content-Type: application/json
+      osd-xsrf: "true"
+    body_format: json
+    body:
+      attributes:
+        title: "logs-*"
+        timeFieldName: "@timestamp"
+    status_code: [200, 409]
+
+- name: Create cbom index pattern in OSD
+  ansible.builtin.uri:
+    url: http://localhost:5601/api/saved_objects/index-pattern/cbom
+    method: POST
+    headers:
+      Content-Type: application/json
+      osd-xsrf: "true"
+    body_format: json
+    body:
+      attributes:
+        title: "cbom"
+        timeFieldName: "@timestamp"
+    status_code: [200, 409]
+
+- name: Set logs-default as default index pattern
+  ansible.builtin.uri:
+    url: http://localhost:5601/api/opensearch-dashboards/settings
+    method: POST
+    headers:
+      Content-Type: application/json
+      osd-xsrf: "true"
+    body_format: json
+    body:
+      changes:
+        defaultIndex: "logs-default"
+    status_code: 200
+
+- name: Stage osd_dashboards.py on observe1
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../cbom-toolkit/python/osd_dashboards.py"
+    dest: /opt/opensearch/osd_dashboards.py
+    owner: root
+    group: root
+    mode: "0755"
+  register: osd_dashboards_script
+
+- name: Check whether CBOM dashboards already exist
+  ansible.builtin.uri:
+    url: http://localhost:5601/api/saved_objects/_find?type=dashboard&search_fields=title&search=CBOM
+    method: GET
+    headers:
+      osd-xsrf: "true"
+  register: osd_existing_dashboards
+  changed_when: false
+
+- name: Create CBOM dashboards (7 dashboards / 38 visualizations)
+  # Re-run when the script changed OR when fewer than the expected 7 CBOM
+  # dashboards exist (osd_dashboards.py defines cbom-dash-1..7). The script
+  # returns 409 for existing objects, so re-runs are safe but cost ~5s —
+  # gating keeps `vagrant provision` snappy.
+  ansible.builtin.command:
+    cmd: python3 /opt/opensearch/osd_dashboards.py --osd-url http://localhost:5601
+  when: osd_dashboards_script.changed
+        or (osd_existing_dashboards.json.total | default(0)) < 7
+  changed_when: true
+
+- name: Show stack URLs
+  ansible.builtin.debug:
+    msg:
+      - "OpenSearch (loopback): http://127.0.0.1:9200       (on observe1 only)"
+      - "OpenSearch (LAN/TLS): https://{{ observe_ip }}:{{ beats_tls_port | default(9244) }}  (Basic Auth: {{ beats_basic_auth_user }} / <admin_password>)"
+      - "OpenSearch Dashboards: https://observe1.{{ lab_domain }}     (via observe_tls :443)"
+      - "CBOM Dashboards:       https://observe1.{{ lab_domain }}/app/dashboards"
+      - "Beats ship over TLS to {{ observe_ip }}:{{ beats_tls_port | default(9244) }} with HTTP Basic Auth"

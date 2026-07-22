@@ -1,0 +1,96 @@
+---
+# ejbca_chimera_profile role — drive EJBCA admin UI via Playwright sidecar to
+# create a cert profile + EE profile that enable issuer-hybrid (chimera) cert
+# issuance from EJBCA-Chimera-Root-CA.
+#
+# Depends on:
+#   - ejbca_admin_bootstrap (P12 at /opt/ejbca/data/secrets/superadmin.p12)
+#
+# Delegate target: ejbca1.
+
+# ─────────────────────────────────────────────────────────────────────────
+# Truststore prerequisite — see vagrant/docs/ejbca-chimera-setup.md.
+# WildFly's TLS truststore is empty by default in EJBCA CE 9.3.7. Without
+# importing EJBCA-Issuing-CA, Playwright client cert auth to /adminweb fails.
+#
+# NOTE: EJBCA CE 9.3.7 stores the truststore password as a clear-text
+# credential-reference inside standalone.xml (httpsTS key-store block).
+# There is no separate truststore.passwd file in this release.
+# Extract with: grep -A2 'httpsTS' standalone.xml | grep -oP "(?<=clear-text=\")[^\"]+"
+# ─────────────────────────────────────────────────────────────────────────
+
+- name: Check whether EJBCA-Issuing-CA already in WildFly truststore
+  ansible.builtin.shell: >-
+    docker exec ejbca-ce bash -c '
+      PASSWD=$(grep -A2 "httpsTS" "{{ chimera_wildfly_standalone_xml }}" | grep -oP "(?<=clear-text=\")[^\"]+") &&
+      keytool -list -keystore "{{ chimera_wildfly_truststore }}" -storepass "$PASSWD" -alias issuing-ca >/dev/null 2>&1
+    '
+  register: truststore_check
+  changed_when: false
+  failed_when: false
+
+- name: Import EJBCA-Issuing-CA into WildFly truststore + reload
+  ansible.builtin.shell: >-
+    docker exec ejbca-ce bash -c '
+      set -e
+      /opt/keyfactor/bin/ejbca.sh ca getcacert --caname EJBCA-Issuing-CA -f /tmp/issuing-ca.pem
+      PASSWD=$(grep -A2 "httpsTS" "{{ chimera_wildfly_standalone_xml }}" | grep -oP "(?<=clear-text=\")[^\"]+")
+      keytool -importcert -alias issuing-ca -file /tmp/issuing-ca.pem -keystore "{{ chimera_wildfly_truststore }}" -storepass "$PASSWD" -noprompt
+      "{{ chimera_wildfly_reload_cli }}" --connect command=:reload
+    '
+  when: truststore_check.rc != 0
+  no_log: true
+
+# ─────────────────────────────────────────────────────────────────────────
+# Sidecar work dir + script staging
+# ─────────────────────────────────────────────────────────────────────────
+
+- name: Ensure work dir exists
+  ansible.builtin.file:
+    path: "{{ chimera_work_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Stage Playwright script
+  ansible.builtin.copy:
+    src: configure-chimera.py
+    dest: "{{ chimera_work_dir }}/configure-chimera.py"
+    mode: "0644"
+
+- name: Pull Playwright image (no-op if cached)
+  community.docker.docker_image:
+    name: "{{ chimera_playwright_image }}"
+    source: pull
+  register: pw_image
+  retries: 3
+  delay: 10
+  until: pw_image is succeeded
+
+- name: Run Playwright sidecar to create chimera profiles
+  # community.docker.docker_container with auto_remove+detach=false cannot retrieve
+  # output — use docker run via shell so stdout is captured in pw_run.stdout.
+  # The playwright/python image bundles browser binaries but NOT the playwright
+  # Python package — verified live. Pip-install at runtime, pinned to match
+  # bundled chromium revision (1.48.0 → chromium-1140).
+  ansible.builtin.shell: >-
+    docker run --rm --network host
+    -v "/opt/ejbca/data/secrets:/secrets:ro"
+    -v "{{ chimera_work_dir }}/configure-chimera.py:/script.py:ro"
+    {{ chimera_playwright_image }}
+    bash -c 'pip install playwright==1.48.0 --quiet --root-user-action=ignore 2>/dev/null &&
+    python3 /script.py
+    --base-url {{ chimera_admin_url }}
+    --p12 /secrets/superadmin.p12
+    --pwd-file /secrets/superadmin.pwd
+    --cert-profile {{ chimera_profile_name }}
+    --ee-profile {{ chimera_ee_profile_name }}
+    --ca {{ chimera_ca_name }}
+    --source-cert-profile {{ chimera_source_cert_profile }}
+    {{ "--dry-run" if chimera_dry_run else "" }}'
+  register: pw_run
+  changed_when: "'OK: created' in pw_run.stdout"
+  failed_when: pw_run.rc != 0
+
+- name: Show Playwright output
+  ansible.builtin.debug:
+    msg: "{{ pw_run.stdout_lines | default([]) }}"

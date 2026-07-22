@@ -1,0 +1,98 @@
+---
+# ejbca_admin_bootstrap role
+# Idempotently creates a SuperAdmin end-entity, adds it to the SuperAdmin role,
+# and exports a P12 client cert to {{ ejbca_admin_p12_path }} for Playwright.
+
+- name: Ensure secrets directory exists
+  ansible.builtin.file:
+    path: "{{ ejbca_admin_secrets_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Check whether SuperAdmin P12 already exists
+  ansible.builtin.stat:
+    path: "{{ ejbca_admin_p12_path }}"
+  register: admin_p12
+
+- name: Generate stable admin password (pin once so all tasks see same value)
+  ansible.builtin.set_fact:
+    ejbca_admin_password_pinned: "{{ ejbca_admin_password }}"
+  when: not admin_p12.stat.exists
+
+- name: Bootstrap SuperAdmin (only when missing)
+  when: not admin_p12.stat.exists
+  block:
+    - name: Add SuperAdmin end-entity
+      ansible.builtin.command:
+        cmd: >-
+          docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra addendentity
+          --username "{{ ejbca_admin_username }}"
+          --dn "{{ ejbca_admin_dn }}"
+          --caname "{{ ejbca_admin_ca }}"
+          --type 1
+          --token P12
+          --password "{{ ejbca_admin_password_pinned }}"
+      register: addee
+      failed_when:
+        - addee.rc != 0
+        - "'already exists' not in addee.stderr"
+        - "'already exists' not in addee.stdout"
+      changed_when: addee.rc == 0
+
+    - name: Set cleartext password (required for batch enrollment)
+      ansible.builtin.command:
+        cmd: >-
+          docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ra setclearpwd
+          --username "{{ ejbca_admin_username }}"
+          --password "{{ ejbca_admin_password_pinned }}"
+      changed_when: true
+
+    - name: Add SuperAdmin to role
+      # Syntax confirmed against live EJBCA 9.3.7 container:
+      # ejbca.sh roles addrolemember --role <ROLE> --caname <CA> --with <MATCH_TYPE> --value <VALUE>
+      # CertificateAuthenticationToken: prefix is optional per --help output.
+      ansible.builtin.command:
+        cmd: >-
+          docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh roles addrolemember
+          --role "{{ ejbca_admin_role }}"
+          --caname "{{ ejbca_admin_ca }}"
+          --with WITH_FULLDN
+          --value "{{ ejbca_admin_dn }}"
+      register: rolemember
+      failed_when:
+        - rolemember.rc != 0
+        - "'already' not in rolemember.stderr"
+        - "'already' not in rolemember.stdout"
+      changed_when: rolemember.rc == 0
+
+    - name: Generate P12 inside container via batch
+      ansible.builtin.command:
+        cmd: >-
+          docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh batch
+          --username "{{ ejbca_admin_username }}"
+      changed_when: true
+
+    - name: Copy P12 from container to host
+      # Container P12 dir in EJBCA CE 9.3.7 is /opt/keyfactor/p12/ (not /opt/ejbca/p12/).
+      ansible.builtin.command:
+        cmd: >-
+          docker cp "ejbca-ce:/opt/keyfactor/p12/{{ ejbca_admin_username }}.p12"
+          "{{ ejbca_admin_p12_path }}"
+      changed_when: true
+
+    - name: Set permissions on P12
+      ansible.builtin.file:
+        path: "{{ ejbca_admin_p12_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Persist P12 password
+      ansible.builtin.copy:
+        dest: "{{ ejbca_admin_pwd_path }}"
+        content: "{{ ejbca_admin_password_pinned }}"
+        owner: root
+        group: root
+        mode: "0600"

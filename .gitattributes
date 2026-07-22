@@ -1,0 +1,41 @@
+# Enforce LF line endings for code/config that the lab orchestration parses.
+# Windows-edited contributions get normalized automatically.
+
+*.yml          text eol=lf
+*.yaml         text eol=lf
+*.j2           text eol=lf
+*.rb           text eol=lf
+*.sh           text eol=lf
+*.py           text eol=lf
+*.md           text eol=lf
+*.json         text eol=lf
+*.toml         text eol=lf
+*.ini          text eol=lf
+*.cfg          text eol=lf
+Vagrantfile    text eol=lf
+Gemfile*       text eol=lf
+Dockerfile     text eol=lf
+
+# PowerShell — keep CRLF; the Windows VMs run these natively and some
+# scripts ship to hosts via SMB where line endings matter.
+*.ps1          text eol=crlf
+*.psm1         text eol=crlf
+*.psd1         text eol=crlf
+
+# Treat .reg files as Windows-native (UTF-16 / CRLF).
+*.reg          binary
+
+# Binary assets — never normalize.
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.ico          binary
+*.pdf          binary
+*.zip          binary
+*.gz           binary
+*.tar          binary
+*.exe          binary
+*.dll          binary
+*.cab          binary
+*.iso          binary

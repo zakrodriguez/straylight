@@ -1,0 +1,90 @@
+---
+# MANAGE1 - Windows Server 2025 Management Workstation (Desktop Experience)
+# Server 2025 Desktop (rather than Win 11) avoids the FoD ISO dependency:
+# server-side RSAT (Install-WindowsFeature) lands in ~30s on-disk.
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Include psframework role
+      ansible.builtin.include_role:
+        name: psframework
+
+    - name: Include common role
+      ansible.builtin.include_role:
+        name: common
+      vars:
+        dns_servers:
+          - "{{ dc_ip }}"
+
+    - name: Include manage role (Server RSAT install — fast)
+      ansible.builtin.include_role:
+        name: manage
+
+    - name: Include chocolatey role
+      ansible.builtin.include_role:
+        name: chocolatey
+      vars:
+        choco_packages:
+          - openssl.light
+          - bind-toolsonly
+
+    - name: Include gui_tools role (NetTools)
+      ansible.builtin.include_role:
+        name: gui_tools
+
+    - name: Include desktop_customize role
+      ansible.builtin.include_role:
+        name: desktop_customize
+
+    - name: Include bginfo role
+      ansible.builtin.include_role:
+        name: bginfo
+      vars:
+        vm_role: manage
+
+    - name: Include domain_join role
+      ansible.builtin.include_role:
+        name: domain_join
+
+    - name: Include machine_cert role
+      ansible.builtin.include_role:
+        name: machine_cert
+
+    # PQC parallel-hierarchy enrollment (when the lab profile includes a PQC
+    # issuing CA). KB5087539 adds Server 2025's ML-DSA CNG primitives;
+    # pqc_machine_cert then runs certreq against issueca-pqc to land an
+    # ML-DSA-65 Server-Auth cert alongside the classical RSA cert.
+    - name: Install KB5087539 (ML-DSA CNG support) when a PQC CA is in the profile
+      ansible.builtin.include_role:
+        name: windows_kb_install
+      vars:
+        kb_number: "KB5087539"
+      when: "'issueca-pqc' in groups['all']"
+
+    - name: Enroll an ML-DSA-65 machine cert from the PQC issuing CA
+      ansible.builtin.include_role:
+        name: pqc_machine_cert
+      vars:
+        pqc_ca_config: "ISSUECAPQC.{{ lab_domain }}\\{{ lab_netbios }}-PQC-Issuing-CA"
+        pqc_template_name: "Straylight-PQC-Machine-MLDSA65-v1"
+      when: "'issueca-pqc' in groups['all']"
+
+    - name: Include sysinternals role
+      ansible.builtin.include_role:
+        name: sysinternals
+
+    - name: Include windows_logging role
+      ansible.builtin.include_role:
+        name: windows_logging
+
+    - name: Include sysmon role
+      ansible.builtin.include_role:
+        name: sysmon
+
+    - name: Include winlogbeat role
+      ansible.builtin.include_role:
+        name: winlogbeat
+
+    - name: Include cms_lab_windows role (CMS hands-on lab)
+      ansible.builtin.include_role:
+        name: cms_lab_windows

@@ -1,0 +1,39 @@
+services:
+{% if 'cbom-generator' in cipheriq_valid_services %}
+  # Static CBOM generator — run on-demand against mounted directories
+  cbom-generator:
+    build: /opt/cipheriq/cbom-generator
+    container_name: cipheriq-generator
+    volumes:
+      - /opt/cipheriq/output:/output
+    command: ["--help"]
+    restart: "no"
+
+{% endif %}
+{% if 'crypto-tracer' in cipheriq_valid_services %}
+  # eBPF runtime crypto tracer — needs privileged + host PID/network
+  crypto-tracer:
+    build: /opt/cipheriq/crypto-tracer
+    container_name: cipheriq-tracer
+    privileged: true
+    pid: host
+    network_mode: host
+    volumes:
+      - /opt/cipheriq/output:/output
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+    restart: unless-stopped
+
+{% endif %}
+{% if 'pqc-flow' in cipheriq_valid_services %}
+  # Passive network crypto sniffer
+  pqc-flow:
+    build: /opt/cipheriq/pqc-flow
+    container_name: cipheriq-pqcflow
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    volumes:
+      - /opt/cipheriq/output:/output
+    restart: unless-stopped
+{% endif %}

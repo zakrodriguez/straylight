@@ -1,0 +1,270 @@
+{
+  "$schema": "https://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:70b79bc0-036c-4d20-b838-da89aa214691",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-07-10T14:57:14.781305+00:00",
+    "component": {
+      "type": "application",
+      "name": "ejbca-api-scan",
+      "version": "1.0"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "f40b6ab3-1ddf-57e0-974a-1a6fad21d4a8",
+      "type": "cryptographic-asset",
+      "name": "RSA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "f8c55693-a2be-5e54-8d2d-1e0f9fc78c33",
+      "type": "cryptographic-asset",
+      "name": "EJBCA-Root-CA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=EJBCA-Root-CA,O=YOURLAB",
+          "issuerName": "EJBCA-Root-CA",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "788651dd-9764-5c75-aa21-bf8b20c90fda",
+          "subjectPublicKeyRef": "f40b6ab3-1ddf-57e0-974a-1a6fad21d4a8",
+          "notValidBefore": "40 UTC 2026",
+          "notValidAfter": "39 UTC 2036"
+        }
+      }
+    },
+    {
+      "bom-ref": "486508a2-44b8-59d4-b43b-7240609c7d8f",
+      "type": "cryptographic-asset",
+      "name": "RSA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "a63e25be-57b8-5dc6-b5b2-4ed2ba7380d3",
+      "type": "cryptographic-asset",
+      "name": "EJBCA-Issuing-CA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=EJBCA-Root-CA,O=YOURLAB",
+          "issuerName": "EJBCA-Issuing-CA",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "788651dd-9764-5c75-aa21-bf8b20c90fda",
+          "subjectPublicKeyRef": "486508a2-44b8-59d4-b43b-7240609c7d8f",
+          "notValidBefore": "26 UTC 2026",
+          "notValidAfter": "25 UTC 2031"
+        }
+      }
+    },
+    {
+      "bom-ref": "2e5dc7b0-a586-5519-b83c-816c7ed334d9",
+      "type": "cryptographic-asset",
+      "name": "ML-DSA-65",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "bdd7276a-a386-5ada-a465-9cdf44f3369f",
+      "type": "cryptographic-asset",
+      "name": "EJBCA-PQC-Root-CA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=EJBCA-PQC-Root-CA,O=YOURLAB",
+          "issuerName": "EJBCA-PQC-Root-CA",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "3a2dda3b-8f65-5a0b-a520-ca95502e9d71",
+          "subjectPublicKeyRef": "2e5dc7b0-a586-5519-b83c-816c7ed334d9",
+          "notValidBefore": "19 UTC 2026",
+          "notValidAfter": "18 UTC 2046"
+        }
+      }
+    },
+    {
+      "bom-ref": "0201ca17-c979-5a9d-bbbe-b8c55b30ad84",
+      "type": "cryptographic-asset",
+      "name": "RSA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "76b9bed3-131b-5698-aa71-41f41b3480d4",
+      "type": "cryptographic-asset",
+      "name": "EJBCA-Chimera-Root-CA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=EJBCA-Chimera-Root-CA,O=YOURLAB",
+          "issuerName": "EJBCA-Chimera-Root-CA",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "788651dd-9764-5c75-aa21-bf8b20c90fda",
+          "subjectPublicKeyRef": "0201ca17-c979-5a9d-bbbe-b8c55b30ad84",
+          "notValidBefore": "13 UTC 2026",
+          "notValidAfter": "12 UTC 2046"
+        }
+      }
+    },
+    {
+      "bom-ref": "a3319b29-1412-5bae-9bf7-25e3bcee8f1a",
+      "type": "cryptographic-asset",
+      "name": "ML-DSA-65",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "public-key"
+        }
+      }
+    },
+    {
+      "bom-ref": "a4f64498-3771-537a-b7bb-7aa7f937d8d8",
+      "type": "cryptographic-asset",
+      "name": "EJBCA-PQC-Issuing-CA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "certificate",
+        "certificateProperties": {
+          "subjectName": "CN=EJBCA-PQC-Root-CA,O=YOURLAB",
+          "issuerName": "EJBCA-PQC-Issuing-CA",
+          "certificateFormat": "X.509",
+          "signatureAlgorithmRef": "3a2dda3b-8f65-5a0b-a520-ca95502e9d71",
+          "subjectPublicKeyRef": "a3319b29-1412-5bae-9bf7-25e3bcee8f1a",
+          "notValidBefore": "45 UTC 2026",
+          "notValidAfter": "44 UTC 2036"
+        }
+      }
+    },
+    {
+      "bom-ref": "788651dd-9764-5c75-aa21-bf8b20c90fda",
+      "type": "cryptographic-asset",
+      "name": "RSA",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    },
+    {
+      "bom-ref": "3a2dda3b-8f65-5a0b-a520-ca95502e9d71",
+      "type": "cryptographic-asset",
+      "name": "ML-DSA-65",
+      "evidence": {
+        "occurrences": [
+          {
+            "location": "ejbca1/192.168.56.50:8443"
+          }
+        ]
+      },
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "cryptoFunctions": [
+            "sign"
+          ]
+        }
+      }
+    }
+  ],
+  "dependencies": []
+}

@@ -1,0 +1,39 @@
+---
+# MinIO role: deploy MinIO S3-compatible object storage via Docker Compose
+
+- name: Create MinIO directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/minio
+    - /opt/minio/data
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/minio/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start MinIO container
+  community.docker.docker_compose_v2:
+    project_src: /opt/minio
+    state: present
+
+- name: Wait for MinIO to be ready
+  ansible.builtin.uri:
+    url: "http://localhost:9010/minio/health/live"
+    return_content: true
+  register: minio_health
+  until: minio_health.status == 200
+  retries: 30
+  delay: 10
+
+- name: Display MinIO status
+  ansible.builtin.debug:
+    msg: "MinIO ready at http://{{ apps_ip }}:9011 (console) / http://{{ apps_ip }}:9010 (API) (admin / {{ admin_password }})"

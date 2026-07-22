@@ -1,0 +1,40 @@
+---
+# Keycloak role: deploy Keycloak with PostgreSQL via Docker Compose
+
+- name: Create Keycloak directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/keycloak
+    - /opt/keycloak/data
+    - /opt/keycloak/data/postgres
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/keycloak/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start Keycloak containers
+  community.docker.docker_compose_v2:
+    project_src: /opt/keycloak
+    state: present
+
+- name: Wait for Keycloak to be ready
+  ansible.builtin.uri:
+    url: "http://localhost:9000/health/ready"
+    return_content: true
+  register: keycloak_health
+  until: keycloak_health.status == 200
+  retries: 30
+  delay: 10
+
+- name: Display Keycloak status
+  ansible.builtin.debug:
+    msg: "Keycloak ready at http://{{ apps_ip }}:8080 (admin / {{ admin_password }})"

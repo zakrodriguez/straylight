@@ -1,0 +1,38 @@
+---
+# NiFi role: deploy Apache NiFi via Docker Compose
+
+- name: Create NiFi directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/nifi
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: /opt/nifi/docker-compose.yml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Start NiFi container
+  community.docker.docker_compose_v2:
+    project_src: /opt/nifi
+    state: present
+
+- name: Wait for NiFi to be ready
+  ansible.builtin.uri:
+    url: "https://localhost:8444/nifi/"
+    validate_certs: false
+  register: nifi_health
+  until: nifi_health.status == 200
+  retries: 30
+  delay: 20
+
+- name: Display NiFi status
+  ansible.builtin.debug:
+    msg: "NiFi ready at https://{{ apps_ip }}:8444/nifi/ (admin / {{ nifi_admin_password }})  [password padded from admin_password to satisfy NiFi's >=12-char requirement]"

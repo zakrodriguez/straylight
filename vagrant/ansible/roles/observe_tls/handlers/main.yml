@@ -1,0 +1,5 @@
+---
+- name: reload observe_tls nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
