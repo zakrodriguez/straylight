@@ -279,7 +279,7 @@ flowchart LR
 Roles involved:
 - **`opensearch_stack`** — installs OpenSearch + OpenSearch Dashboards (both bound to loopback) + a beats-compat proxy listening on `:9201` (mapped to loopback `:9200`; it adds the Beats 8.x compatibility headers OpenSearch doesn't natively accept).
 - **`observe_tls`** — nginx TLS termination: OSD served at `https://<observe1>/` on `:443`, Beats/host ingest on `:9244` (`beats_tls_port`) proxying to the loopback `:9200` chain. Cert is ACME-issued from step-ca, with a systemd timer for auto-renewal every 4h.
-- **`observe_timer`** — reusable role for the recurring systemd timers on observe1 (cert renewal, periodic CBOM re-ingest, ISM housekeeping).
+- **`observe_timer`** — reusable role for recurring systemd timers on observe1 (currently used by the Cloudflare PQC edge sweep).
 - **`winlogbeat`, `filebeat`, `filebeat_iis`, `sysmon`, `windows_logging`** — per-VM log shippers.
 
 OpenSearch indices are pre-templated by the `opensearch_stack` role. 7 dashboards with titles prefixed `CBOM:` render PQC posture, log search (Sysmon / Security / PowerShell / AD CS / DNS), and CBOM coverage.
@@ -300,7 +300,7 @@ flowchart LR
     subgraph "Pipeline scripts"
       D[cbom-dedup.py]
       C[pqc_classify.py]
-      I[CbomIngest.ps1]
+      I[cbom_ingest.py]
     end
 
     T --> D
@@ -316,7 +316,7 @@ flowchart LR
 
 > 🖌️ **Editable draw.io:** [`diagrams/hiw-cbom.drawio.svg`](diagrams/hiw-cbom.drawio.svg)
 
-The six scanners feed a unified CycloneDX CBOM: `cbom-dedup.py` merges by fingerprint, `pqc_classify.py` tags each component as quantum-vulnerable / PQC / unknown, and `CbomIngest.ps1` (or its Python counterpart `cbom_ingest.py`) pushes the result into OpenSearch via the bulk API. Run the sweep ad-hoc via `vagrant/scripts/cbom-orchestrate.sh` or as part of `pqc-migrate.yml` Phase 5.
+The six scanners feed a unified CycloneDX CBOM: `cbom-dedup.py` merges by fingerprint, `pqc_classify.py` tags each component as quantum-vulnerable / PQC / unknown, and `cbom_ingest.py` pushes the result into OpenSearch via the bulk API. Run the sweep ad-hoc via `vagrant/scripts/cbom-orchestrate.sh` or as part of `pqc-migrate.yml` Phase 5.
 
 A versioned CBOM envelope schema (`vagrant/cbom-toolkit/schema/cbom_envelope.json`) is the single source the OpenSearch index mapping is generated from, so scanner output, ingest payload, and dashboard fields can't drift apart. On observe1, an ISM policy ages CBOM/Beats data out at 14 days and Beats indices are date-suffixed for clean rollover.
 

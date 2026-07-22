@@ -55,7 +55,7 @@ LAB_COMPONENTS=observe1 bash up.sh
 | `bash up.sh --all` | Alias for `LAB_PROFILE=full` — builds every VM (18) |
 | `bash scripts/start-vms.sh` | Start all existing VMs (no provisioning) |
 | `bash scripts/stop-vms.sh` | Gracefully stop all running VMs |
-| `bash scripts/logging.sh --status` | Check logging agent status across VMs |
+| `bash logging.sh --status` | Check logging agent status across VMs |
 | `bash scripts/validate.sh` | Run health checks on all running VMs |
 | `bash scripts/cbom-pipeline.sh` | Full CBOM scan → validate → diff → ingest → score |
 
@@ -165,7 +165,7 @@ Ships events from all VMs to OpenSearch:
 
 - **Windows VMs**: Winlogbeat (EventLog, Sysmon, PowerShell ScriptBlock, DNS Analytical, AD CS audit)
 - **Linux VMs**: Filebeat (Docker container logs, syslog)
-- **Toggle on/off**: `bash scripts/logging.sh --enable all` / `--disable all` / `--status`
+- **Toggle on/off**: `bash logging.sh --enable all` / `--disable all` / `--status`
 
 Control individual services with env vars: `LOGGING_ENABLED`, `WINLOGBEAT_ENABLED`, `FILEBEAT_ENABLED`, `SYSMON_ENABLED`.
 

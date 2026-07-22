@@ -20,8 +20,8 @@ variable "win_version" {
   default = "2025"
 
   validation {
-    condition     = contains(["2016", "2019", "2022", "2025"], var.win_version)
-    error_message = "Variable win_version must be one of: 2016, 2019, 2022, 2025."
+    condition     = contains(["2022", "2025"], var.win_version)
+    error_message = "Variable win_version must be one of: 2022, 2025."
   }
 }
 
@@ -96,12 +96,10 @@ variable "publish_mode" {
 }
 
 locals {
-  # The only per-release difference between the four old templates. 2022 and
-  # 2025 both use the Windows2022_64 guest type (VirtualBox has no dedicated
-  # 2025 profile yet); 2016/2019 have their own.
+  # The only per-release difference between the old per-version templates.
+  # 2022 and 2025 both use the Windows2022_64 guest type (VirtualBox has no
+  # dedicated 2025 profile yet).
   guest_os_types = {
-    "2016" = "Windows2016_64"
-    "2019" = "Windows2019_64"
     "2022" = "Windows2022_64"
     "2025" = "Windows2022_64"
   }

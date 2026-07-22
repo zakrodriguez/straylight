@@ -20,7 +20,6 @@ As built (full tool-by-tool listing in `cbom-toolkit/README.md`):
 cbom-toolkit/
   schema/
     cbom_envelope.json    # single source of truth for field types + producers
-  powershell/             # 4 tools: CbomValidate / CbomDiff / CbomIngest / CbomScore
   python/                 # validation, diffing, ingest, scoring, mapping generation,
                           # PQC classification, protocol probes, alerting, dashboards
   baselines/              # per-profile, per-scanner reference CBOMs for diffing

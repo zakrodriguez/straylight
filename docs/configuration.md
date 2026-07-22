@@ -122,9 +122,9 @@ Every env var the lab reads. Most have a `config.rb` default; setting the env va
 
 | Variable | Default | Effect |
 |---|---|---|
-| `WIN_SERVER_VERSION` | `2025` | Selects between gusztavvargadr 2016/2019/2022/2025 standard + Core variants. |
+| `WIN_SERVER_VERSION` | `2025` | Selects between gusztavvargadr 2022/2025 standard + Core variants. |
 | `PWSH_VERSION` | `7.4.7` | PowerShell 7 version installed by the `common` role. |
-| `USE_STRAYLIGHT_BOXES` | `false` | When `true`, use locally-baked `straylight/*` Packer boxes instead of upstream (falls back to upstream if not registered). |
+| `USE_STRAYLIGHT_BOXES` | `false` | When `true`, use locally-baked `straylight/*` Packer boxes instead of upstream. No automatic fallback — `vagrant up` fails if the baked box isn't registered. |
 | `STRAYLIGHT_BOX_VERSION` | _unset_ | Pin a specific baked-box version (the value `packer/build-images.sh` printed). Only applies to `straylight/*` boxes. |
 
 #### Cache paths
@@ -219,8 +219,6 @@ Per-VM overrides go in `profiles/<name>.yml`'s `resources:` block (see [Profile 
 Vagrant boxes consumed from Vagrant Cloud. Selected by `WIN_SERVER_VERSION`:
 
 ```ruby
-BOX_WIN_SERVER_2016 = "gusztavvargadr/windows-server-2016-standard"
-BOX_WIN_SERVER_2019 = "gusztavvargadr/windows-server-2019-standard"
 BOX_WIN_SERVER_2022 = "gusztavvargadr/windows-server-2022-standard"
 BOX_WIN_SERVER_2025 = "gusztavvargadr/windows-server-2025-standard"
 BOX_WIN_SERVER_CORE_2022 = "gusztavvargadr/windows-server-2022-standard-core"
@@ -231,7 +229,7 @@ BOX_LINUX_UBUNTU   = "bento/ubuntu-22.04"
 
 The Vagrantfile picks Core vs Desktop per-VM based on whether GUI is needed (`client1` is Windows 11 and `manage1` is Windows Server 2025 Desktop Experience; CA roles default to Core; etc.).
 
-**Locally-baked boxes (optional).** `USE_STRAYLIGHT_BOXES=true` consumes `straylight/*` boxes baked by `packer/` instead of the upstream gusztavvargadr boxes (skips per-VM PS7 + ADCS-feature installs). One parameterized Packer template covers all Windows versions via `-var win_version` (replacing the four per-version templates). `packer/build-images.sh` stamps each `.box` with a version (UTC datestamp by default, or `BOX_VERSION=`); pin a specific bake with `STRAYLIGHT_BOX_VERSION` so a stale local box can't silently satisfy `vagrant up` (the Vagrantfile sets `vm.box_version` to match). Baked boxes ship **unpatched by design** — runtime patching is handled via WSUS (`wsus1`), not the image.
+**Locally-baked boxes (optional).** `USE_STRAYLIGHT_BOXES=true` consumes `straylight/*` boxes baked by `packer/` instead of the upstream gusztavvargadr boxes (skips per-VM PS7 + ADCS-feature installs). One parameterized Packer template covers both Windows versions (2022/2025) via `-var win_version` (replacing the earlier per-version templates). `packer/build-images.sh` stamps each `.box` with a version (UTC datestamp by default, or `BOX_VERSION=`); pin a specific bake with `STRAYLIGHT_BOX_VERSION` so a stale local box can't silently satisfy `vagrant up` (the Vagrantfile sets `vm.box_version` to match). Baked boxes ship **unpatched by design** — runtime patching is handled via WSUS (`wsus1`), not the image.
 
 #### IP allocation (`IP_ADDRESSES`)
 

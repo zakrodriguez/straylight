@@ -73,18 +73,16 @@ export CHECKSUM_2025="sha256:$(sha256sum ~/straylight/isos/windows-server-2025.i
 vagrant box list | grep straylight/windows-server-2025
 ```
 
-### Other versions (2016, 2019, 2022)
+### Other versions (2022)
 
 Same flow — replace `2025` with the version. Microsoft publishes evaluation ISOs at these direct CDN URLs (no auth gate; eval terms are accepted at first boot, not download):
 
 | Version | fwlink | Image size |
 |---|---|---|
-| 2016 (Datacenter Desktop) | `https://go.microsoft.com/fwlink/?linkid=2195174` | 6.5 GiB |
-| 2019 (Standard Desktop)   | `https://go.microsoft.com/fwlink/?linkid=2195167` | 5.3 GiB |
 | 2022 (Standard Desktop)   | `https://go.microsoft.com/fwlink/?linkid=2195280` | 4.7 GiB |
 | 2025 (Standard Desktop)   | `https://go.microsoft.com/fwlink/?linkid=2293312` | 5.6 GiB |
 
-Build all four:
+Build both:
 ```bash
 ./build-images.sh all
 ```
@@ -98,8 +96,6 @@ Packer phases (see the provisioner blocks in `windows/windows-server.pkr.hcl`):
 | 3. Guest Additions | `scripts/windows/lab-bake/install-guest-additions.ps1` | Install VirtualBox Guest Additions so the box ships GA-ready, then `windows-restart` |
 | 4. **Lab bake** | `scripts/windows/lab-bake/install-pwsh.ps1` + `install-adcs-features.ps1` (see [lab-bake/README.md](scripts/windows/lab-bake/README.md)) | **PS7 MSI + ADCS feature suite**; the PS7 MSI — the sole `cd_files` payload — rides in via the HCL-built `STRAYLIGHT_CACHE` ISO, not a script |
 | 5. Cleanup | `scripts/windows/base/cleanup.ps1` | Clear SoftwareDistribution, %TEMP%, event logs, CompactOS, **wipe autologon creds, re-enable firewall**. With `PACKER_BUILD_FOR_PUBLISH=1`, also rotates admin pw + sysprep `/generalize /oobe`. |
-
-> `scripts/windows/base/configure-winrm.ps1` is present but **not wired into any build** — `setup.ps1` already handles the WinRM listener + service-auth config in phase 1. Treat it as unused.
 
 ## Using the baked box
 
@@ -134,14 +130,13 @@ packer/
 ├── README.md                                       # this file
 ├── build-images.sh                                 # build orchestrator
 ├── windows/
-│   ├── windows-server.pkr.hcl                      # ONE parameterized template (all versions, -var win_version=)
+│   ├── windows-server.pkr.hcl                      # ONE parameterized template (2022/2025, -var win_version=)
 │   ├── answer_files/Autounattend.xml               # ONE shared, version-neutral answer file
 │   ├── vagrantfile-windows.template                # output box's embedded Vagrantfile (default mode)
 │   └── vagrantfile-windows-publish.template        # ditto, publish mode (placeholder winrm.password)
 └── scripts/windows/
     ├── base/                                       # WinRM/firewall/cleanup (used by all builds)
     │   ├── setup.ps1                               # phase 1: WinRM + firewall + RDP
-    │   ├── configure-winrm.ps1                     # UNUSED — not wired into any build (setup.ps1 covers WinRM)
     │   ├── install-updates.ps1                     # phase 2: installs PSWindowsUpdate module only (no updates applied — runtime WSUS owns patching)
     │   └── cleanup.ps1                             # phase 5: cleanup / compact / (publish-mode sysprep)
     └── lab-bake/                                   # Straylight-specific pre-install layer

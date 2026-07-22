@@ -6,7 +6,7 @@
 
 Packer builds the Windows base boxes from one parameterized template,
 `packer/windows/windows-server.pkr.hcl`, selected with
-`-var win_version=<2016|2019|2022|2025>` (see
+`-var win_version=<2022|2025>` (see
 [build-process-evolution.md](build-process-evolution.md) §v6). `straylight/*`
 boxes carry a `box_version` (UTC datestamp by default) that the Vagrantfile pins
 via `config.vm.box_version`, so a stale local bake can't silently satisfy

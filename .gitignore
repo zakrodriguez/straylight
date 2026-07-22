@@ -1,7 +1,5 @@
 .vagrant/
 .vagrant-*/
-vagrant/resources/fod/
-vagrant/resources/wsus/
 vagrant/resources/psframework/
 vagrant/logs/
 vagrant/ansible/inventory/static.ini

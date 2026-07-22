@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Packer Build Script for Windows Server Images
-# Usage: ./build-images.sh [2016|2019|2022|2025|all]
+# Usage: ./build-images.sh [2022|2025|all]
 #
-# All four versions build from ONE parameterized template
+# Both versions build from ONE parameterized template
 # (windows/windows-server.pkr.hcl) selected via -var win_version=<ver>, sharing
 # a single Autounattend.xml and the same lab-bake provisioning layer (PS7 +
 # ADCS features + software cache). 2025 is the lab's canonical target — it's
-# what the CA VMs run in the Vagrantfile. 2016/2019/2022 are for cross-version
-# testing.
+# what the CA VMs run in the Vagrantfile. 2022 is for cross-version testing.
 #
 # Box freshness contract: each build stamps the .box with a version
 # (default: UTC datestamp YYYY.MM.DD, override via BOX_VERSION=...). The box is
@@ -81,8 +80,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ISO locations — override via env if your ISOs live elsewhere
-ISO_2016="${ISO_2016:-$HOME/straylight/isos/windows-server-2016.iso}"
-ISO_2019="${ISO_2019:-$HOME/straylight/isos/windows-server-2019.iso}"
 ISO_2022="${ISO_2022:-$HOME/straylight/isos/windows-server-2022.iso}"
 ISO_2025="${ISO_2025:-$HOME/straylight/isos/windows-server-2025.iso}"
 
@@ -90,8 +87,6 @@ ISO_2025="${ISO_2025:-$HOME/straylight/isos/windows-server-2025.iso}"
 # Quick way: sha256sum "$ISO_2025" | awk '{print "sha256:"$1}'
 # If left as the placeholder, build_image() computes + uses the live sha256
 # (warns) so first build still works.
-CHECKSUM_2016="${CHECKSUM_2016:-sha256:REPLACE_WITH_ACTUAL_CHECKSUM}"
-CHECKSUM_2019="${CHECKSUM_2019:-sha256:REPLACE_WITH_ACTUAL_CHECKSUM}"
 CHECKSUM_2022="${CHECKSUM_2022:-sha256:REPLACE_WITH_ACTUAL_CHECKSUM}"
 CHECKSUM_2025="${CHECKSUM_2025:-sha256:REPLACE_WITH_ACTUAL_CHECKSUM}"
 
@@ -211,17 +206,15 @@ build_image() {
 }
 
 case "${1:-2025}" in
-    2016|2019|2022|2025)
+    2022|2025)
         build_image "$1"
         ;;
     all)
         build_image 2025
         build_image 2022 || echo "2022 build failed -- continuing"
-        build_image 2019 || echo "2019 build failed -- continuing"
-        build_image 2016 || echo "2016 build failed -- continuing"
         ;;
     *)
-        echo "Usage: $0 [2016|2019|2022|2025|all]"
+        echo "Usage: $0 [2022|2025|all]"
         echo "  Default:    2025 (lab canonical Desktop variant)"
         echo "  Note: Server Core variants stay on upstream gusztavvargadr boxes —"
         echo "        Server 2025 Core sysprep stalls in Packer (see config.rb)."

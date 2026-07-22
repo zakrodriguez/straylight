@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.8.3] — 2026-07-22
+
+### Removed
+- **Curation pass — confirmed-dead code removed after a whole-repo usage review.** A 232-component trace (11 parallel tracers, every UNUSED/DOC_ONLY verdict adversarially verified) found the repo tight: all 69 roles and all 36 playbooks reachable, 5 components confirmed dead. Removed: the orphaned shell-lib trio `vagrant/scripts/migrate-dotfile.sh` + `lib/log.sh` + `lib/colors.sh` (the three only referenced each other; every live script carries its own inline palette); vestigial `vagrant/resources/wsus/` + `resources/fod/` dirs and their `.gitignore` entries (both mechanisms retired — WSUS content moved to `resources/software/wsus-cache/` in #104, FoD dropped at the manage1 Server-2025 rebox); `packer/scripts/windows/base/configure-winrm.ps1` (wired into no build phase — `setup.ps1` owns WinRM); the four PowerShell CBOM parity ports `CbomDiff/CbomIngest/CbomScore/CbomValidate.ps1` (documented but never invoked; the Python tools carry all real usage); the never-live-tested Windows Server 2016/2019 box lanes (`WIN_SERVER_VERSION` now accepts 2022/2025 — Server Core had no 2016/2019 arm, so those labs were mixed-version anyway). Kept deliberately: the packer/ bake pipeline (exercised on this host), the apps1 target-app lane (the CBOM pipeline's richest scan-target surface), and the `start-vms.sh`/`stop-vms.sh` host helpers.
+
+### Fixed
+- Doc corrections surfaced by the curation review: `vagrant/GETTING-STARTED.md` pointed at nonexistent `scripts/logging.sh` (file is `vagrant/logging.sh`); `config.rb`/`docs/configuration.md` still claimed builds fall back to upstream boxes when a `straylight/*` box isn't registered (there is no fallback — `vagrant up` fails); `docs/how-it-works.md` overstated `observe_timer` (sole consumer is the Cloudflare PQC sweep) and showed `CbomIngest.ps1` in the CBOM pipeline diagram (the as-built pipeline invokes `cbom_ingest.py`).
+
 ## [2.8.2] — 2026-07-21
 
 ### Changed
@@ -992,7 +1000,10 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.8.3...HEAD
+[2.8.3]: https://github.com/zakrodriguez/straylight/compare/v2.8.2...v2.8.3
+[2.8.2]: https://github.com/zakrodriguez/straylight/compare/v2.8.1...v2.8.2
+[2.8.1]: https://github.com/zakrodriguez/straylight/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/zakrodriguez/straylight/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/zakrodriguez/straylight/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/zakrodriguez/straylight/compare/v2.5.0...v2.6.0

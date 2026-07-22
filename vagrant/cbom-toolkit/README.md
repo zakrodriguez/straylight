@@ -58,17 +58,6 @@ cbom-toolkit/
 
 `python/tests/` holds unit tests (e.g. `test_pqc_classify.py`).
 
-## `powershell/` — 4 tools
-
-Windows-side equivalents of the core glue tools.
-
-| Tool | Equivalent of |
-|---|---|
-| `CbomValidate.ps1` | `cbom_validate.py` |
-| `CbomDiff.ps1` | `cbom_diff.py` |
-| `CbomIngest.ps1` | `cbom_ingest.py` |
-| `CbomScore.ps1` | `cbom_score.py` |
-
 ## `baselines/`
 
 Per-profile, per-scanner reference CBOMs (`baseline-<scanner>-<profile>.json`)

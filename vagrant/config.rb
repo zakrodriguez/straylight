@@ -102,11 +102,12 @@ VM_DEFAULTS = {
 # Default to upstream gusztavvargadr boxes; override to a locally-baked
 # straylight/* box (built via packer/) to skip per-VM Ansible installs of
 # PS7 + ADCS features + GA (the slow cold-build pain points).
-# Set USE_STRAYLIGHT_BOXES=true to flip to baked boxes when available; the
-# Vagrantfile falls back to the upstream box if the local one isn't registered.
+# Set USE_STRAYLIGHT_BOXES=true to flip to baked boxes. There is no automatic
+# fallback: if the straylight/* box isn't registered locally, `vagrant up`
+# fails — run packer/build-images.sh first or unset the flag.
 #
 # Set WIN_SERVER_VERSION environment variable to switch versions:
-#   export WIN_SERVER_VERSION=2016  (or 2019, 2022)
+#   export WIN_SERVER_VERSION=2022
 
 USE_STRAYLIGHT_BOXES = ENV['USE_STRAYLIGHT_BOXES'] == 'true'
 
@@ -120,8 +121,6 @@ USE_STRAYLIGHT_BOXES = ENV['USE_STRAYLIGHT_BOXES'] == 'true'
 # own published versions and are left to Vagrant's default resolution.
 STRAYLIGHT_BOX_VERSION = ENV['STRAYLIGHT_BOX_VERSION']
 
-BOX_WIN_SERVER_2016 = USE_STRAYLIGHT_BOXES ? "straylight/windows-server-2016" : "gusztavvargadr/windows-server-2016-standard"
-BOX_WIN_SERVER_2019 = USE_STRAYLIGHT_BOXES ? "straylight/windows-server-2019" : "gusztavvargadr/windows-server-2019-standard"
 BOX_WIN_SERVER_2022 = USE_STRAYLIGHT_BOXES ? "straylight/windows-server-2022" : "gusztavvargadr/windows-server-2022-standard"
 BOX_WIN_SERVER_2025 = USE_STRAYLIGHT_BOXES ? "straylight/windows-server-2025" : "gusztavvargadr/windows-server-2025-standard"
 # Server Core variants stay on upstream gusztavvargadr (sysprep'd).
@@ -139,8 +138,6 @@ BOX_WIN_11          = "gusztavvargadr/windows-11"
 WIN_SERVER_VERSION = ENV['WIN_SERVER_VERSION'] || '2025'
 
 BOX_WIN_SERVER = case WIN_SERVER_VERSION
-  when '2016' then BOX_WIN_SERVER_2016
-  when '2019' then BOX_WIN_SERVER_2019
   when '2022' then BOX_WIN_SERVER_2022
   when '2025' then BOX_WIN_SERVER_2025
   else BOX_WIN_SERVER_2025

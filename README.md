@@ -178,7 +178,7 @@ ADMIN_PASSWORD = "TenTowns00!"      # Change before deployment
 
 CA names, validity periods, and URLs live in `PKI_CONFIG` in the same file.
 
-**Windows Server version** (2016/2019/2022/2025, default 2025):
+**Windows Server version** (2022/2025, default 2025):
 
 ```bash
 export WIN_SERVER_VERSION=2022
