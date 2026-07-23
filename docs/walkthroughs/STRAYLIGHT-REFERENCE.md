@@ -278,6 +278,38 @@ LAB_PROFILE=pqc-full bash up.sh   # ~51 GB RAM + Windows
 LAB_PROFILE=pqc-linux bash up.sh  # ~19 GB RAM
 ```
 
+## Azure conventions (AZ-700 track)
+
+The `az700-*` labs deploy real Azure resources per session via
+`azure/scripts/az700.sh` (see [azure/README.md](../../azure/README.md)). The
+conventions below are the single source of truth; `azure/modules/naming.bicep`
+encodes the tags and address plan.
+
+- **Region:** `centralus` by default; override with `AZ700_LOCATION`
+  (env or `vagrant/.env`).
+- **Resource groups:** one per lab topology, `rg-straylight-az700-<slug>`
+  (slug = the `azure/labs/<slug>/` directory, e.g. `hub-spoke`). Teardown is
+  always `az700.sh destroy <slug>` (`az group delete` underneath).
+- **Tags:** every RG carries `project=straylight, track=az700, lab=<slug>,
+  created=<iso8601>`. Audit anything running:
+  `az group list --tag track=az700 -o table`.
+- **Naming:** CAF-style abbreviations — `vnet-hub`, `vnet-spoke1`,
+  `vpngw-hub`, `lgw-straylight`, `pip-vpngw`, `nsg-hub`, `vm-spoke1`.
+- **Address plan:** the Azure side draws exclusively from `10.100.0.0/14` —
+  hub `10.100.0.0/22` (GatewaySubnet `10.100.0.0/27`, snet-dns
+  `10.100.1.0/24`, snet-shared `10.100.2.0/24`), spoke1 `10.101.0.0/24`,
+  spoke2 `10.102.0.0/24`, P2S pool `172.16.201.0/24`. The on-prem range
+  declared to Azure is `192.168.56.0/21` (covers every host-only /24 the
+  lab's dynamic octet allocator can pick). **Never** use `10.0.2.0/24`
+  (the VirtualBox NAT subnet every VM shares) or `172.17.0.0/16` (Docker
+  default bridge on the Linux VMs) on the Azure side.
+- **Auth:** interactive `az login --use-device-code` on the host; no service
+  principals, no credentials in the repo. Pin the subscription with
+  `AZURE_SUBSCRIPTION_ID` in `vagrant/.env` (`.env.example` has the shape).
+- **Golden hygiene:** any committed walkverify golden must normalize
+  subscription GUIDs and public IPs (`<GUID>`, `<PUBIP>`) and pins the az CLI
+  version in its `parameters:` map.
+
 ## Where to look in Straylight for ground truth
 
 If a lab seems off, check these Straylight files in order:

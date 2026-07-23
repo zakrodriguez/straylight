@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.9.0] — 2026-07-23
+
+### Added
+- **AZ-700 track scaffolding** — groundwork for an Azure Network Engineer
+  walkthrough track (7 modules / 29 labs planned; full exam blueprint, the lab
+  as the on-prem site of a real site-to-site VPN for the hybrid module).
+  New top-level `azure/`: shared Bicep modules (tags + `10.100.0.0/14` address
+  plan in `naming.bicep`, hub, spoke, burstable test VM), the first deployable
+  topology (`labs/hub-spoke` — peerings deliberately absent; creating them is
+  the lab), and the `scripts/az700.sh` driver
+  (init / deploy / watch / destroy / list / sweep / nuke / update-onprem-ip /
+  cost) with frugality guardrails: per-lab tagged resource groups, stale-RG
+  preflight, $25/month budget, name-prefix AND `track=az700` tag double
+  predicate on every destructive command, optional nightly sweep timer, SKU
+  floors (`@allowed` Bsv2 sizes + B1s/B2s, B2ts_v2 default — gen-1 B-series is capacity-restricted on some subscriptions; expensive SKUs structurally absent — ExpressRoute,
+  DDoS, and Firewall Premium will be paper labs). No credentials in the repo:
+  interactive `az login` only, subscription pinned via `AZURE_SUBSCRIPTION_ID`
+  in `vagrant/.env` (new `.env.example`). `gen-index.py` gains an empty-safe
+  second `AZ700_MODULES` track (sibling `az700-labs/` + quizzes/exams/specs
+  dirs; INDEX byte-identical until labs exist); conventions (region, naming,
+  addressing, golden privacy normalizers) documented in
+  `STRAYLIGHT-REFERENCE.md`; CI gains a subscription-free Bicep job
+  (checksum-pinned v0.45.15 binary: build + lint + format check) and
+  shellchecks `azure/scripts/`. Lab content lands module-by-module on
+  `content/walkthroughs-unverified` per the catalog policy.
+
 ## [2.8.3] — 2026-07-22
 
 ### Removed
@@ -20,7 +46,6 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 - **Claims-correctness audit fix pass — 151 verified findings corrected across 35 publishable docs.** Six parallel auditors checked ~955 statically-checkable claims against the code; six fixers corrected every confirmed finding, each re-verified against the cited source. Systemic corrections: every two-tier walkthrough drove `client1`, a VM the profile doesn't ship (→ `manage1`); EJBCA admin URLs gained the required `:8443`; loopback-only `:5601`/`:9200` URLs now route via observe_tls (`:443` Dashboards, `:9244` ingest); `docs/configuration.md` no longer documents nonexistent knobs (`template_name`, `key_archival_enabled`, `forest_mode`, `ou_path`, `snapshot_save`, `WSUS_CONTENT_PATH`, nmap/Npcap, taskbar pins, RemoteSigned) and cites config.rb symbols instead of line numbers; retry budgets updated to current code (machine_cert 90×20s, subordinate_ca 75×20s, domain_join 45×20s + 6×60s); Phase-2 overlap default and CA-only 60s stagger documented; RAM/time figures recomputed (`full` ~77 GB, `pqc-full` ~51 GB / ~95–110 min cold, two-tier ~45–50 min cold, `ad-cs-minimal` 3 VMs ~3 GB); svc-account password corrected to `SvcPKI00!`; walkverify docs stop claiming lint is CI-wired and now match capture=/normalizer/golden-provenance implementation; buildmon README documents the up.sh auto-attach default (`LAB_BUILDMON=off`), pidfile PID tracking, `reset-attempts`, and real `hung`/adoption/tie-break semantics; packer README rescopes baked-box benefits to `BOX_WIN_SERVER` consumers and drops a nonexistent box fallback; openssl-lab lessons re-verified live on OpenSSL 3.0.13 (lesson 08's OCSP revocation flow and lesson 11's TLS 1.3 listing rebuilt end-to-end; 3.x output drift fixed throughout); cold-build readiness-edge map recounted (30 edges: 28 clean-signal, 2 bounded-retry); STRAYLIGHT-REFERENCE realigned to v2.8.1 with a catalog-status note for labs parked on `content/walkthroughs-unverified`. Same-day seed-tree secrets scans (gitleaks + trufflehog via docker) ran clean: 0 findings. (#247)
-
 ## [2.8.1] — 2026-07-18
 
 ### Changed
@@ -1000,7 +1025,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.8.3...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/zakrodriguez/straylight/compare/v2.8.3...v2.9.0
 [2.8.3]: https://github.com/zakrodriguez/straylight/compare/v2.8.2...v2.8.3
 [2.8.2]: https://github.com/zakrodriguez/straylight/compare/v2.8.1...v2.8.2
 [2.8.1]: https://github.com/zakrodriguez/straylight/compare/v2.8.0...v2.8.1

@@ -127,5 +127,15 @@ class TestRunner(unittest.TestCase):
         s = _step(command="$x = 1\ncertutil -config $CA -ping")
         assert r.unresolved(s, {}, "", set()) == ["CA"]  # $x assigned; $CA still flagged
 
+    def test_unresolved_credits_bash_assignment_on_lab_host_only(self):
+        r = runner.StepRunner("p", "/root", resolver=_ok_resolver)
+        cmd = "RG=rg-straylight-az700-hub-spoke\naz group show --name $RG"
+        assert r.unresolved(_step(host="lab", command=cmd), {}, "", set()) == []
+        # command-substitution assignments count too
+        sub = "IP=$(az network public-ip show --query ipAddress -o tsv)\necho $IP"
+        assert r.unresolved(_step(host="lab", command=sub), {}, "", set()) == []
+        # on a PowerShell host the same text is NOT an assignment — still flagged
+        assert r.unresolved(_step(host="manage1", command=cmd), {}, "", set()) == ["RG"]
+
 if __name__ == "__main__":
     unittest.main()

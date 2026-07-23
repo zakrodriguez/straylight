@@ -19,6 +19,10 @@ LOCAL_HOST = "lab"
 _VAR_RE = re.compile(r"(?<![\w:])\$(?!env:)([A-Za-z_]\w*)")
 # An ASSIGNMENT defines a var: `$Name =` (but not `==` comparison, not $env:).
 _ASSIGN_RE = re.compile(r"(?<![\w:])\$(?!env:)([A-Za-z_]\w*)\s*=(?!=)")
+# Bash assignment at start of line: `Name=value` (host=lab steps run under
+# `bash -c` and are self-contained — no parameter/preamble injection — so a
+# shell assignment inside the step is the only way such steps define vars).
+_SH_ASSIGN_RE = re.compile(r"(?m)^\s*([A-Za-z_]\w*)=(?!=)")
 
 # PowerShell automatic / constant variables — always valid, never a lab param.
 _PS_AUTOMATIC = frozenset({
@@ -82,6 +86,10 @@ class StepRunner:
         # positives on ordinary multi-line steps).
         for m in _ASSIGN_RE.finditer(step["command"]):
             defined.add(m.group(1))
+        # host=lab steps run under bash: credit shell-style assignments too.
+        if step["host"] == LOCAL_HOST:
+            for m in _SH_ASSIGN_RE.finditer(step["command"]):
+                defined.add(m.group(1))
         missing, seen = [], set()
         for m in _VAR_RE.finditer(step["command"]):
             name = m.group(1)

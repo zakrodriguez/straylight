@@ -1,0 +1,9 @@
+[Unit]
+Description=Nightly Straylight AZ-700 stale resource-group sweep
+
+[Timer]
+OnCalendar=*-*-* 23:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

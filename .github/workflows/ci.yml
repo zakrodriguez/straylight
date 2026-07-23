@@ -70,7 +70,9 @@ jobs:
             vagrant/*.sh \
             vagrant/scripts/*.sh \
             vagrant/scripts/lib/*.sh \
-            scripts/*.sh
+            scripts/*.sh \
+            azure/scripts/*.sh \
+            azure/scripts/lib/*.sh
 
       - name: ruby -c (Vagrantfile + lib/)
         uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
@@ -82,6 +84,36 @@ jobs:
           set -euo pipefail
           ruby -c vagrant/Vagrantfile
           for f in vagrant/lib/*.rb; do ruby -c "$f"; done
+
+  bicep:
+    name: Bicep (build + lint + format)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - name: Install Bicep CLI (pinned, checksum-verified)
+        # Standalone binary — no az CLI, no cloud auth. This job never talks
+        # to Azure: compile + lint + format only.
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "${RUNNER_TEMP}/bicep" \
+            https://github.com/Azure/bicep/releases/download/v0.45.15/bicep-linux-x64
+          echo "ff5b194b042c220df4a50d6768ed1d6c39a32894bfdc4ff83d62b115d966a7ce  ${RUNNER_TEMP}/bicep" | sha256sum -c -
+          chmod +x "${RUNNER_TEMP}/bicep"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+          "${RUNNER_TEMP}/bicep" --version
+      - name: bicep build (runs the linter per azure/bicepconfig.json)
+        run: |
+          set -euo pipefail
+          find azure -name '*.bicep' -print0 | while IFS= read -r -d '' f; do
+            echo "== $f"
+            bicep build "$f" --stdout > /dev/null
+          done
+      - name: bicep format check
+        run: |
+          set -euo pipefail
+          find azure -name '*.bicep' -exec bicep format {} \;
+          git diff --exit-code -- azure
 
   ruby-tests:
     name: Ruby tests (lab_profile resolver)

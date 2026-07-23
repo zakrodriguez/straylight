@@ -1,0 +1,8 @@
+[Unit]
+Description=Straylight AZ-700 stale resource-group sweep
+
+[Service]
+Type=oneshot
+# Adjust the path if the repo is not checked out at ~/straylight.
+ExecStart=%h/straylight/azure/scripts/az700.sh sweep --max-age 8 --delete
+Environment=AZ700_YES=1

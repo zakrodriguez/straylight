@@ -27,6 +27,23 @@ Each lab links its quiz; the module exam is [exams/2026-05-12-adcs-functest-exam
 
 See [STRAYLIGHT-REFERENCE.md](STRAYLIGHT-REFERENCE.md) for the VM/profile/IP ground truth the labs build on.
 
+## AZ-700 track — Azure Network Engineer
+
+A second track (`az700-labs/` + quizzes/exams/specs, indexed in its own INDEX
+section) covering the full AZ-700 blueprint across 7 modules / 29 labs: core
+VNets/routing, DNS, hybrid connectivity (the Straylight lab plays the on-prem
+site over a real site-to-site VPN), load balancing, Private Link, network
+security, and monitoring. Labs deploy real Azure resources per session —
+`azure/scripts/az700.sh deploy <slug>` before, `destroy` after, single-digit
+dollars per session; expensive topics (ExpressRoute, DDoS, Firewall Premium)
+are explicit paper labs. Prerequisites, cost model, and safety rules:
+[azure/README.md](../../azure/README.md); naming/addressing conventions:
+[STRAYLIGHT-REFERENCE.md](STRAYLIGHT-REFERENCE.md#azure-conventions-az-700-track).
+
+Like the main catalog, AZ-700 modules land here module-by-module as they pass
+hands-on verification (az-CLI steps are walkverify-annotated with `host=lab`);
+until then they live on `content/walkthroughs-unverified`.
+
 ## Host placement for CA labs
 
 Steps that **administer the CA** — any `certutil -config <ca>` operation
