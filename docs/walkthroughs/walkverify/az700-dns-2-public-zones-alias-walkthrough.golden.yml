@@ -1,0 +1,131 @@
+lab: az700-dns-2-public-zones-alias-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded   (anything else: run azure/scripts/az700.sh deploy hub-spoke)"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: create-zone
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network dns zone create --resource-group\
+    \ $RG \\\n  --name straylight.example \\\n  --query \"nameServers[0]\" -o tsv\n\
+    # Expected: something like ns1-NN.azure-dns.com. (the partition number varies)"
+  rc: 0
+  expect:
+  - azure-dns\.com
+  strict: false
+  captured: 'ns1-08.azure-dns.com.
+
+    '
+- step: record-a
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network dns record-set a add-record\
+    \ --resource-group $RG \\\n  --zone-name straylight.example \\\n  --record-set-name\
+    \ www --ipv4-address 203.0.113.10 \\\n  --query \"ARecords[0].ipv4Address\" -o\
+    \ tsv\n# Expected: 203.0.113.10"
+  rc: 0
+  expect:
+  - <PUBIP>|203\.0\.113\.10
+  strict: false
+  captured: '<PUBIP>
+
+    '
+- step: record-cname
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network dns record-set cname set-record\
+    \ --resource-group $RG \\\n  --zone-name straylight.example \\\n  --record-set-name\
+    \ docs --cname www.straylight.example \\\n  --query \"CNAMERecord.cname\" -o tsv\n\
+    # Expected: www.straylight.example"
+  rc: 0
+  expect:
+  - www\.straylight\.example
+  strict: false
+  captured: 'www.straylight.example
+
+    '
+- step: dig-a
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\nNS=$(az network dns zone show --resource-group\
+    \ $RG \\\n  --name straylight.example --query \"nameServers[0]\" -o tsv)\ndig\
+    \ +short @$NS www.straylight.example\n# Expected: 203.0.113.10"
+  rc: 0
+  expect:
+  - <PUBIP>|203\.0\.113\.10
+  strict: false
+  captured: '<PUBIP>
+
+    '
+- step: create-pip
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network public-ip create --resource-group\
+    \ $RG --name pip-dnslab \\\n  --sku Standard --query publicIp.provisioningState\
+    \ -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    WARNING: [Coming breaking change] In the coming release, the default behavior
+    will be changed as follows when sku is Standard and zone is not provided: For
+    zonal regions, you will get a zone-redundant IP indicated by zones:["1","2","3"];
+    For non-zonal regions, you will get a non zone-redundant IP indicated by zones:null.
+
+    '
+- step: record-alias
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network dns record-set a create --resource-group\
+    \ $RG \\\n  --zone-name straylight.example --name app \\\n  --target-resource\
+    \ \"$(az network public-ip show --resource-group $RG \\\n    --name pip-dnslab\
+    \ --query id -o tsv)\" \\\n  --query \"targetResource.id\" -o tsv\n# Expected:\
+    \ a resource ID ending in /publicIPAddresses/pip-dnslab"
+  rc: 0
+  expect:
+  - pip-dnslab
+  strict: false
+  captured: '/subscriptions/<GUID>/resourceGroups/rg-straylight-az700-hub-spoke/providers/Microsoft.Network/publicIPAddresses/pip-dnslab
+
+    '
+- step: dig-alias
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\nNS=$(az network dns zone show --resource-group\
+    \ $RG \\\n  --name straylight.example --query \"nameServers[0]\" -o tsv)\ndig\
+    \ +short @$NS app.straylight.example\n# Expected: the public IP Azure allocated\
+    \ to pip-dnslab"
+  rc: 0
+  expect:
+  - <PUBIP>|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}
+  strict: false
+  captured: '<PUBIP>
+
+    '
+- step: teardown
+  host: lab
+  command: 'azure/scripts/az700.sh destroy hub-spoke
+
+    # Expected: "delete submitted for rg-straylight-az700-hub-spoke (async)"'
+  rc: 0
+  expect:
+  - delete submitted
+  strict: false
+  captured: 'delete submitted for rg-straylight-az700-hub-spoke (async); confirm later
+    with: az700.sh list
+
+    '

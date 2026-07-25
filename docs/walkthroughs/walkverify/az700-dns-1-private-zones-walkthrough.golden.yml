@@ -1,0 +1,128 @@
+lab: az700-dns-1-private-zones-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded   (anything else: run azure/scripts/az700.sh deploy hub-spoke)"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: create-zone
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network private-dns zone create --resource-group\
+    \ $RG \\\n  --name internal.straylight.example \\\n  --query provisioningState\
+    \ -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: link-registration
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network private-dns link vnet create\
+    \ --resource-group $RG \\\n  --zone-name internal.straylight.example --name link-spoke1-reg\
+    \ \\\n  --virtual-network vnet-spoke1 --registration-enabled true \\\n  --query\
+    \ registrationEnabled -o tsv\n# Expected: true"
+  rc: 0
+  expect:
+  - 'true'
+  strict: false
+  captured: 'true
+
+    '
+- step: link-resolution
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network private-dns link vnet create\
+    \ --resource-group $RG \\\n  --zone-name internal.straylight.example --name link-spoke2-res\
+    \ \\\n  --virtual-network vnet-spoke2 --registration-enabled false \\\n  --query\
+    \ registrationEnabled -o tsv\n# Expected: false"
+  rc: 0
+  expect:
+  - 'false'
+  strict: false
+  captured: 'false
+
+    '
+- step: autoreg-record
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\nfor i in $(seq 1 24); do\n  n=$(az network\
+    \ private-dns record-set a list --resource-group $RG \\\n    --zone-name internal.straylight.example\
+    \ \\\n    --query \"length([?name=='vm-spoke1'])\" -o tsv)\n  [ \"$n\" = \"1\"\
+    \ ] && echo REGISTERED && break\n  sleep 10\ndone\n# Expected: REGISTERED   (usually\
+    \ well under a minute; 4-minute ceiling)"
+  rc: 0
+  expect:
+  - ^REGISTERED$
+  strict: false
+  captured: 'REGISTERED
+
+    '
+- step: static-record
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network private-dns record-set a\
+    \ add-record --resource-group $RG \\\n  --zone-name internal.straylight.example\
+    \ \\\n  --record-set-name myapp --ipv4-address 10.101.0.250 \\\n  --query \"aRecords[0].ipv4Address\"\
+    \ -o tsv\n# Expected: 10.101.0.250"
+  rc: 0
+  expect:
+  - 10\.101\.0\.250
+  strict: false
+  captured: '10.101.0.250
+
+    '
+- step: resolve-static
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz vm run-command invoke --resource-group\
+    \ $RG --name vm-spoke1 \\\n  --command-id RunShellScript \\\n  --scripts \"nslookup\
+    \ myapp.internal.straylight.example\" \\\n  --query \"value[0].message\" -o tsv\n\
+    # Expected: output containing 10.101.0.250 (allow ~30-60s; run-command is slow)"
+  rc: 0
+  expect:
+  - 10\.101\.0\.250
+  strict: false
+  captured: "Enable succeeded: \n[stdout]\nServer:\t\t127.0.0.53\nAddress:\t127.0.0.53#53\n\
+    \nNon-authoritative answer:\nName:\tmyapp.internal.straylight.example\nAddress:\
+    \ 10.101.0.250\n\n\n[stderr]\n\n"
+- step: resolve-autoreg
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz vm run-command invoke --resource-group\
+    \ $RG --name vm-spoke1 \\\n  --command-id RunShellScript \\\n  --scripts \"nslookup\
+    \ vm-spoke1.internal.straylight.example\" \\\n  --query \"value[0].message\" -o\
+    \ tsv\n# Expected: output containing the VM's 10.101.0.x address"
+  rc: 0
+  expect:
+  - 10\.101\.0\.
+  strict: false
+  captured: "Enable succeeded: \n[stdout]\nServer:\t\t127.0.0.53\nAddress:\t127.0.0.53#53\n\
+    \nNon-authoritative answer:\nName:\tvm-spoke1.internal.straylight.example\nAddress:\
+    \ 10.101.0.4\n\n\n[stderr]\n\n"
+- step: teardown
+  host: lab
+  command: 'azure/scripts/az700.sh destroy hub-spoke
+
+    # Expected: "delete submitted for rg-straylight-az700-hub-spoke (async)"'
+  rc: 0
+  expect:
+  - delete submitted
+  strict: false
+  captured: 'delete submitted for rg-straylight-az700-hub-spoke (async); confirm later
+    with: az700.sh list
+
+    '

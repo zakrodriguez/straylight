@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.11.0] — 2026-07-25
+
+### Added
+- **AZ-700 module 2: name resolution (dns), labs 1–2** — private DNS zones
+  (VNet links, auto-registration back-fill, wire-server resolution probes)
+  and public DNS zones (record sets, TTL, `dig`-against-NS proofs, alias
+  records). 2 labs (`docs/walkthroughs/az700-labs/`), 2 quizzes, a
+  25-question module exam (covers DNS Private Resolver concepts; that
+  hands-on lab lands with the hybrid module), the module design spec, and
+  2 approved walkverify goldens captured live at authoring time (both labs
+  reuse the `hub-spoke` topology — no new Bicep; zone names use the
+  RFC 2606 reserved TLD `straylight.example`). One casing quirk found and
+  documented live: public DNS commands emit REST-style keys
+  (`ARecords`/`CNAMERecord`/`TTL`) while private DNS emits `aRecords`.
+
 ## [2.10.0] — 2026-07-25
 
 ### Added
@@ -1050,7 +1065,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.10.0...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.11.0...HEAD
+[2.11.0]: https://github.com/zakrodriguez/straylight/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/zakrodriguez/straylight/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/zakrodriguez/straylight/compare/v2.8.3...v2.9.0
 [2.8.3]: https://github.com/zakrodriguez/straylight/compare/v2.8.2...v2.8.3
