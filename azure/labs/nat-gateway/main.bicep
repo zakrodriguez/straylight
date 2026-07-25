@@ -16,13 +16,13 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   tags: tags
   properties: {
     addressSpace: {
-      addressPrefixes: ['10.104.0.0/24']
+      addressPrefixes: ['10.103.1.0/24']
     }
     subnets: [
       {
         name: 'snet-workload'
         properties: {
-          addressPrefix: '10.104.0.0/24'
+          addressPrefix: '10.103.1.0/24'
           defaultOutboundAccess: false
         }
       }

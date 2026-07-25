@@ -1,0 +1,119 @@
+lab: az700-vnet-4-nat-gateway-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-nat-gateway\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded   (anything else: run azure/scripts/az700.sh deploy nat-gateway)"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: outbound-posture
+  host: lab
+  command: "RG=rg-straylight-az700-nat-gateway\naz network vnet subnet show --resource-group\
+    \ $RG --vnet-name vnet-nat \\\n  --name snet-workload --query defaultOutboundAccess\
+    \ -o tsv\n# Expected: false"
+  rc: 0
+  expect:
+  - 'false'
+  strict: false
+  captured: 'false
+
+    '
+- step: no-outbound
+  host: lab
+  command: "RG=rg-straylight-az700-nat-gateway\naz vm run-command invoke --resource-group\
+    \ $RG --name vm-nat1 \\\n  --command-id RunShellScript \\\n  --scripts \"curl\
+    \ -m 8 -sS https://api.ipify.org || echo NO-OUTBOUND\" \\\n  --query \"value[0].message\"\
+    \ -o tsv\n# Expected: output containing NO-OUTBOUND (allow ~30-60s; run-command\
+    \ is slow)"
+  rc: 0
+  expect:
+  - NO-OUTBOUND
+  strict: false
+  captured: "Enable succeeded: \n[stdout]\nNO-OUTBOUND\n\n[stderr]\ncurl: (28) Connection\
+    \ timed out after 8003 milliseconds\n\n"
+- step: create-pip
+  host: lab
+  command: "RG=rg-straylight-az700-nat-gateway\naz network public-ip create --resource-group\
+    \ $RG --name pip-natgw \\\n  --sku Standard --query publicIp.provisioningState\
+    \ -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    WARNING: [Coming breaking change] In the coming release, the default behavior
+    will be changed as follows when sku is Standard and zone is not provided: For
+    zonal regions, you will get a zone-redundant IP indicated by zones:["1","2","3"];
+    For non-zonal regions, you will get a non zone-redundant IP indicated by zones:null.
+
+    '
+- step: create-natgw
+  host: lab
+  command: "RG=rg-straylight-az700-nat-gateway\naz network nat gateway create --resource-group\
+    \ $RG --name natgw-lab \\\n  --public-ip-addresses pip-natgw --idle-timeout 4\
+    \ \\\n  --query provisioningState -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: attach-subnet
+  host: lab
+  command: "RG=rg-straylight-az700-nat-gateway\naz network vnet subnet update --resource-group\
+    \ $RG --vnet-name vnet-nat \\\n  --name snet-workload --nat-gateway natgw-lab\
+    \ \\\n  --query natGateway.id -o tsv\n# Expected: a resource ID ending in /natGateways/natgw-lab"
+  rc: 0
+  expect:
+  - natgw-lab
+  strict: false
+  captured: '/subscriptions/<GUID>/resourceGroups/rg-straylight-az700-nat-gateway/providers/Microsoft.Network/natGateways/natgw-lab
+
+    '
+- step: egress-ip
+  host: lab
+  command: "RG=rg-straylight-az700-nat-gateway\nNATIP=$(az network public-ip show\
+    \ --resource-group $RG --name pip-natgw \\\n  --query ipAddress -o tsv)\naz vm\
+    \ run-command invoke --resource-group $RG --name vm-nat1 \\\n  --command-id RunShellScript\
+    \ \\\n  --scripts \"curl -m 20 -sS https://api.ipify.org\" \\\n  --query \"value[0].message\"\
+    \ -o tsv | grep -F \"$NATIP\"\n# Expected: the run-command output line containing\
+    \ the NAT gateway's public\n# address \u2014 grep exits 0 only if the VM's egress\
+    \ IP equals pip-natgw's IP"
+  rc: 0
+  expect:
+  - <PUBIP>|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}
+  strict: false
+  captured: '<PUBIP>
+
+    '
+- step: teardown
+  host: lab
+  command: 'azure/scripts/az700.sh destroy nat-gateway
+
+    # Expected: "delete submitted for rg-straylight-az700-nat-gateway (async)"'
+  rc: 0
+  expect:
+  - delete submitted
+  strict: false
+  captured: 'delete submitted for rg-straylight-az700-nat-gateway (async); confirm
+    later with: az700.sh list
+
+    '

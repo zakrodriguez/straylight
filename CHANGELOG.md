@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.10.0] — 2026-07-25
+
+### Added
+- **AZ-700 module 1: core virtual networking (vnet)** — the track's first
+  content shipment, graduated from the unverified branch after a full live
+  hand-verification (2026-07-24/25, all 4 labs run end-to-end against Azure)
+  plus a same-night fix pass and golden capture. 4 labs
+  (`docs/walkthroughs/az700-labs/`): address space/subnets/reserved names,
+  hub-spoke peering + non-transitivity, system routes/UDR/NVA, NAT gateway
+  explicit outbound. 4 quizzes, a 43-question module exam, the module design
+  spec, and 4 approved walkverify goldens (real captured output,
+  `<GUID>`/`<PUBIP>` normalized, az CLI 2.88.0 pinned). `INDEX.md` gains the
+  AZ-700 track section (gen-index second track now non-empty). Azure
+  `verify`/`check` replays stay manual-only — each costs real money.
+
+### Fixed
+- **AZ-700 `nat-gateway` topology renumbered into the track's address plan** —
+  `labs/nat-gateway/main.bicep` deployed `vnet-nat` as `10.104.0.0/24`, which
+  sits *outside* the locked `10.100.0.0/14` Azure-side pool
+  (`10.100.0.0`–`10.103.255.255`); shipped unnoticed in #246 because the P0
+  smoke cycle only exercised `hub-spoke`. Now `10.103.1.0/24` (clear of the
+  Lab 1 scratch range `10.103.0.0/24`). Caught during the P1 vnet module
+  live hand-verification, 2026-07-25; deploy → verify → destroy re-run on
+  the new prefix.
+
 ## [2.9.0] — 2026-07-23
 
 ### Added
@@ -1025,7 +1050,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.9.0...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.10.0...HEAD
+[2.10.0]: https://github.com/zakrodriguez/straylight/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/zakrodriguez/straylight/compare/v2.8.3...v2.9.0
 [2.8.3]: https://github.com/zakrodriguez/straylight/compare/v2.8.2...v2.8.3
 [2.8.2]: https://github.com/zakrodriguez/straylight/compare/v2.8.1...v2.8.2

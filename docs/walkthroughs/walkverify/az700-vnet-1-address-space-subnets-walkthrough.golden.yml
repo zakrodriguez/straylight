@@ -1,0 +1,137 @@
+lab: az700-vnet-1-address-space-subnets-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded   (anything else: run azure/scripts/az700.sh deploy hub-spoke)"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: list-vnets
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network vnet list --resource-group\
+    \ $RG \\\n  --query \"[].{name:name, space:addressSpace.addressPrefixes[0]}\"\
+    \ -o tsv\n# Expected: vnet-hub 10.100.0.0/22, vnet-spoke1 10.101.0.0/24, vnet-spoke2\
+    \ 10.102.0.0/24"
+  rc: 0
+  expect:
+  - vnet-hub
+  - vnet-spoke1
+  - vnet-spoke2
+  strict: false
+  captured: "vnet-hub\t10.100.0.0/22\nvnet-spoke1\t10.101.0.0/24\nvnet-spoke2\t10.102.0.0/24\n"
+- step: hub-subnets
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network vnet show --resource-group\
+    \ $RG --name vnet-hub \\\n  --query \"subnets[].{name:name, prefix:addressPrefix}\"\
+    \ -o tsv\n# Expected: GatewaySubnet 10.100.0.0/27, snet-dns 10.100.1.0/24, snet-shared\
+    \ 10.100.2.0/24"
+  rc: 0
+  expect:
+  - GatewaySubnet
+  - snet-dns
+  - snet-shared
+  strict: false
+  captured: "GatewaySubnet\t10.100.0.0/27\nsnet-dns\t10.100.1.0/24\nsnet-shared\t\
+    10.100.2.0/24\n"
+- step: create-vnet
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network vnet create --resource-group\
+    \ $RG --name vnet-lab1 \\\n  --address-prefixes 10.103.0.0/24 \\\n  --subnet-name\
+    \ snet-a --subnet-prefixes 10.103.0.0/26 \\\n  --query newVNet.provisioningState\
+    \ -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: create-subnet-b
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network vnet subnet create --resource-group\
+    \ $RG --vnet-name vnet-lab1 \\\n  --name snet-b --address-prefixes 10.103.0.64/26\
+    \ \\\n  --query provisioningState -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: reserved-ip
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network vnet check-ip-address --resource-group\
+    \ $RG --name vnet-lab1 \\\n  --ip-address 10.103.0.1 --query available -o tsv\n\
+    # Expected: false   (.1 is the subnet's default gateway \u2014 reserved)"
+  rc: 0
+  expect:
+  - 'false'
+  strict: false
+  captured: 'false
+
+    '
+- step: usable-ip
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network vnet check-ip-address --resource-group\
+    \ $RG --name vnet-lab1 \\\n  --ip-address 10.103.0.10 --query available -o tsv\n\
+    # Expected: true    (.10 is the sixth address \u2014 first assignable is .4)"
+  rc: 0
+  expect:
+  - 'true'
+  strict: false
+  captured: 'true
+
+    '
+- step: create-gwsubnet
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network vnet subnet create --resource-group\
+    \ $RG --vnet-name vnet-lab1 \\\n  --name GatewaySubnet --address-prefixes 10.103.0.128/27\
+    \ \\\n  --query provisioningState -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: delete-scratch
+  host: lab
+  command: "RG=rg-straylight-az700-hub-spoke\naz network vnet delete --resource-group\
+    \ $RG --name vnet-lab1\naz network vnet list --resource-group $RG \\\n  --query\
+    \ \"length([?name=='vnet-lab1'])\" -o tsv\n# Expected: 0"
+  rc: 0
+  expect:
+  - ^0$
+  strict: false
+  captured: '0
+
+    '
+- step: teardown
+  host: lab
+  command: 'azure/scripts/az700.sh destroy hub-spoke
+
+    # Expected: "delete submitted for rg-straylight-az700-hub-spoke (async)"'
+  rc: 0
+  expect:
+  - delete submitted
+  strict: false
+  captured: 'delete submitted for rg-straylight-az700-hub-spoke (async); confirm later
+    with: az700.sh list
+
+    '
