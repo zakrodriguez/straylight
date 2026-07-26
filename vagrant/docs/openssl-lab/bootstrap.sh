@@ -386,4 +386,4 @@ fi
 # ── Stamp completion ────────────────────────────────────────────────────
 date -u +"%Y-%m-%dT%H:%M:%SZ" > "$CERTS/.bootstrap-time"
 echo
-echo "All done. Re-bootstrap if certs/.bootstrap-time is older than 60 days."
+echo "All done. Re-bootstrap if certs/.bootstrap-time is older than 30 days."

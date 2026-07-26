@@ -16,6 +16,7 @@ A reproducible PKI lab for **PKI learning** and **post-quantum migration**: Wind
 - **Ansible** — 69 reusable roles cover every VM type
 - **PowerShell** — Windows / AD CS automation (two-tier CA provisioning)
 - **OpenSSL 3.5 + EJBCA 9.3 + step-ca 0.30** — PQC-ready crypto stack on Linux
+- **Bicep + az CLI** — AZ-700 Azure networking track (`azure/`)
 - **Packer** — optional custom base images
 
 ## Requirements
@@ -84,7 +85,10 @@ vagrant provision ca1          # re-run provisioning on one VM
 
 ## Lab Walkthroughs
 
-Once a profile is up, [`docs/walkthroughs/`](docs/walkthroughs/) holds hands-on labs paired 1:1 with [fixmycert.com](https://fixmycert.com) and [gradenegger.eu](https://www.gradenegger.eu) guides, each with a self-check quiz and module exam. The repo currently ships one representative module — the **AD CS functional test** (4 numbered labs: service health → connectivity → issuance → revocation). The full catalog (80+ labs across ~22 modules) is being hands-on verified in the development archive and returns module-by-module. See [`docs/walkthroughs/README.md`](docs/walkthroughs/README.md).
+Once a profile is up, [`docs/walkthroughs/`](docs/walkthroughs/) holds two hands-on tracks. See [`docs/walkthroughs/INDEX.md`](docs/walkthroughs/INDEX.md) for the deep-linked navigator and [`docs/walkthroughs/README.md`](docs/walkthroughs/README.md) for the narrative catalog.
+
+- **PKI catalog** — labs paired 1:1 with [fixmycert.com](https://fixmycert.com) and [gradenegger.eu](https://www.gradenegger.eu) guides, each with a self-check quiz and module exam. The repo currently ships one representative module — the **AD CS functional test** (4 numbered labs: service health → connectivity → issuance → revocation). The full catalog (80+ labs across ~22 modules) is being hands-on verified in the development archive and returns module-by-module.
+- **AZ-700 track** — Azure networking labs for the AZ-700 exam (6 labs: virtual networks/routing + DNS), each with a quiz and module exam. Azure resources are per-session, deployed from the Bicep topologies in [`azure/`](azure/); hybrid modules use the Straylight lab as the on-prem site.
 
 ## Lab Profiles
 
@@ -162,6 +166,7 @@ straylight/
 │   │   └── validate.sh            # Post-build health check (profile-aware)
 │   ├── lib/lab_profile.rb      # Vagrantfile profile resolver (Ruby)
 │   └── profiles/               # Lab profile YAMLs
+├── azure/                      # AZ-700 track — Bicep modules + lab topologies + az700.sh driver
 └── packer/                     # Custom base images (optional)
 ```
 

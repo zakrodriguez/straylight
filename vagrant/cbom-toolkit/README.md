@@ -14,8 +14,7 @@ Entry points (`cbom-pipeline.sh`, `cbom-scan.sh`, `cbom-orchestrate.sh`,
 ```
 cbom-toolkit/
   schema/        # the document contract (1 file)
-  python/        # 14 tools — the primary implementation
-  powershell/    # 4 tools — Windows-side equivalents of the core glue tools
+  python/        # 14 tools — the implementation
   baselines/     # reference CBOMs for drift detection
 ```
 
@@ -35,7 +34,7 @@ cbom-toolkit/
 | `cbom_diff.py` | Diffs a scan against a stored baseline (added / removed / changed components, expiry shifts). |
 | `cbom_score.py` | PQC readiness scoring per VM — quantum-safe / quantum-vulnerable / weak-classical, graded GREEN / AMBER / RED. |
 | `cbom_ingest.py` | Pushes components to OpenSearch via the bulk API; dispatches by the envelope's producer registry (not field-name sniffing). |
-| `cbom_alerts.py` | Alerting rules (rogue root CA, weak algorithms, near-expiry certs, downgrades). |
+| `cbom_alerts.py` | Alerting rules (private key exposure, weak algorithms, small RSA keys, expiring certs, new scan results). |
 | `gen_opensearch_mapping.py` | Generates the OpenSearch index mapping from `schema/cbom_envelope.json`. |
 | `pqc_classify.py` | Single source of truth for PQC algorithm classification, shared by the scoring + ingest paths. |
 

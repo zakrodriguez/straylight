@@ -74,14 +74,24 @@
           } else {
               `$results.Add("Already exists: `$templateName")
           }
-          # Add-CATemplate is idempotent + always re-binds; covers re-provision
-          # where the AD template exists but the new CA never got it in its
-          # local issuance list (same rationale as cert_templates step 2).
-          try {
-              Add-CATemplate -Name `$templateName -Force -ErrorAction Stop
+          # Publish via the enrollment object's certificateTemplates
+          # attribute with explicit -Credential (see cert_templates for the
+          # full rationale: Add-CATemplate has no -Credential and dies on the
+          # scheduled-task token's Kerberos rejection, misreported as
+          # "template does not exist in the domain"). Read-back through the
+          # same channel is the per-CA ground truth.
+          `$enrollDN = "CN={{ ca_common_name }},CN=Enrollment Services,CN=Public Key Services,CN=Services,`$configNC"
+          `$enrollObj = Get-ADObjectWaitForReplication -Identity `$enrollDN -Properties certificateTemplates -Credential `$adCred
+          if (@(`$enrollObj.certificateTemplates) -notcontains `$templateName) {
+              Set-ADObject -Identity `$enrollDN -Add @{ certificateTemplates = [string[]]@(`$templateName) } -Credential `$adCred -ErrorAction Stop
               `$results.Add("Published on CA: `$templateName")
-          } catch {
-              `$results.Add("Publish skipped: `$templateName (`$(`$_.Exception.Message))")
+          } else {
+              `$results.Add("Publish skipped: `$templateName (already published)")
+          }
+
+          `$verifyList = (Get-ADObjectWaitForReplication -Identity `$enrollDN -Properties certificateTemplates -Credential `$adCred).certificateTemplates
+          if (`$verifyList -notcontains `$templateName) {
+              throw "Template `$templateName not in `$enrollDN certificateTemplates after publish"
           }
 
           # 2. Grant Enroll + Autoenroll to Domain Computers (issueca-pqc itself

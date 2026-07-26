@@ -103,8 +103,8 @@ Output includes `CertUtil: -ping command completed successfully`.
 vagrant ssh ejbca1 -c "docker exec ejbca-ce /opt/keyfactor/bin/ejbca.sh ca listcas"
 ```
 
-Output includes `EJBCA-Root-CA` and `EJBCA-Issuing-CA` (under `pqc-full` the
-PQC and chimera CAs appear as well).
+Output includes `EJBCA-Root-CA` and `EJBCA-Issuing-CA` (plus the PQC and
+chimera CAs if the PQC migration orchestrator has been run).
 
 ### Verify YubiHSM Connector (Optional)
 

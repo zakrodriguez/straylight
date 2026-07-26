@@ -297,6 +297,11 @@ SYSMON_ENABLED     = ENV['SYSMON_ENABLED']     != 'false'
 PKI_CONFIG = {
   root_ca_name:     "#{LAB_NETBIOS}-Root-CA",
   issuing_ca_name:  "#{LAB_NETBIOS}-Issuing-CA",
+  # The one-tier CA (ca1) MUST NOT share issuing_ca_name: an Enterprise CA's
+  # AD enrollment object is keyed by CA common name, and when ca1 and issueca
+  # coexist (profile `full`) the second install's -OverwriteExistingCAinDS
+  # hijacks the first's object — ca1 silently loses template publication.
+  one_tier_ca_name: "#{LAB_NETBIOS}-CA1",
   crl_url:          "http://pki.#{LAB_DOMAIN}/crl",
   aia_url:          "http://pki.#{LAB_DOMAIN}/aia",
   # The parallel ML-DSA hierarchy gets its own CDP/AIA namespace under

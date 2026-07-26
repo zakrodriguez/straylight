@@ -557,9 +557,8 @@ The calling playbook (`ca.yml`) sets these template variables based on the VM's 
 | `.yamllint` | YAML lint. Many cosmetic rules demoted to `level: warning`; correctness rules (key-duplicates, new-lines) stay error-level. |
 | `.editorconfig` | LF line endings, 2-space indent for yaml/ruby/sh, 4-space for PowerShell. |
 | `.gitattributes` | Enforces LF on yaml/j2/rb/sh/py/etc; CRLF on ps1/psm1/psd1. Binary on images and reg files. |
-| `.github/workflows/ci.yml` | Lint + ruby tests + per-profile resolve matrix. Runs on every PR + push to main. |
+| `.github/workflows/ci.yml` | Lint + bicep build/format + python tests + ruby tests + per-profile resolve matrix. Runs on every PR + push to main. |
 | `.github/workflows/profile-build.yml` | Weekly self-hosted cold-build of pqc-full / ad-cs-two-tier / pqc-linux. |
-| `.github/ISSUE_TEMPLATE/*.md` | Bug + feature report templates. |
 | `.github/PULL_REQUEST_TEMPLATE.md` | PR checklist (profile tested, validate.sh result, etc.). |
 
 ---

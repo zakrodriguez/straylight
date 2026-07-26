@@ -230,7 +230,7 @@ holds.
 ```bash
 cd vagrant
 LAB_PROFILE=pqc-full vagrant status
-LAB_PROFILE=pqc-full bash scripts/validate.sh   # expect ~231 PASS / 0 FAIL / 2 SKIP
+LAB_PROFILE=pqc-full bash scripts/validate.sh   # expect ~240 PASS / 0 FAIL / 2 SKIP
 ```
 
 The 2 SKIPs are the out-of-profile one-tier VMs (`ca1`, `client1`). If any of
@@ -345,11 +345,13 @@ signing — only ML-KEM/Kyber encryption shipped. Paths forward: GnuPG 2.6.x,
 Sequoia-PGP, libgcrypt directly. See [gnupg-pqc-status.md](gnupg-pqc-status.md).
 
 **"What about Tomcat (Java)? Web1 / IIS?"**
-No pure-PQC Tomcat connector yet: the cert + PKCS12 keystore are ready on
-`tomcat1:C:\PqcCerts\tomcat1-pqc.p12`, but BouncyCastle 1.81 + Java 17 can't
-serve an ML-DSA leaf — BC's server-side cert/cipher-suite matching rejects all
-TLS 1.3 suites for it. Notes + paths forward (BC 1.82+, Java 25 LTS, or an
-OpenSSL 3.5 reverse proxy): [tomcat-pqc-status.md](tomcat-pqc-status.md).
+No pure-PQC Tomcat connector yet: a cert + PKCS12 keystore were hand-enrolled
+onto `tomcat1:C:\PqcCerts\tomcat1-pqc.p12` during the investigation (no role or
+playbook reproduces it — a rebuilt tomcat1 lacks it), and BouncyCastle 1.81 +
+Java 17 can't serve an ML-DSA leaf — BC's server-side cert/cipher-suite
+matching rejects all TLS 1.3 suites for it. Notes + paths forward (BC 1.82+,
+Java 25 LTS, or an OpenSSL 3.5 reverse proxy):
+[tomcat-pqc-status.md](tomcat-pqc-status.md).
 Web1/IIS has the same Schannel limitation as AD CS.
 
 **"Where does Microsoft AD CS fit?"**

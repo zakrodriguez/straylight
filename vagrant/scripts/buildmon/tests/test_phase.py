@@ -95,3 +95,23 @@ class TestDoneBeatsWaitingDep(unittest.TestCase):
         st = phase.derive_vm_state("provisioning", log, "running", pid_alive=True,
                                    reboot=False, stall_s=10, hang_threshold_s=600)
         self.assertEqual(st, "waiting-dep")
+
+class TestWarmPassSkippedDc1(unittest.TestCase):
+    def test_already_provisioned_marks_done(self):
+        ls = LogState(exists=True, already_provisioned=True)
+        s = phase.derive_vm_state("booting", ls, "running", None, False, 0, 600)
+        self.assertEqual(s, "done")
+
+    def test_marker_does_not_override_live_pid(self):
+        ls = LogState(exists=True, already_provisioned=True)
+        s = phase.derive_vm_state("provisioning", ls, "running", True, False, 0, 600)
+        self.assertNotEqual(s, "done")
+
+    def test_marker_does_not_override_fatal(self):
+        ls = LogState(exists=True, already_provisioned=True, fatal_finish=True, recap_failed=1)
+        s = phase.derive_vm_state("provisioning", ls, "running", None, False, 0, 600)
+        self.assertEqual(s, "failed")
+
+    def test_build_phase_done_with_skipped_dc1(self):
+        states = {"dc1": "done", "ca1": "done", "web1": "done"}
+        self.assertEqual(phase.derive_build_phase(states, True), "done")

@@ -1,9 +1,9 @@
-# Straylight Reference (v2.8.1)
+# Straylight Reference (v2.12.0)
 
 The walkthrough labs run against the [Straylight](https://github.com/zakrodriguez/straylight)
 PKI lab. This doc lists the **defaults the labs assume**, for
 spot-checking a diverged local install (custom LAB_DOMAIN, alternate
-profile, etc.). Aligned with **Straylight v2.8.1** (tagged 2026-07-18);
+profile, etc.). Aligned with **Straylight v2.12.0** (tagged 2026-07-25);
 re-check when Straylight tags a new minor.
 
 > **Lab catalog status:** the on-disk catalog currently ships only the
@@ -14,9 +14,11 @@ re-check when Straylight tags a new minor.
 > development archive and returns module-by-module as it is
 > hand-verified.
 
-> **Authoritative VM/role inventory:** the canonical VM topology and
-> role inventory (69 roles) live in [`ARCHITECTURE.md`](../../ARCHITECTURE.md);
-> if the two disagree, `ARCHITECTURE.md` wins. The 2026-06 remediation
+> **Authoritative VM/role inventory:** the canonical VM topology lives
+> in [`ARCHITECTURE.md`](../../ARCHITECTURE.md); the role inventory (69
+> roles) lives in
+> [`vagrant/ansible/roles/README.md`](../../vagrant/ansible/roles/README.md).
+> If this doc disagrees with either, those files win. The 2026-06 remediation
 > behind much of this is narrated in
 > [`docs/architecture-evolution.md`](../architecture-evolution.md).
 
@@ -29,7 +31,7 @@ re-check when Straylight tags a new minor.
 | Host-only network | `192.168.56.0/24` (base; **allocated per-lab dynamically**) | `topology.yml` base `192.168.56` + `vagrant/lib/lab_network.rb` (v2.2.0/#188). A solo lab still takes `.56`; concurrent labs each get the next free `/24`. Override with `LAB_NETWORK`. |
 | Root CA name | `YOURLAB-Root-CA` | Derived from `LAB_NETBIOS` in `PKI_CONFIG` |
 | Issuing CA name | `YOURLAB-Issuing-CA` | Derived from `LAB_NETBIOS` in `PKI_CONFIG` |
-| One-tier CA name | `YOURLAB-Issuing-CA` (on `ca1`) | Derived; one-tier collapses root + issuing |
+| One-tier CA name | `YOURLAB-CA1` (on `ca1`) | Derived; unique so ca1 and issueca can coexist in `full` (shared name = one AD enrollment object, hijacked by the second install) |
 | Step-ca container CA | `Smallstep-CA` | `vagrant/ansible/inventory/group_vars/all.yml` |
 | Step-ca image tag | `smallstep/step-ca:0.30.2` | same |
 | Step-ca password | `stepcapass00!` | same (lab credential; do not reuse in prod) |
@@ -79,7 +81,7 @@ the same with `<your LAB_NETBIOS>` in place of `YOURLAB`.
 `.56` base; concurrent labs shift each lab's `/24` (see the host-only
 network row).
 
-## Lab profile catalog (v2.8.1)
+## Lab profile catalog (v2.12.0)
 
 ```bash
 # Discover profiles + their VM lists
@@ -126,7 +128,7 @@ VAGRANT_DOTFILE_PATH=.vagrant-ad-cs-two-tier LAB_PROFILE=ad-cs-two-tier \
 The lab walkthroughs use the raw-vagrant form above (works for `up`,
 `ssh`, `halt`, `status`).
 
-## Tool versions on Linux hosts (v2.8.1)
+## Tool versions on Linux hosts (v2.12.0)
 
 | Tool | Version | Where |
 |---|---|---|
@@ -201,7 +203,7 @@ The `-config` flag for `certutil` / `certreq` uses the form
 
 ```
 issueca\YOURLAB-Issuing-CA            # two-tier (default)
-ca1\YOURLAB-Issuing-CA                # one-tier
+ca1\YOURLAB-CA1                       # one-tier
 ```
 
 If `LAB_NETBIOS` is overridden, substitute accordingly.
@@ -298,7 +300,9 @@ encodes the tags and address plan.
 - **Address plan:** the Azure side draws exclusively from `10.100.0.0/14` —
   hub `10.100.0.0/22` (GatewaySubnet `10.100.0.0/27`, snet-dns
   `10.100.1.0/24`, snet-shared `10.100.2.0/24`), spoke1 `10.101.0.0/24`,
-  spoke2 `10.102.0.0/24`, P2S pool `172.16.201.0/24`. The on-prem range
+  spoke2 `10.102.0.0/24`, vnet-nat `10.103.1.0/24` (nat-gateway lab; a
+  lab-local prefix declared in `azure/labs/nat-gateway/main.bicep`, not
+  in `naming.bicep`'s `addressPlan`), P2S pool `172.16.201.0/24`. The on-prem range
   declared to Azure is `192.168.56.0/21` (covers every host-only /24 the
   lab's dynamic octet allocator can pick). **Never** use `10.0.2.0/24`
   (the VirtualBox NAT subnet every VM shares) or `172.17.0.0/16` (Docker
@@ -314,8 +318,9 @@ encodes the tags and address plan.
 
 If a lab seems off, check these Straylight files in order:
 
-1. `ARCHITECTURE.md` — **authoritative VM inventory + role list (69
-   roles)**, diagrams, PQC feature matrix, CDP/AIA namespace split.
+1. `ARCHITECTURE.md` — **authoritative VM inventory**, diagrams, PQC
+   feature matrix, CDP/AIA namespace split; the **role catalog (69
+   roles)** lives in `vagrant/ansible/roles/README.md`.
 2. `vagrant/config.rb` — domain, netbios, network, CA names,
    credentials, CDP/AIA URLs (`crl_url`/`aia_url` + `crl_url_pqc`/`aia_url_pqc`).
 3. `vagrant/profiles/<name>.yml` — which VMs a profile includes.

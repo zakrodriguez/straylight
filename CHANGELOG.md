@@ -4,6 +4,86 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.12.1] — 2026-07-26
+
+### Removed
+- **CipherIQ compose machinery (dead since birth)** — the role's
+  stat/filter/compose/start tasks and `docker-compose.yml.j2` could never
+  run: none of the three upstream CipherIQ repos has ever contained a
+  Dockerfile in any commit on any branch (they build natively via
+  CMake/Makefile), so the buildable-services list was empty on every build
+  since the role landed 2026-03-13. The role is now clone-only by design
+  (SHA-pinned source clones as static-scan material); the design doc's
+  "all are containerized" claim corrected; scanner1's validate check now
+  asserts the source clones instead of the impossible compose state. Also
+  dropped the ignored `depth: 1` on the SHA-pinned clone (upstream warning
+  noise).
+
+### Fixed
+- **buildmon: warm passes no longer leave dc1 stuck at "booting"** — the
+  up.sh skip branches for an already-healthy dc1 never created the log file
+  the collector tails, so no rule could advance the state and the build
+  phase never reached "done" (known-cosmetic since v2.5.0). The skip
+  branches now write vagrant's "Machine already provisioned" phrasing into
+  the log; the tailer records it (superseded by any real appended attempt)
+  and the done rule accepts it, still gated on no live provisioner.
+  6 new tests; suite 183/183.
+- **validate.sh check results can no longer "vanish" undiagnosably** — both
+  transport paths (`run_windows_check`, `run_linux_check`) discarded stderr
+  and the exit status in a single-shot exec, so any fast remote failure
+  produced an empty outfile and the generic "vanished" verdict (bitten by
+  wsus1 on the first `full` validate, mid-WSUS-sync). Transports now keep
+  stderr, wrap each attempt in a hard 300 s timeout, retry once (checks are
+  read-only), and on double failure emit a real `FAIL:` line carrying the
+  last error excerpt. New stub-vagrant test file exercises both paths
+  (4 cases), wired into CI.
+
+### Fixed
+- **ca1 and issueca no longer share a CA common name** — both installed as
+  `YOURLAB-Issuing-CA`, so on the `full` profile (the only one with both)
+  the two Enterprise CAs mapped to a single AD enrollment object and
+  issueca's `-OverwriteExistingCAinDS` hijacked ca1's — ca1 silently lost
+  all template publication (caught by the new validate coverage on the
+  first-ever `full` build). The one-tier CA is now `YOURLAB-CA1`
+  (`PKI_CONFIG[:one_tier_ca_name]`). The live retest then exposed a
+  third, older defect: `Add-CATemplate` has no `-Credential` parameter, so
+  under the scheduled task's Batch-logon token its internal AD lookup hits
+  the Kerberos rejection the wrapper already documents for other AD calls —
+  misreported as "template does not exist in the domain" and swallowed as
+  "Skipped" on every build since the role landed (install-time defaults
+  masked it; custom templates never actually published on ca1). Both
+  `cert_templates` roles now publish by writing the enrollment object's
+  `certificateTemplates` attribute via `Set-ADObject -Credential` with
+  read-back verification, and non-transient errors fail the task. The
+  NTAuth shadow-CA allowlist accepts the `-CA1` suffix. Live-verified on a
+  core lab: ca1 templates 6/6, machine-cert autoenrollment restored,
+  whole-lab validate 0 FAIL.
+- **lab_profile test flake on dev hosts** — `LabEnv.load!` runs at require
+  time against the real `vagrant/.env`; under random test order its
+  `LAB_PROFILE` reached whichever test ran first and broke
+  dotenv/default-resolution expectations (invisible in CI, which has no
+  `.env`). Setup now clears the profile env keys per test.
+
+### Fixed
+- **Docs audit fix pass** — a whole-repo documentation audit at v2.12.0
+  (90 tracked markdown files; 88 candidate findings, adversarially verified
+  to 87) followed by a fix pass applying 84 of them across 38 files:
+  33 incorrect claims, 40 stale references, 5 overclaims, 9 minor items.
+  Highlights: quickstart's EJBCA section rewritten to commands that run;
+  GETTING-STARTED observability access corrected (loopback-bound ports,
+  real TLS endpoints); revoked-cert output wording aligned with Server 2025
+  behavior in the functest quiz/exam; CI job lists, role counts, cache
+  sizes, scheduled-task wait tables, and the AZ-700 track's presence
+  brought current across README, CONTRIBUTING, copilot-instructions, and
+  configuration docs; `azure/docs/costs.md` hybrid-vpn row corrected
+  (~$0.36/hr, single test VM); openssl-lab bootstrap's re-bootstrap hint
+  now matches the 30-day CRL it actually generates; cbom-pipeline profile
+  description no longer counts observe1 as a CA. Deferred, needs a
+  standing two-tier lab: the connectivity walkthrough's CDP corrections
+  (issueca-hosted HTTP + LDAP endpoints the CA never publishes) live
+  inside golden-frozen `@verify` blocks — reverted to stay self-consistent
+  and queued for re-capture.
+
 ## [2.12.0] — 2026-07-25
 
 ### Added
@@ -1127,7 +1207,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.12.0...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.12.1...HEAD
+[2.12.1]: https://github.com/zakrodriguez/straylight/compare/v2.12.0...v2.12.1
 [2.12.0]: https://github.com/zakrodriguez/straylight/compare/v2.11.0...v2.12.0
 [2.11.0]: https://github.com/zakrodriguez/straylight/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/zakrodriguez/straylight/compare/v2.9.0...v2.10.0

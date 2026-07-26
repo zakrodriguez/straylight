@@ -9,8 +9,10 @@ Packer builds the Windows base boxes from one parameterized template,
 `-var win_version=<2022|2025>` (see
 [build-process-evolution.md](build-process-evolution.md) §v6). `straylight/*`
 boxes carry a `box_version` (UTC datestamp by default) that the Vagrantfile pins
-via `config.vm.box_version`, so a stale local bake can't silently satisfy
-`vagrant up`. Boxes ship unpatched by design — Windows Updates are applied at
+via `config.vm.box_version` when `STRAYLIGHT_BOX_VERSION` is set in `config.rb`,
+so a stale local bake can't silently satisfy `vagrant up`; left unset (the
+default), Vagrant uses whatever `straylight/*` box version is registered
+locally. Boxes ship unpatched by design — Windows Updates are applied at
 provision time through the WSUS golden-master loop (`wsus_server` role +
 `cache-wsus.sh`), not baked into the box.
 
@@ -57,7 +59,7 @@ manage1 runs Server 2025 (Desktop Experience), which ships RSAT on-disk in WinSx
 | `pqc-linux`           | 6               | PQC migration demo, no Windows / no AD         |
 | `pqc-full`            | 13              | PQC migration including Windows AD CS           |
 | `pqc-adcs-two-tier`   | 7               | AD CS two-tier + parallel ML-DSA CA hierarchy  |
-| `cbom-pipeline`       | 4               | Full CBOM pipeline (3 CAs + scanner)           |
+| `cbom-pipeline`       | 4               | Full CBOM pipeline (2 CAs + OpenSearch sink + scanner) |
 | `observability`       | 2               | OpenSearch + dashboards focus                   |
 | `oauth-oidc`          | 3               | Ory Hydra + step-ca TLS backing                |
 | `ejbca-only`          | 2               | Pure EJBCA CE play + scanner                    |

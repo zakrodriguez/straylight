@@ -27,23 +27,12 @@ else
     echo "FAIL: /opt/openssl-3.5/bin/openssl missing or wrong version"
 fi
 
-# CipherIQ — dirs are unconditional; the compose file only deploys when the
-# role found >=1 buildable service (its own contract), so its absence is a
-# legitimate state, not a failure.
-if sudo test -d /opt/cipheriq; then
-    echo "PASS: CipherIQ tree present (/opt/cipheriq)"
+# CipherIQ — clone-only role (upstream ships no Dockerfiles): assert the
+# tree and at least one SHA-pinned source clone.
+if sudo test -d /opt/cipheriq && sudo test -d /opt/cipheriq/cbom-generator/.git; then
+    echo "PASS: CipherIQ source clones present (/opt/cipheriq)"
 else
-    echo "FAIL: /opt/cipheriq missing"
-fi
-if sudo test -f /opt/cipheriq/docker-compose.yml; then
-    n="$(sudo docker compose -f /opt/cipheriq/docker-compose.yml ps -q 2>/dev/null | wc -l)"
-    if [ "$n" -ge 1 ]; then
-        echo "PASS: CipherIQ compose project up ($n container(s))"
-    else
-        echo "FAIL: CipherIQ compose file present but no containers running"
-    fi
-else
-    echo "PASS: CipherIQ compose not deployed (role found no buildable services this build)"
+    echo "FAIL: /opt/cipheriq source clones missing"
 fi
 
 # Source repos for static CBOM scans

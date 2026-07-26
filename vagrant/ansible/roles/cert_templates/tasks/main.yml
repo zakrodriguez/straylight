@@ -211,12 +211,31 @@
               'Straylight-Fiddler-1Y-RSA2048-SHA256-v1'
           )
 
+          # Publish by writing the enrollment object's certificateTemplates
+          # attribute directly. Add-CATemplate has NO -Credential parameter:
+          # under the scheduled-task token its internal AD lookup hits the
+          # same Kerberos rejection this script's header documents for
+          # Get/Set-ADObject, and surfaces as the misleading "template does
+          # not exist in the domain" (live-diagnosed 2026-07-26; the failure
+          # was swallowed as "Skipped" on every build before the rethrow).
+          # Set-ADObject -Credential forces NTLM like every other AD write
+          # here, and the read-back through the same channel is the per-CA
+          # ground truth (install-time defaults can mask a dead publish).
+          `$enrollDN = "CN={{ ca_common_name }},CN=Enrollment Services,CN=Public Key Services,CN=Services,`$configNC"
+          `$enrollObj = Get-ADObjectWaitForReplication -Identity `$enrollDN -Properties certificateTemplates -Credential `$adCred
+          `$current = @(`$enrollObj.certificateTemplates)
+          `$missing = @(`$templates | Where-Object { `$current -notcontains `$_ })
+          if (`$missing.Count -gt 0) {
+              Set-ADObject -Identity `$enrollDN -Add @{ certificateTemplates = [string[]]`$missing } -Credential `$adCred -ErrorAction Stop
+              `$results.Add("Published: `$(`$missing -join ', ')")
+          } else {
+              `$results.Add("All templates already published")
+          }
+
+          `$verify = (Get-ADObjectWaitForReplication -Identity `$enrollDN -Properties certificateTemplates -Credential `$adCred).certificateTemplates
           foreach (`$template in `$templates) {
-              try {
-                  Add-CATemplate -Name `$template -Force -ErrorAction Stop
-                  `$results.Add("Published: `$template")
-              } catch {
-                  `$results.Add("Skipped: `$template (`$(`$_.Exception.Message))")
+              if (`$verify -notcontains `$template) {
+                  throw "Template `$template not in `$enrollDN certificateTemplates after publish"
               }
           }
 

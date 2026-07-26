@@ -146,7 +146,7 @@ flowchart LR
 | 2 — TLS | `pqc-migrate-tls.yml` | OpenSSL 3.5 built from source on every PQC host; `openssl s_server` listeners stood up on `:8444` (pure-PQC) and `:8443` (chimera). |
 | 3 — SSH | `pqc-migrate-ssh.yml` | OpenSSH 10 built from source on every PQC SSH host; companion `sshd` configured with `mlkem768x25519-sha256` KEX. |
 | 4 — OpenPGP | `pqc-migrate-gpg.yml` | GnuPG 2.5.x built from source; lab keys generated with Kyber-768 encryption subkeys. (ML-DSA signing pending GnuPG 2.6.x.) |
-| 5 — Posture | `pqc-migrate-posture.yml` | Sweep all six CBOM scanners (theia, nmap-network, ejbca-api, pqc-handshake, pqc-ssh, pqc-openpgp) and re-ingest the results into OpenSearch. |
+| 5 — Posture | `pqc-migrate-posture.yml` | Sweep the five re-scan CBOM scanners (nmap-network, ejbca-api, pqc-handshake, pqc-ssh, pqc-openpgp) and re-ingest the results into OpenSearch. (The theia scanner runs separately via `cbom-orchestrate.sh`.) |
 
 A separate `pqc-mtls.yml` playbook stands up the pure-PQC mTLS surface on `observe1:8445` + scanner1 client cert; it depends on Phases 1-2, so run it after `pqc-migrate.yml`.
 
@@ -165,7 +165,7 @@ LAB_PROFILE=pqc-full ansible-playbook -i inventory/pqc-full/pqc.ini playbooks/pq
   -e '{"ejbca_token_password":"foo123","psf_init":". C:\\Users\\Public\\Logs\\straylight\\Initialize-PSFLogging.ps1","schtask_admin_init":". C:\\Users\\Public\\Logs\\straylight\\Invoke-StraylightAdminScheduledTask.ps1"}'
 LAB_PROFILE=pqc-full ansible-playbook -i inventory/pqc-full/pqc.ini playbooks/pqc-mtls.yml \
   -e ejbca_token_password=foo123
-# Re-validate — now exercises the PQC overlay (expect ~231/0/2):
+# Re-validate — now exercises the PQC overlay (expect 0 FAIL):
 cd .. && VAGRANT_DOTFILE_PATH=.vagrant-pqc-full LAB_PROFILE=pqc-full bash scripts/validate.sh
 ```
 
@@ -199,7 +199,7 @@ flowchart LR
 
 Classifications: **PASS** (green) — check succeeded; **FAIL** (red) — real problem, build is broken; **SKIP** (dim) — the target VM isn't in the active profile.
 
-Baseline for `pqc-full` after the full pipeline: **~231 PASS / 0 FAIL / 2 SKIP** (the 2 SKIPs are the out-of-profile one-tier VMs). If `cloudflare_pqc-*` checks FAIL, the public-endpoint probe is just stale (>12h) — re-run `cloudflare-pqc.service` on scanner1.
+Baseline for `pqc-full` after the full pipeline: **0 FAIL** (SKIPs are checks for out-of-profile VMs; the exact PASS count moves as per-VM checks are added). If `cloudflare_pqc-*` checks FAIL, the public-endpoint probe is just stale (>12h) — re-run `cloudflare-pqc.service` on scanner1.
 
 ## Stage 7 — Use
 
@@ -333,7 +333,7 @@ A versioned CBOM envelope schema (`vagrant/cbom-toolkit/schema/cbom_envelope.jso
 | **Validation** | `vagrant/scripts/validate.sh` + `lib/validate-harness.sh` + `checks/<vm>.sh` | ~300 assertions, profile-aware. Decomposed harness + per-VM check files; per-run `validate.log`. |
 | **Lifecycle** | `vagrant/{snap,nuke,clean,logging,provision}.sh` | Snapshot, destroy, soft clean, toggle logging, re-provision. |
 | **Install wizard** | `scripts/install-wizard.sh` | Single entry point for host prereqs. Host-OS-aware. |
-| **CI** | `.github/workflows/ci.yml` + `profile-build.yml` | Lint + ruby tests + profile-resolve matrix on every PR. Weekly self-hosted profile build. |
+| **CI** | `.github/workflows/ci.yml` + `profile-build.yml` | Lint + bicep + python tests + ruby tests + profile-resolve matrix on every PR. Weekly self-hosted profile build. |
 | **Observability** | `observe1` VM + `opensearch_stack` role | OpenSearch + Dashboards + 7 pre-built dashboards. |
 | **CBOM toolkit** | `vagrant/cbom-toolkit/` + `vagrant/scripts/cbom-*.sh` | Six scanners + pipeline + baselines. |
 

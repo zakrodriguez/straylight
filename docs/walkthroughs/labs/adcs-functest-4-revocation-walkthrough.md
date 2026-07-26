@@ -422,12 +422,14 @@ What just happened:
 - `certutil` fetched the new CRL from `http://pki.yourlab.local/crl/YOURLAB-Issuing-CA.crl`.
 - It found the `functest.cer` serial in the CRL.
 - It reported the revocation reason: `Cert Status: 0x4 (4) Superseded`.
-- The overall verification exited with HRESULT `0x80092010`
+- The overall verification reported HRESULT `0x80092010`
   `CRYPT_E_REVOKED` — the canonical "this cert is revoked" failure.
-- The verify command's `FAILED` final line is the **expected** outcome
-  for this step. A `completed successfully` here would be a finding
-  to investigate (it would mean cache wasn't cleared, or the CRL was
-  signed wrong, or the verifier read the wrong CRL).
+- The revoked verdict is the **expected** outcome for this step. A
+  verify with no `REVOKED` lines here would be a finding to
+  investigate (it would mean cache wasn't cleared, or the CRL was
+  signed wrong, or the verifier read the wrong CRL). On Server 2025
+  the `-verify` command line still ends `completed successfully`;
+  older builds end with a `FAILED` line.
 
 For a side-by-side comparison, diff the before/after:
 
@@ -461,7 +463,7 @@ final pass is "every item is green." The full checklist, with what
 | 7 | Cert issued from a real template | `Disposition = 20`, `-verify -urlfetch` says `completed successfully` (Lab 3 Steps 3–5) |
 | 8 | Cert revoked | `Disposition = 21`, `RevokedReason = 4` (this lab Step 1–2) |
 | 9 | CRL published | New `.crl` on disk, `This Update = now`, serial appears in dump (this lab Steps 3–4) |
-| 10 | Recheck shows Revoked | `Revocation Status: Revoked`, `CRYPT_E_REVOKED` (this lab Step 6) |
+| 10 | Recheck shows Revoked | `CERT_TRUST_IS_REVOKED`, `CRYPT_E_REVOKED` (this lab Step 6) |
 
 If you can produce a screenshot or log capture for each row, the CA
 has passed a functional test against the documented checklist. Save the
@@ -501,7 +503,7 @@ Get-ChildItem $Work
 
 The CRL `manage1` cached briefly during Step 6 is gone too — Step 5
 deleted it before the verify ran, and the verify only re-cached the
-post-revocation CRL, which Step 8 (3) leaves alone for the next user.
+post-revocation CRL, which this cleanup leaves alone for the next user.
 Running `certutil -urlcache crl delete` again here is optional belt
 and braces.
 
@@ -523,11 +525,15 @@ and braces.
   the verifying machine. Without this, `certutil -verify -urlfetch`
   may serve cached pre-revocation data and falsely report the cert
   as valid.
-- A correctly-revoked cert produces a specific failure pattern from
-  `certutil -verify -urlfetch`: `Revocation Status: Revoked`,
-  HRESULT `0x80092010 CRYPT_E_REVOKED`, and a non-zero exit. This
-  failure is the **expected** functional-test outcome at this stage;
-  a `completed successfully` would be the surprise to investigate.
+- A correctly-revoked cert produces a specific pattern from
+  `certutil -verify -urlfetch`: on Server 2025,
+  `CERT_TRUST_IS_REVOKED` / HRESULT `0x80092010 CRYPT_E_REVOKED`,
+  with the `-verify` command line itself reporting
+  `completed successfully` (older builds print
+  `Revocation Status: Revoked` and exit non-zero). The revoked
+  verdict is the **expected** functional-test outcome at this
+  stage; a verify with no `REVOKED` lines would be the surprise to
+  investigate.
 - OCSP responders have a server-side cache distinct from any client
   cache. CRL-based revocation is deterministic for functional
   testing because there is no asynchronous responder between the

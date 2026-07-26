@@ -10,7 +10,7 @@ overnight gateway caught by the 23:00 sweep) stays under the $25 budget.
 |---|---|---|
 | hub-spoke | 1 × B2ts_v2 (~$0.01/hr); VNets/peerings ~free at lab volume | < $0.25 |
 | nat-gateway | NAT GW ~$0.045/hr + data + PIP + 1 × B2ts_v2 | < $0.30 |
-| hybrid-vpn (flagship) | VpnGw1AZ ~$0.19/hr (≈4 h incl. 30–45 min provision), Standard PIP, 2 × B2ts_v2, private endpoint ~$0.01/hr, private DNS zone prorated | ~$1.00–1.50 |
+| hybrid-vpn (flagship) | VpnGw1AZ ~$0.36/hr (≈4 h incl. 20–45 min provision), Standard PIP, 1 × B2ts_v2 | ~$1.00–1.50 |
 | p2s-vpn | same gateway economics, no LNG | ~$0.90 |
 | lb-standard / private-link | Std LB ~$0.025/hr, PE ~$0.01/hr, 2 × B2ts_v2 | < $0.50 |
 | appgw | AppGW Standard_v2 ~$0.25/hr + CU, backend B2ts_v2 | ~$1.00 |

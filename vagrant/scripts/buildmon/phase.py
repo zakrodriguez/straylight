@@ -38,7 +38,7 @@ def derive_vm_state(prev_state, log, vbox, pid_alive, reboot, stall_s, hang_thre
     # Done beats waiting-dep: a play that ENDS cleanly while its last-seen
     # task was a "Wait for ..." dependency gate would otherwise read
     # waiting-dep forever (the recap is the stronger signal).
-    if log.recap_failed == 0 and pid_alive is not True:
+    if (log.recap_failed == 0 or getattr(log, 'already_provisioned', False)) and pid_alive is not True:
         return "done"
     if detect_waiting_on(log.task_name):
         return "waiting-dep"

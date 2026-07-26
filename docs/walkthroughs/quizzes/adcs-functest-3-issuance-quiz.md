@@ -1,6 +1,6 @@
 # Quiz — ADCS Functest Lab 3: End-to-End Issuance with certreq
 
-**Lab:** `adcs-functest-issuance-walkthrough.md`
+**Lab:** [`adcs-functest-3-issuance-walkthrough.md`](../labs/adcs-functest-3-issuance-walkthrough.md)
 **Format:** 10 questions on `certreq` INF anatomy, the submit
 workflow, certificate inspection, and CA database disposition codes.
 **Suggested time:** 10–15 minutes.

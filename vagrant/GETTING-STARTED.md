@@ -33,7 +33,7 @@ cd straylight/vagrant
 # Install Ansible collections
 ansible-galaxy collection install -r ansible/requirements.yml
 
-# Populate the local software cache (~320 MB, one-time)
+# Populate the local software cache (~680 MB, one-time)
 # Skips installers/tarballs that VMs would otherwise fetch from
 # github.com / elastic.co / gnupg.org / go.dev during provisioning.
 bash scripts/cache-software.sh
@@ -86,7 +86,7 @@ The authoritative **VM inventory** (names, IPs, OS, roles) is the table in [../A
 
 ## CBOM Toolkit
 
-Python tools live in `cbom-toolkit/python/`, PowerShell in `cbom-toolkit/powershell/`.
+Python tools live in `cbom-toolkit/python/`.
 
 ### Pipeline (end-to-end)
 
@@ -130,6 +130,8 @@ python3 cbom-toolkit/python/cbom_ingest.py cbom-output/scan.json --scanner cbomk
 python3 cbom-toolkit/python/cbom_ingest.py scan.json --scanner cbomkit-theia --dry-run
 ```
 
+The default endpoint (`https://192.168.56.53:9244`) sits behind HTTP basic auth: export `OPENSEARCH_PASS=<lab admin password>` first (user defaults to `beats`), as `scripts/cbom-pipeline.sh` does via `scripts/lib/lab-secrets.sh`.
+
 **Score** PQC readiness per VM:
 
 ```bash
@@ -144,19 +146,22 @@ After OBSERVE1 is up, create the alert rules and dashboards:
 
 ```bash
 python3 cbom-toolkit/python/cbom_alerts.py \
-  --opensearch-url http://192.168.56.53:9200
+  --opensearch-url https://192.168.56.53:9244
 
-python3 cbom-toolkit/python/osd_dashboards.py \
-  --opensearch-url http://192.168.56.53:9200
+# osd_dashboards.py talks to Dashboards (:5601), which is loopback-bound on
+# observe1 — run it there (the opensearch_stack role stages a copy):
+vagrant ssh observe1 -c 'python3 /opt/opensearch/osd_dashboards.py --osd-url http://localhost:5601'
 ```
+
+The `:9244` endpoint requires HTTP basic auth: user `beats`, password = the lab admin password, read from `$OPENSEARCH_USER` / `$OPENSEARCH_PASS` (`scripts/cbom-pipeline.sh` exports these via `scripts/lib/lab-secrets.sh`).
 
 This creates 5 alert rules (private key exposure, weak algorithms, small RSA keys, expiring certs, new scans) and 7 dashboards (crypto posture overview, certificate lifecycle, drift detection, PQC readiness scorecard, certificate expiry & health, VM security posture, cross-protocol PQC posture).
 
 To tear them down:
 
 ```bash
-python3 cbom-toolkit/python/cbom_alerts.py --delete --opensearch-url http://192.168.56.53:9200
-python3 cbom-toolkit/python/osd_dashboards.py --delete --opensearch-url http://192.168.56.53:9200
+python3 cbom-toolkit/python/cbom_alerts.py --delete --opensearch-url https://192.168.56.53:9244
+vagrant ssh observe1 -c 'python3 /opt/opensearch/osd_dashboards.py --delete --osd-url http://localhost:5601'
 ```
 
 ## Logging Stack
@@ -253,7 +258,7 @@ Each profile gets its own `.vagrant-<name>/` dotfile so state stays separate.
 
 **WinRM timeout**: Windows VMs use Basic auth. Check with `LAB_PROFILE=<name> bash -c 'source scripts/lib/profile-helper.sh; vagrant winrm -c "hostname" <vm>'`.
 
-**OpenSearch not receiving data**: Verify OpenSearch is running on OBSERVE1 (`curl http://192.168.56.53:9200/_cluster/health`). Winlogbeat/Filebeat output directly to port 9200.
+**OpenSearch not receiving data**: Verify OpenSearch is running on OBSERVE1 (`curl -k -u beats:<admin password> https://192.168.56.53:9244/_cluster/health`, or `vagrant ssh observe1 -c 'curl -s localhost:9200/_cluster/health'`). Winlogbeat/Filebeat ship over TLS + basic auth to port 9244 (the observe_tls nginx front); plaintext 9200 is loopback-only on observe1.
 
 **NiFi slow to start**: NiFi takes 2-5 minutes for JVM startup. The Ansible role retries for up to 10 minutes.
 
@@ -263,7 +268,7 @@ Each profile gets its own `.vagrant-<name>/` dotfile so state stays separate.
 
 Ad-hoc log search and investigation:
 
-- **URL**: http://192.168.56.53:5601
+- **URL**: https://192.168.56.53/ (the observe_tls nginx front on :443; Dashboards' own :5601 is loopback-bound on observe1)
 - **Discover**: hamburger menu → "Discover" (the Kibana-style log explorer)
 - **Index pattern**: `logs-*` is pre-configured with `@timestamp` as the time field
 - No login required (security plugin disabled for lab use)

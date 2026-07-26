@@ -52,9 +52,12 @@ and basic viewing are covered by these tools — no need to build our own.
 | CipherIQ crypto-tracer | eBPF runtime | CipherIQ (GPL3) | Live crypto API calls at kernel level |
 | CipherIQ pqc-flow | Passive network | CipherIQ (GPL3) | TLS/SSH/IKEv2/QUIC handshake sniffing |
 
-Existing viewer: CipherIQ cbom-explorer (web UI) — no need to build cbom-parse. All are
-containerized; deploy to SCANNER1 (dedicated scanner VM) or other Linux VMs. crypto-tracer
-needs kernel access (privileged container); pqc-flow a promiscuous NIC.
+Existing viewer: CipherIQ cbom-explorer (web UI) — no need to build cbom-parse. The
+CipherIQ trio is deployed as SHA-pinned source clones on SCANNER1, not containers:
+none of the upstream repos ships a Dockerfile (they build natively via CMake/Makefile),
+so the role is clone-only and the tools serve as source material for static scans and
+manual builds. crypto-tracer would need kernel access if built and run; pqc-flow a
+promiscuous NIC.
 
 ## Target Applications
 

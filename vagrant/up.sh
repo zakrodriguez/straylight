@@ -844,11 +844,16 @@ if $DC1_IN_PROFILE; then
     VM_STATUS[dc1]=1
     printf "${C_RED}═══ DC1 create failed — skipping provision ═══${C_RESET}\n\n"
   elif should_restore dc1; then
-    # DC1 already restored above — just record success
+    # DC1 already restored above — just record success. The marker line below
+    # is buildmon's only signal for a skipped dc1 (no <vm>.log ⇒ stuck
+    # "booting"); vagrant's own phrasing so a real `vagrant up` emitting it
+    # is detected identically.
     VM_STATUS[dc1]=0
+    echo "==> dc1: Machine already provisioned. Run \`vagrant provision\` or use the \`--provision\` flag to force provisioning. Provisioners marked to run always will still run." > "$LOGDIR/dc1.log"
   elif $DC1_ALREADY_READY; then
     # DC1 already provisioned and AD DS is serving — skip phase 2
     VM_STATUS[dc1]=0
+    echo "==> dc1: Machine already provisioned. Run \`vagrant provision\` or use the \`--provision\` flag to force provisioning. Provisioners marked to run always will still run." > "$LOGDIR/dc1.log"
     printf "${C_CYAN}═══ DC1 already provisioned (AD DS responding) — skipping ═══${C_RESET}\n\n"
   elif [[ -n "$DC1_OVERLAP_PID" ]]; then
     # Phase 2 overlap: dc1 provision started during Phase 1 — wait for it.

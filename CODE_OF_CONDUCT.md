@@ -4,14 +4,14 @@ This project adopts the [Contributor Covenant v2.1](https://www.contributor-cove
 
 ## Quick summary
 
-- Be respectful and constructive in issues, PRs, discussions, and review comments.
+- Be respectful and constructive in all project communication.
 - Assume good faith. Ask before assuming intent.
 - Focus on the technical work. Critique ideas, not people.
 - Harassment, personal attacks, or discrimination of any kind are not tolerated.
 
 ## Reporting
 
-If you experience or witness behavior that violates this code of conduct, report it to the maintainer at **security@straylight.lab**. Reports are handled confidentially.
+If you experience or witness behavior that violates this code of conduct, report it to the maintainer through GitHub's [private vulnerability reporting form](https://github.com/zakrodriguez/straylight/security/advisories/new) — the repository's private inbound channel (see [SECURITY.md](SECURITY.md)). Reports are handled confidentially.
 
 ## Enforcement
 
@@ -19,4 +19,4 @@ The maintainer may warn, temporarily ban, or permanently ban contributors who vi
 
 ## Scope
 
-This applies to all project spaces — GitHub issues, pull requests, discussions, the project's wiki, and any other channels associated with straylight.
+This applies to all project spaces and any channel associated with straylight, including security reports and any future communication venues.

@@ -138,7 +138,7 @@ rejected with every other type. Pairing an IP with `Internet`,
 **Q5.** `--next-hop-type VirtualAppliance` and
 `--next-hop-ip-address $NVAIP`.
 
-**Q6.** Fabric-level: `enableIpForwarding` — a NIC property (not
+**Q6.** Fabric-level: `enableIPForwarding` — a NIC property (not
 a VM property, not an OS setting) that makes the fabric deliver
 packets not addressed to that NIC. OS-level:
 `net.ipv4.ip_forward=1` on Linux, so the kernel forwards what the

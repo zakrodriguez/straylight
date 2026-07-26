@@ -42,13 +42,13 @@ The two Linux PQC TLS-listener roles (`nginx_pqc_demo`, `openssl_pqc_demo`) shar
 | Role | Purpose |
 |---|---|
 | `common` | Windows baseline — DNS, NAT adapter cleanup, PowerShell 7, common tools |
-| `common_linux` | Linux baseline — apt update, base packages, timezone |
+| `common_linux` | Linux baseline — lab DNS (resolv.conf), timezone, static /etc/hosts |
 | `docker_host` | Docker CE install + dockerd config (Linux) |
 | `domain_controller` | AD DS forest creation (`microsoft.ad.domain`) |
 | `secondary_controller` | DC2 promotion (`microsoft.ad.domain_controller`) |
 | `domain_join` | Domain membership (`microsoft.ad.membership`) with `nltest` readiness gate |
-| `client` | Client autoenrollment config + Group Policy receive |
-| `manage` | RSAT tool install on MANAGE1 via scheduled task |
+| `client` | PKI connectivity test (autoenrollment handled by `machine_cert`) |
+| `manage` | RSAT tool install on MANAGE1 via `win_feature` (Server 2025 ships RSAT on-disk) |
 | `host_ready` | Bounded per-capability readiness probes, gated on a host's topology `requires_ready` tags |
 | `shared_folder_repair` | Re-establish the `C:\Software` → `\\vboxsvr` shared-folder symlink when the VirtualBox mount drops |
 | `win_scheduled_task` | Stage the shared `Invoke-StraylightAdminScheduledTask` helper (one-shot domain-admin scheduled-task create/run/poll/delete/read-back lifecycle); dot-source via `{{ schtask_admin_init }}`. See [Windows identity model](#windows-identity-model) |
@@ -115,7 +115,7 @@ The two Linux PQC TLS-listener roles (`nginx_pqc_demo`, `openssl_pqc_demo`) shar
 | `windows_logging` | Advanced audit policy + PowerShell ScriptBlock logging |
 | `sysmon` | Sysmon with SwiftOnSecurity config |
 | `psframework` | PSFramework structured logging module setup |
-| `cbom_source_repos` | Clone CBOM source repos (theia, etc.) onto scanner1 |
+| `cbom_source_repos` | Clone CBOM scan-target source repos (keycloak, bc-java, ejbca-ce) onto scanner1 |
 | `cbom_lens` | CBOM "lens" companion app (visualization shim) |
 | `cloudflare_pqc` | Probe public Cloudflare edge PQC endpoints from scanner1 + feed results into the CBOM pipeline |
 
@@ -151,7 +151,7 @@ The two Linux PQC TLS-listener roles (`nginx_pqc_demo`, `openssl_pqc_demo`) shar
 Roles are invoked from `../playbooks/<vm>.yml` (one playbook calls many roles; some roles run on multiple VMs). To find which playbook uses a role:
 
 ```bash
-grep -rln "role: <role-name>\|- <role-name>" vagrant/ansible/playbooks/
+grep -rln "role: <role-name>\|- <role-name>\|name: <role-name>" vagrant/ansible/playbooks/
 ```
 
 ## Adding a role

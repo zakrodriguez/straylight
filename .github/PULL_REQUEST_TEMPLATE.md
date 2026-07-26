@@ -10,13 +10,14 @@
 
 ## Profile(s) tested
 
-<!-- Which LAB_PROFILE values did you live-test this against? Required for any change touching ansible/, profiles/, scripts/, or Vagrantfile. -->
+<!-- Which LAB_PROFILE values did you live-test this against? Required for any change touching ansible/, profiles/, scripts/, azure/, or Vagrantfile. -->
 
 - [ ] `core`
 - [ ] `ad-cs-one-tier`
 - [ ] `ad-cs-two-tier`
 - [ ] `pqc-linux`
 - [ ] `pqc-full`
+- [ ] Azure — `az700.sh` smoke: init → deploy → destroy → sweep
 - [ ] Other: `___`
 - [ ] Not applicable (docs / lint / CI only)
 

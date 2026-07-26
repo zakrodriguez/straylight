@@ -1,6 +1,6 @@
 # Quiz — ADCS Functest Lab 1: Service & Private Key Health
 
-**Lab:** `adcs-functest-service-health-walkthrough.md`
+**Lab:** [`adcs-functest-1-service-health-walkthrough.md`](../labs/adcs-functest-1-service-health-walkthrough.md)
 **Format:** 10 questions on CSP/KSP identification, private-key
 signature testing, CertSvc lifecycle, and the ADCS Event Log
 healthy-vs-failure pattern.
@@ -145,8 +145,10 @@ partial cert renewal or store cleanup.
 
 **Q8.**
 `HKLM:\System\CurrentControlSet\Services\CertSvc\Configuration\<CA Name>\CACertHash`
-value name `CACertHash`, type `REG_BINARY`. The bytes are the
-SHA-1 thumbprint of the CA's current signing certificate.
+value name `CACertHash`. On the lab's Server 2025 build it is a
+`REG_MULTI_SZ` holding the SHA-1 thumbprint of the CA's current
+signing certificate as a hex string (older builds store it as
+`REG_BINARY` bytes).
 
 **Q9.** `-store` — full command: `certutil -store My '*Issuing CA*'`.
 Look for `Signature test passed` in the output.

@@ -1,6 +1,6 @@
 # Quiz — ADCS Functest Lab 2: Enrollment Interface & CA Exchange Certificate
 
-**Lab:** `adcs-functest-connectivity-walkthrough.md`
+**Lab:** [`adcs-functest-2-connectivity-walkthrough.md`](../labs/adcs-functest-2-connectivity-walkthrough.md)
 **Format:** 10 questions on `certutil -ping`, the pKIEnrollmentService
 AD object, the CA Exchange certificate, and `-verify -urlfetch`
 failure modes.
@@ -164,11 +164,13 @@ mask current breakage; `-urlfetch` deliberately re-resolves every
 URL.
 
 **Q10.** Most likely `0x80072EE7` (DNS) or `0x80072EFD` (TCP)
-against the **HTTP** CDP/AIA URLs. Linux validators usually only
-consult HTTP CDPs; Windows clients also have an LDAP CDP entry
-that goes to `dc1` and resolves successfully even if HTTP is
-broken. So the Windows chain still builds but the Linux chain
-doesn't — the textbook "HTTP CDP broken, LDAP CDP still working"
-asymmetric failure.
+against the **HTTP** CDP/AIA URLs. The Windows/Linux split appears
+on CAs that keep the Microsoft-default CDP list: Linux validators
+only consult HTTP CDPs, while Windows clients can also use the
+default LDAP CDP entry and still build the chain — the textbook
+"HTTP CDP broken, LDAP CDP still working" asymmetric failure.
+(Straylight's lab CA publishes HTTP-only URLs under
+`http://pki.yourlab.local/`, so against this lab's `issueca` a
+broken HTTP CDP fails Windows and Linux clients alike.)
 
 </details>

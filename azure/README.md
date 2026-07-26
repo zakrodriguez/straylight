@@ -15,8 +15,9 @@ day. There is no state file — the resource group is the state.
 - Recommended: pin the subscription in `vagrant/.env`
   (`AZURE_SUBSCRIPTION_ID=<guid>`) — the driver refuses to deploy anywhere
   else. Copy `vagrant/.env.example` to get started.
-- One-time: `azure/scripts/az700.sh init` (creates a $25/month budget with
-  email alerts and the local claims file).
+- One-time: `azure/scripts/az700.sh init` (creates a $25/month budget —
+  amount only; add 50/80/100% email alerts in the portal — and the local
+  claims file).
 
 ## Usage
 
@@ -27,7 +28,7 @@ azure/scripts/az700.sh sweep                # "did I leave anything running?"
 azure/scripts/az700.sh nuke                 # delete every track resource group
 ```
 
-Slow topologies (VPN gateways: 30–45 min) deploy with `--no-wait`; the
+Slow topologies (VPN gateways: 20–45 min) deploy with `--no-wait`; the
 walkthrough gates on `az700.sh watch <slug>`.
 
 ## Safety rules
@@ -39,8 +40,9 @@ walkthrough gates on `az700.sh watch <slug>`.
 4. The budget alert is a backstop, not a brake — budgets alert, they do not
    stop spend ([docs/teardown.md](docs/teardown.md)).
 5. Expensive SKUs are structurally absent: no ExpressRoute, Azure Firewall
-   Standard/Premium, or DDoS plans exist in any topology (`labs/paper/` covers
-   them as paper labs). Gateways are `@allowed`-pinned to VpnGw1AZ/VpnGw2AZ,
+   Standard/Premium, or DDoS plans exist in any topology (the planned
+   `labs/paper/` will cover them as paper labs). Gateways are
+   `@allowed`-pinned to VpnGw1AZ/VpnGw2AZ,
    VMs to cheap burstable sizes (Bsv2 gen + B1s/B2s).
 6. Optional nightly cleanup timer: [scripts/systemd](scripts/systemd/README.md).
 
@@ -48,7 +50,7 @@ walkthrough gates on `az700.sh watch <slug>`.
 
 | Path | Contents |
 |---|---|
-| `modules/` | shared Bicep building blocks (naming/tags/address plan, hub, spoke, test VM) |
+| `modules/` | shared Bicep building blocks (naming/tags/address plan, hub, spoke, test VM, VPN gateway, LNG + S2S connection) |
 | `labs/<slug>/` | one deployable topology per lab family; `main.bicep` + short README |
 | `labs/paper/` | doc-only paper labs for un-frugal topics (arrives with later modules) |
 | `scripts/az700.sh` | driver: init / deploy / watch / destroy / list / sweep / nuke / update-onprem-ip / cost |

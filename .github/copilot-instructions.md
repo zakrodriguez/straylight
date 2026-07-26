@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Vagrant-based PKI lab for testing Windows AD CS deployments — automated one-tier and two-tier topologies with full enterprise features — plus optional EJBCA and step-ca VMs for open-source PKI comparison.
+Vagrant-based PKI lab for testing Windows AD CS deployments — automated one-tier and two-tier topologies with full enterprise features — plus optional EJBCA and step-ca VMs for open-source PKI comparison. The repo also carries a separate AZ-700 Azure networking track under `azure/` (Bicep modules + lab topologies + the `azure/scripts/az700.sh` deploy/destroy driver; CI runs a Bicep build + format job — see `azure/README.md`). The rest of this file covers the Vagrant track.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ Vagrant-based PKI lab for testing Windows AD CS deployments — automated one-ti
 - **VM source of truth**: `vagrant/topology.yml` — the single AUTHORITATIVE machine table; every consumer (Vagrantfile/Ruby, bash scripts, Ansible inventory) derives VM identity, IPs, groups, and dependency ordering from it. Do NOT restate VM facts elsewhere. `ARCHITECTURE.md` is the authoritative human inventory, CI-checked against `topology.yml` by `vagrant/test/doc_inventory_test.rb` — link there, never restate the VM table.
 - **Topology selection**: `LAB_PROFILE` against `vagrant/profiles/*.yml` (14 profiles; single `vagrant/Vagrantfile`). Topology is derived from a profile's component list, not a flag — the old `ADCS_TOPOLOGY`/`ADCS-TOPOLOGY` env var was removed and is hard-rejected by the resolver.
 - **Shared config**: `vagrant/config.rb` (domain, IPs, credentials, PKI settings); `.env` parsed by the profile resolver
-- **Provisioning**: Ansible playbooks and roles in `vagrant/ansible/` (70 roles; see `vagrant/ansible/roles/README.md`); PowerShell helpers in `vagrant/scripts/windows/*.ps1` used by some roles
+- **Provisioning**: Ansible playbooks and roles in `vagrant/ansible/` (69 roles; see `vagrant/ansible/roles/README.md`); PowerShell helpers in `vagrant/scripts/windows/*.ps1` used by some roles
 
 ## Key Files
 
@@ -24,7 +24,7 @@ Vagrant-based PKI lab for testing Windows AD CS deployments — automated one-ti
 | `vagrant/profiles/*.yml` | Lab profile definitions (component list per profile) |
 | `vagrant/ansible/playbooks/` | Flat per-VM playbooks (no one-tier/two-tier subdirs); `ca.yml` dispatches on `ca_type` |
 | `vagrant/ansible/roles/README.md` | Role catalog + the canonical WinRM identity model (C11) |
-| `vagrant/ansible/roles/{common,common_linux}/` | Windows baseline (DNS fix, NAT adapter cleanup); Linux baseline (Docker host setup) |
+| `vagrant/ansible/roles/{common,common_linux}/` | Windows baseline (DNS fix, NAT adapter cleanup); Linux baseline (DNS/resolv.conf, timezone, static hosts — Docker install lives in `docker_host`) |
 | `vagrant/ansible/roles/{domain_controller,secondary_controller,domain_join}/` | AD DS forest creation (`microsoft.ad.domain`); DC2 promotion (`microsoft.ad.domain_controller`); domain membership (`microsoft.ad.membership`) |
 | `vagrant/ansible/roles/enterprise_ca/` | Enterprise (one-tier / issuing) CA install (scheduled task pattern) |
 | `vagrant/ansible/roles/{standalone_ca,subordinate_ca}/` | Standalone Root CA; Subordinate/Issuing CA — classical OR PQC selected by `ca_crypto_provider` (C4) |
@@ -34,8 +34,8 @@ Vagrant-based PKI lab for testing Windows AD CS deployments — automated one-ti
 | `vagrant/ansible/roles/web_server/` | IIS for CRL/AIA distribution (classical + `/crl/pqc`, `/aia/pqc` for the PQC hierarchy) |
 | `vagrant/ansible/roles/ca_services/` | NDES, CEP/CES, Web Enrollment |
 | `vagrant/ansible/roles/cert_templates/` | Custom certificate templates |
-| `vagrant/ansible/roles/client/` | Client autoenrollment config |
-| `vagrant/ansible/roles/manage/` | RSAT tools install (scheduled task pattern) |
+| `vagrant/ansible/roles/client/` | PKI connectivity test (enrollment lives in `machine_cert`) |
+| `vagrant/ansible/roles/manage/` | RSAT tools install (plain `win_feature`, Server 2025 on-disk WinSxS) |
 | `vagrant/ansible/roles/wsus_server/` | WSUS with data disk, GPO, DNS |
 | `vagrant/ansible/roles/{ejbca,stepca}/` | EJBCA CE on Docker; step-ca on Docker |
 | `vagrant/ansible/roles/observe_timer/` | Generalized systemd timer + `ExecStartPost` ingest pattern (C7) |
@@ -53,13 +53,13 @@ Vagrant-based PKI lab for testing Windows AD CS deployments — automated one-ti
 - Pre-domain feature installs go in playbooks (not roles) to preserve parallel overlap with DC1
 - Scheduled task pattern for operations requiring elevation/AD double-hop; create/run/poll/read-back/cleanup mechanics are centralized in the `win_scheduled_task` role. The WinRM identity model (WinRM session user vs SYSTEM vs explicit domain-admin) is documented canonically in `vagrant/ansible/roles/README.md` — link there, don't re-derive it in comments
 - WinRM Basic auth via `host_vars` in the Vagrantfile (`ansible_winrm_transport: basic`); Linux VMs use an `ansible_connection: ssh` override
-- Required collections: `microsoft.ad`, `ansible.windows`, `community.windows`, `community.docker`
+- Required collections (pinned in `requirements.yml`): `microsoft.ad`, `ansible.windows`, `community.windows`, `community.docker`, `chocolatey.chocolatey`
 - `microsoft.ad.domain` (DC1) uses `log_path`; `microsoft.ad.domain_controller` (DC2) uses `domain_log_path`
 
 ### Vagrant
 - Windows guests use the WinRM communicator (not SSH); Linux VMs override with `communicator = "ssh"`
-- Private network: `192.168.56.0/24` (VirtualBox host-only)
-- Box images: `gusztavvargadr/windows-server-2022-standard-core` (Server Core) and `gusztavvargadr/windows-11` (clients)
+- Private network: base prefix `192.168.56`; each lab gets its own VirtualBox host-only /24, allocated dynamically upward (lowest free 3rd octet, `lib/lab_network.rb`)
+- Box images: `gusztavvargadr/windows-server-2025-standard-core` by default (Server Core; 2022 selectable via `WIN_SERVER_VERSION`), `gusztavvargadr/windows-server-2025-standard` Desktop SKU for manage1/sqlhost1/tomcat1 (or `straylight/*` when `USE_STRAYLIGHT_BOXES=true`), `gusztavvargadr/windows-11` (clients), `bento/ubuntu-22.04` (Linux VMs)
 - `up.sh` orchestrates parallel builds (DC1 first, then remaining VMs with staggered starts)
 - Optional VMs use `autostart: false`
 
@@ -108,14 +108,11 @@ These poll `schtasks /query` every N seconds until the task reaches "Ready" stat
 
 | Role | Task | Timeout | Poll interval | Notes |
 |------|------|---------|---------------|-------|
-| `domain_controller` | AD DS operational after reboot | 10 min | 15s | Inner loop; also has 3 Ansible retries |
 | `enterprise_ca` | CA install | 10 min | 5s | |
-| `subordinate_ca` | Parent CA ping (`certutil -ping`) | 10 min | 20s | Inside scheduled task (DCOM auth required) |
+| `subordinate_ca` | Parent CA ping (`certutil -ping`) | 25 min | 20s | Inside scheduled task (DCOM auth required); covers a worst-case rootca cold provision |
 | `subordinate_ca` | CRL distribution point reachable | 10 min | 20s | Inside scheduled task; parallel build bottleneck |
-| `subordinate_ca` | Full CA install task | 15 min | 5s | Covers parent wait + install |
-| `publish_ca_artifacts` | Publish root cert to AD / WEB1 | 2 min | 5s | (replaces removed `publish_root_ca`) |
+| `subordinate_ca` | Full CA install task | 30 min | 5s | Covers parent wait + install (raised per #213) |
 | `ca_services` | NDES install; CEP/CES install | 10 min | 5s | |
-| `manage` | RSAT install | 60 min | 30s | Windows Update fallback is very slow |
 | `wsus_server` | Disk init | 2 min | 5s | |
 | `wsus_server` | `wsusutil postinstall` (WID) | 10 min | 10s | |
 | `wsus_server` | Catalog sync (product list) | 30 min | 30s | Polls for "Windows 11" in catalog |
@@ -126,9 +123,9 @@ These retry an entire Ansible task on failure.
 
 | Role | What it waits for | Retries | Delay | Total |
 |------|-------------------|---------|-------|-------|
+| `domain_controller` | AD DS operational after reboot | 40 | 15s | 10 min |
 | `domain_join`, `secondary_controller` | AD DS LDAP ready (`nltest`) | 45 | 20s | 15 min |
-| `domain_join` | Domain join itself | 3 | 30s | 1.5 min |
-| `client` | Root CA cert in trusted store | 30 | 20s | 10 min |
+| `domain_join` | Domain join itself | 6 | 60s | 6 min |
 | `enterprise_ca`, `subordinate_ca`, `standalone_ca` | CertSvc service running | 12 | 10s | 2 min |
 | `wsus_server` | WsusService running | 12 | 10s | 2 min |
 | `publish_ca_artifacts` | WEB1 SMB share reachable | 30 | 10s | 5 min |
@@ -139,8 +136,8 @@ These retry an entire Ansible task on failure.
 
 | Setting | Value | Location |
 |---------|-------|----------|
-| WinRM operation timeout | 10 min | `group_vars/all.yml` (30 min for `manage1` playbook) |
-| WinRM read timeout | 11 min | `group_vars/all.yml` (31 min for `manage1` playbook) |
+| WinRM operation timeout | 10 min | `group_vars/all.yml` (30 min for the `tomcat1-phase1`/`-phase2` playbooks) |
+| WinRM read timeout | 11 min | `group_vars/all.yml` (31 min for the `tomcat1-phase1`/`-phase2` playbooks) |
 | Ansible connection timeout | 60s | `ansible.cfg` |
 | Ansible command timeout | 30 min | `ansible.cfg` (persistent connection) |
 | Reboot timeout (all modules) | 10 min | `microsoft.ad.domain`, `microsoft.ad.membership` |

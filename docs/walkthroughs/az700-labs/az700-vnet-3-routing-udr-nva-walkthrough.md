@@ -28,8 +28,11 @@ Design and implement core networking infrastructure).
 > **Cost**: < $0.50 for the session (a second B2ts_v2 VM is created in
 > Step 2; route tables and UDRs are free). Quota note: the second VM lands
 > `standardBsv2Family` at exactly 4 of the track's 4 vCPUs — a fresh
-> subscription starts at 0 and needs `az quota update` first (see
-> STRAYLIGHT-REFERENCE.md, *Azure conventions*).
+> subscription starts at 0; raise it once with `az quota update
+> --resource-name standardBsv2Family --limit-object value=4 --scope
+> /subscriptions/<sub-id>/providers/Microsoft.Compute/locations/centralus`
+> (register `Microsoft.Quota` first: `az provider register --namespace
+> Microsoft.Quota`; approval takes minutes).
 > **Teardown when done**: `azure/scripts/az700.sh destroy hub-spoke`
 > (Step 6). This lab **ends** the Labs 1–3 shared session — Lab 4 deploys
 > its own `nat-gateway` topology.

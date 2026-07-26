@@ -131,3 +131,29 @@ class TestOkTallyFixture(unittest.TestCase):
         self.assertEqual(s.last_result, "ok")
         self.assertEqual(s.task_name, "rsat : Verify tooling")
         self.assertFalse(s.fatal_finish)
+
+class TestAlreadyProvisionedMarker(unittest.TestCase):
+    def _tmp(self, content):
+        import tempfile
+        f = tempfile.NamedTemporaryFile("w", suffix=".log", delete=False)
+        f.write(content)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def test_marker_sets_flag(self):
+        p = self._tmp("==> dc1: Machine already provisioned. Run `vagrant provision` "
+                      "or use the `--provision` flag to force provisioning. "
+                      "Provisioners marked to run always will still run.\n")
+        s = LogTailer(p, FakeClock(0)).read()
+        self.assertTrue(s.exists)
+        self.assertTrue(s.already_provisioned)
+        self.assertIsNone(s.recap_failed)
+
+    def test_real_attempt_supersedes_marker(self):
+        p = self._tmp("==> dc1: Machine already provisioned. Run `vagrant provision` ...\n"
+                      "TASK [domain_controller : Promote to DC] ***\n"
+                      "changed: [dc1]\n")
+        s = LogTailer(p, FakeClock(0)).read()
+        self.assertFalse(s.already_provisioned)
+        self.assertEqual(s.task_name, "domain_controller : Promote to DC")

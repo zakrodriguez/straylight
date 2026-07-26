@@ -43,12 +43,15 @@ approved run. Per step it stores the expected rc, the expect patterns, and
 carries two lab-level maps:
 
 - `parameters:` — values for variables the harness cannot discover because they
-  come from an interactive step the harness will never run. The mechanism is
-  supported by the companion validator but unused so far: both shipped goldens
-  carry `parameters: {}`. The connectivity lab, whose config string a reader
-  first discovers through a `certutil -config - -ping` GUI picker, sidesteps
-  the need by assigning `$CA = "ISSUECA.yourlab.local\YOURLAB-Issuing-CA"` in
-  an in-lab preamble step.
+  come from an interactive step the harness will never run. Of the eight
+  shipped goldens, the six `az700-*` companions use the mechanism to pin the
+  az CLI version (`az_cli_version`, per the golden-hygiene rule in
+  [`STRAYLIGHT-REFERENCE.md`](STRAYLIGHT-REFERENCE.md)); the two AD CS goldens
+  still carry `parameters: {}`. The connectivity lab, whose config string a
+  reader first discovers through a `certutil -config - -ping` GUI picker, is
+  not yet preamble-annotated — its `$CA`/`$Work` assignments sit in an
+  un-annotated setup block, so a future companion must supply both `CA` and
+  `Work` via `parameters:` (see the harness README's known limitations).
 - `normalizers:` — named regex→placeholder rules for legitimately volatile
   output. The revocation lab's golden maps serial-number lines to `<SERIAL>` so
   a different certificate serial on the next run does not produce a false
@@ -127,10 +130,12 @@ One rule follows: a capturing step must not set `strict=true`, because its
 stored golden output contains that run's volatile value and a full diff would
 never re-match. Assert on it with `expect=` instead.
 
-## Conventions that made the AD CS functest labs green
+## Conventions that made the verified functest labs green
 
 Three conventions and fixes were needed for the assertions to pass reliably on
-the two-tier NAT topology (v2.8.0, PRs #235–#238):
+the two-tier NAT topology (v2.8.0, PRs #235–#238). They come from the two labs
+with approved goldens — service-health and revocation; the connectivity and
+issuance labs are annotated but not yet machine-verified:
 
 - **CA-admin steps run on the CA host.** Remote `certutil -config` / CertEnroll
   calls from `manage1` fail with `RPC_S_SERVER_UNAVAILABLE` on multi-homed

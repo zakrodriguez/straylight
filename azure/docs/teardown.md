@@ -12,8 +12,9 @@ Defense in depth, in order of actual protection:
    [nightly timer](../scripts/systemd/README.md)) reports groups older than
    8 hours and can delete them.
 4. **Budget alert — a backstop, not a brake.** `init` creates a $25/month
-   budget with 50/80/100% email alerts. Azure budgets **alert, they do not
-   stop spend**; if an alert fires, run `az700.sh nuke`.
+   budget (amount only — add the 50/80/100% email alerts in the portal).
+   Azure budgets **alert, they do not stop spend**; if an alert fires, run
+   `az700.sh nuke`.
 5. **SKU floors in the Bicep modules.** The expensive failure modes are
    structurally impossible: no ExpressRoute/Firewall-Standard/DDoS resources
    exist in any topology, gateways and VMs are `@allowed`-pinned to the cheap

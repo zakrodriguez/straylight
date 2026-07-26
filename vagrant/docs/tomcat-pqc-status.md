@@ -9,6 +9,9 @@ match an ML-DSA server cert against TLS 1.3 cipher suites.
 - EJBCA-PQC-Issuing-CA issued the cert (SERVER profile, ML-DSA-65 sig + key):
   `tomcat1:C:\PqcCerts\tomcat1-pqc.p12`, PKCS12, password `changeit`, alias
   `tomcat1`, full chain incl. EJBCA-PQC-Issuing-CA + EJBCA-PQC-Root-CA.
+  The keystore was enrolled by hand during this investigation; no role or
+  playbook reproduces it, so a rebuilt tomcat1 will not have it — re-enroll
+  manually against EJBCA-PQC-Issuing-CA to recreate it.
 - Java 17 `keytool -list -v` reads the PKCS12 (raw OID `2.16.840.1.101.3.4.3.18`,
   "key of unknown size"): file is fine, stdlib doesn't recognize ML-DSA.
 - BouncyCastle 1.81 jars (`bcprov`, `bctls`, `bcpkix`, `bcutil`) in `C:\Tomcat\lib\`;
@@ -65,7 +68,8 @@ TLS 1.3 suite, and neither `jdk.tls.signatureSchemes=mldsa65,...` nor
 
 ## What we shipped
 
-- The tomcat1 PKCS12 keystore (artifact for future retries) and this document.
+- The tomcat1 PKCS12 keystore (a hand-made live-VM artifact for future
+  retries — not provisioned by any role, gone on rebuild) and this document.
 - tomcat1:8444 was NOT added to `validate.sh` or the `pqc-handshake` scanner
   targets — it would fail until BC fixes the filter or Java 25 / an OpenSSL proxy.
 

@@ -10,6 +10,10 @@ RECAP_FAILED_RE = re.compile(r"^\S+\s+: .*failed=(\d+)")
 RECAP_HEADER_RE = re.compile(r"^PLAY RECAP")
 # Note: read() also treats recap_failed > 0 as fatal-finish; Ansible's recap splits the header and per-host failed= line
 FATAL_FINISH_RE = re.compile(r"Ansible failed to complete successfully|PLAY RECAP.*failed=[1-9]")
+# Warm pass: up.sh writes vagrant's own "already provisioned" phrasing into
+# <vm>.log when it skips a verified-healthy dc1 (no provisioner, no pidfile).
+# Cleared by a later appended attempt (a TASK line supersedes it).
+ALREADY_PROVISIONED_RE = re.compile(r"Machine already provisioned")
 
 @dataclass
 class LogState:
@@ -22,6 +26,7 @@ class LogState:
     fatal_finish: bool = False
     mtime_epoch: float | None = None
     exists: bool = False
+    already_provisioned: bool = False
 
 class LogTailer:
     def __init__(self, path, clock):
@@ -57,6 +62,8 @@ class LogTailer:
                         recap_failed = None
                         last_result = None
                         st.ok = st.changed = st.failed = 0
+                    # A real attempt supersedes the warm-pass skip marker.
+                    st.already_provisioned = False
                     last_task = mt.group(1)
                 mr = RESULT_RE.match(line)
                 if mr:
@@ -68,6 +75,8 @@ class LogTailer:
                         st.changed += 1
                     elif last_result in ("fatal", "failed"):
                         st.failed += 1
+                if ALREADY_PROVISIONED_RE.search(line):
+                    st.already_provisioned = True
                 if FATAL_FINISH_RE.search(line):
                     fatal = True
                 if RECAP_HEADER_RE.match(line):

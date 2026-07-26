@@ -5,7 +5,8 @@
 virtual networks* (plan VNets/IP addressing, virtual network peering, custom
 routes/NVA, Virtual Network NAT)
 **Predecessor pattern:** `../specs/2026-05-12-adcs-functest-labs-design.md`
-(adcs-functest module; first module of the AZ-700 track)
+(adcs-functest module — the PKI catalog's design pattern; this spec opens
+the AZ-700 track)
 
 ## Goal
 

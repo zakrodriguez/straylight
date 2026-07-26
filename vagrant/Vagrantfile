@@ -197,7 +197,7 @@ COMMON_VARS[:lab_desktop_enabled] = ENV.fetch('LAB_DESKTOP_ENABLED', 'true').dow
 # its corresponding set. Composable profiles can include any combination
 # (or none) of the CA VMs.
 PKI_VARS = {
-  ca_common_name: PKI_CONFIG[:issuing_ca_name],
+  ca_common_name: PKI_CONFIG[:one_tier_ca_name],
   ca_type: "EnterpriseRootCA",
   ca_key_length: 4096,
   ca_hash_algorithm: "SHA256",

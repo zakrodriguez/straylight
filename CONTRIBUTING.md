@@ -17,7 +17,7 @@ Issues are disabled on this repository. With PR review already out of scope, an 
 
 ## For forks
 
-[.github/copilot-instructions.md](.github/copilot-instructions.md) is the canonical reference for code conventions, architecture, and common task patterns. CI (ansible-lint, yamllint, shellcheck, profile-resolution tests) runs on PRs within a fork the same way it does here.
+[.github/copilot-instructions.md](.github/copilot-instructions.md) is the canonical reference for code conventions, architecture, and common task patterns. CI (lint: ansible-lint/yamllint/shellcheck/ruby -c; Bicep build + lint; Python and Ruby test suites; profile-resolution matrix) runs on PRs within a fork the same way it does here.
 
 ## Code of Conduct
 

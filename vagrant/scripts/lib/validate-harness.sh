@@ -64,19 +64,31 @@ run_windows_check() {
     local remote="C:\\validate-${tag}.ps1"
 
     printf '%s' "$ps1" > "$tmpfile"
-    if ! vagrant upload "$tmpfile" "$remote" "$vm" >/dev/null 2>&1; then
-        echo "FAIL: Could not upload check script" > "$outfile"
-        rm -f "$tmpfile"
-        return
-    fi
 
-    # Run the uploaded script then delete it in the SAME winrm call so
-    # no per-check C:\validate-*.ps1 debris accumulates on the VM. `& <file>`
-    # honors the session's Bypass policy; Remove-Item is silent on success so it
-    # adds nothing to $outfile (and a stray cleanup error is ignored — the
-    # aggregator only reads PASS:/FAIL:/SKIP: lines).
-    vagrant winrm -c "powershell.exe -ExecutionPolicy Bypass -Command \"& '$remote'; Remove-Item -Force -ErrorAction SilentlyContinue '$remote'\"" "$vm" 2>/dev/null > "$outfile" || true
-    rm -f "$tmpfile"
+    # Transport hardening (2026-07-26, wsus1 "vanished" post-mortem): the old
+    # single-shot exec discarded stderr and the exit status, so any fast
+    # transport/remote failure produced an empty outfile and an undiagnosable
+    # "vanished" result. Now: stderr captured, hard timeout per attempt, one
+    # retry (checks are read-only, retry is safe), and a guaranteed FAIL line
+    # carrying the last error excerpt when both attempts produce nothing.
+    # Run the uploaded script then delete it in the SAME winrm call so no
+    # per-check C:\validate-*.ps1 debris accumulates on the VM.
+    local errfile="${outfile}.err" attempt
+    : > "$errfile"
+    for attempt in 1 2; do
+        : > "$outfile"
+        if timeout 300 vagrant upload "$tmpfile" "$remote" "$vm" >/dev/null 2>>"$errfile"; then
+            timeout 300 vagrant winrm -c "powershell.exe -ExecutionPolicy Bypass -Command \"& '$remote'; Remove-Item -Force -ErrorAction SilentlyContinue '$remote'\"" "$vm" 2>>"$errfile" > "$outfile" || true
+        else
+            echo "upload failed (attempt $attempt)" >> "$errfile"
+        fi
+        grep -qE '^(PASS|FAIL|SKIP):' "$outfile" && break
+        [[ "$attempt" == 1 ]] && sleep "${VALIDATE_RETRY_PAUSE:-20}"
+    done
+    if ! grep -qE '^(PASS|FAIL|SKIP):' "$outfile"; then
+        echo "FAIL: check transport failed: $(tail -c 200 "$errfile" | tr -d '\n')" >> "$outfile"
+    fi
+    rm -f "$tmpfile" "$errfile"
 }
 
 # ─── Linux VM check: pipe script to vagrant ssh ──────────────────────────
@@ -92,15 +104,29 @@ run_linux_check() {
     local vm="$1" script="$2" outfile="$3"
     local ip; ip="$(lab_vm_ip "$vm")"
     local key="$VAGRANT_DOTFILE_PATH/machines/$vm/virtualbox/private_key"
-    if [[ -z "$ip" || ! -f "$key" ]]; then
-        # Fallback to `vagrant ssh` (will work for VMs whose NAT port survives
-        # the collision lottery; better than failing silently).
-        printf '%s\n' "$script" | vagrant ssh "$vm" -- bash -s 2>/dev/null > "$outfile" || true
-        return
+    # Same transport hardening as run_windows_check: stderr kept, hard
+    # timeout, one retry, guaranteed FAIL line on double failure. (The ssh
+    # stderr also carries known-hosts warnings; tail grabs the last error.)
+    local errfile="${outfile}.err" attempt
+    : > "$errfile"
+    for attempt in 1 2; do
+        : > "$outfile"
+        if [[ -z "$ip" || ! -f "$key" ]]; then
+            # Fallback to `vagrant ssh` (will work for VMs whose NAT port
+            # survives the collision lottery; better than failing silently).
+            printf '%s\n' "$script" | timeout 300 vagrant ssh "$vm" -- bash -s 2>>"$errfile" > "$outfile" || true
+        else
+            printf '%s\n' "$script" | timeout 300 ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+                -i "$key" "vagrant@$ip" bash -s 2>>"$errfile" > "$outfile" || true
+        fi
+        grep -qE '^(PASS|FAIL|SKIP):' "$outfile" && break
+        [[ "$attempt" == 1 ]] && sleep "${VALIDATE_RETRY_PAUSE:-20}"
+    done
+    if ! grep -qE '^(PASS|FAIL|SKIP):' "$outfile"; then
+        echo "FAIL: check transport failed: $(tail -c 200 "$errfile" | tr -d '\n')" >> "$outfile"
     fi
-    printf '%s\n' "$script" | ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
-        -i "$key" "vagrant@$ip" bash -s 2>/dev/null > "$outfile" || true
+    rm -f "$errfile"
 }
 
 # Returns 0 if the host has working internet (used to gate external-probe checks

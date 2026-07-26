@@ -1,6 +1,6 @@
 # Quiz — ADCS Functest Lab 4: Revocation, CRL Publication, and Re-verification
 
-**Lab:** `adcs-functest-revocation-walkthrough.md`
+**Lab:** [`adcs-functest-4-revocation-walkthrough.md`](../labs/adcs-functest-4-revocation-walkthrough.md)
 **Format:** 10 questions on `certutil -revoke`, CRL Reason Codes,
 forced CRL publication, URL cache, OCSP caching caveats, and the
 canonical "Revoked" verify outcome.
@@ -69,7 +69,7 @@ d) `-verify -urlfetch` ignores cache anyway, so it's defensive
 ---
 
 **Q7.** The successful "Revoked" outcome of `certutil -verify -urlfetch`
-exits with which HRESULT?
+reports which HRESULT?
 
 a) `0x80092013 CRYPT_E_REVOCATION_OFFLINE`
 b) `0x80092010 CRYPT_E_REVOKED`
@@ -150,11 +150,14 @@ the pre-revocation CRL it cached during an earlier verify run —
 the new CRL exists but is never fetched. Clearing forces a cold
 fetch and surfaces the current revocation status.
 
-**Q7.** **b)** `0x80092010 CRYPT_E_REVOKED`. `certutil` exits
-with this code and the output reads `Revocation Status: Revoked`.
-A successful verify against a non-revoked cert exits with
-`0x00000000` (option d). Option a (`CRYPT_E_REVOCATION_OFFLINE`)
-is the "CRL fetch failed" path, not the "cert is revoked" path.
+**Q7.** **b)** `0x80092010 CRYPT_E_REVOKED` is the reported
+HRESULT. On the lab's Server 2025 build the output shows
+`CERT_TRUST_IS_REVOKED` / `CRYPT_E_REVOKED` while the `-verify`
+command line itself ends `completed successfully` (exit 0); older
+builds print `Revocation Status: Revoked` and exit with the
+failing code. A verify against a non-revoked cert reports no
+error (option d). Option a (`CRYPT_E_REVOCATION_OFFLINE`) is the
+"CRL fetch failed" path, not the "cert is revoked" path.
 
 **Q8.** **a)** OCSP responders fetch the CRL from the CA on a
 polling schedule (Windows Online Responder default: every 4

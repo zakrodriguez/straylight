@@ -223,8 +223,9 @@ foreach ($der in $ntauth.Properties['cACertificate']) {
 # (YOURLAB / EJBCA / Smallstep / StraylightChimera) followed by the
 # usual -(Root|Issuing|...)-CA suffix. A rogue subject like
 # "CN=Backup-Issuing-CA, O=Helpdesk Auto-Provisioned" lacks one of
-# these prefixes and surfaces as a FAIL.
-$allowed = '^(CN=)?(YOURLAB|EJBCA|Smallstep|StraylightChimera)[A-Za-z0-9_-]*-(Root|Issuing|Intermediate|Sub|Subordinate)-CA(,|$)'
+# these prefixes and surfaces as a FAIL. -CA1 covers the one-tier CA's
+# unique name (renamed from the shared -Issuing-CA in the collision fix).
+$allowed = '^(CN=)?(YOURLAB|EJBCA|Smallstep|StraylightChimera)[A-Za-z0-9_-]*(-(Root|Issuing|Intermediate|Sub|Subordinate)-CA|-CA1)(,|$)'
 $rogues = @()
 foreach ($c in $certs) {
     if ($c.Subject -notmatch $allowed) {

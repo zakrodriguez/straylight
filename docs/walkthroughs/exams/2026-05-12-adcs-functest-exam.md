@@ -179,11 +179,11 @@ every CDP and AIA URL, and bypasses the local URL cache?
 
 ---
 
-**Q18.** A blackhole host entry maps `issueca.yourlab.local` to
-`10.255.255.254` on `manage1`. After `ipconfig /flushdns`, which
-HRESULT does `certutil -verify -urlfetch` return on the HTTP CDP
-fetch step, and which subsequent HRESULT does the verifier
-escalate to?
+**Q18.** A blackhole host entry maps `pki.yourlab.local` — the
+host in the CA's published CDP/AIA URLs — to `10.255.255.254` on
+`manage1`. After `ipconfig /flushdns`, which HRESULT does
+`certutil -verify -urlfetch` return on the HTTP CDP fetch step,
+and which subsequent HRESULT does the verifier escalate to?
 
 (short answer)
 
@@ -197,9 +197,10 @@ cheapest end-to-end test" by the gradenegger.eu article?
 ---
 
 **Q20.** Production scenario: A Linux workload reports CRL fetch
-failures for certs issued by `issueca`; a Windows workload on the
-same network reports no issues. Which two CDP URL types does each
-client typically consult, and where does the asymmetry come from?
+failures for certs issued by an enterprise CA; a Windows workload
+on the same network reports no issues. Which two CDP URL types does
+each client typically consult, and where does the asymmetry come
+from?
 
 (short answer)
 
@@ -349,7 +350,7 @@ revocation?
 
 ---
 
-**Q36.** Successful "this cert is revoked" verification exits with
+**Q36.** Successful "this cert is revoked" verification reports
 which HRESULT?
 
 a) `0x00000000`
@@ -489,10 +490,13 @@ other issuances use.
 
 **Q20.** Linux validators (OpenSSL, GnuTLS, mobile mTLS clients)
 typically consult only HTTP CDP URLs. Windows validators consult
-HTTP **and** LDAP CDP URLs. If the HTTP CDP host is broken
-(firewall, DNS, decommissioned) but the LDAP CDP on `dc1` still
-works, Windows passes (it found a working URL) and Linux fails
-(its only option is broken).
+HTTP **and** LDAP CDP URLs on CAs that keep the Microsoft-default
+CDP list. If the HTTP CDP host is broken (firewall, DNS,
+decommissioned) but the default LDAP CDP still works, Windows
+passes (it found a working URL) and Linux fails (its only option
+is broken). Straylight's `issueca` publishes HTTP-only CDP/AIA
+URLs (`http://pki.yourlab.local/...`), so against this lab's CA
+both client types fail together.
 
 ### Section 3
 
@@ -567,10 +571,11 @@ verify and falsely report the cert as valid. The cache hides
 fresh state until its entries expire (`Next Update`) or are
 explicitly deleted.
 
-**Q36.** **b)** `0x80092010 CRYPT_E_REVOKED`. Output also reads
-`Revocation Status: Revoked`. Option a is the "valid cert" path;
-option c is the "couldn't fetch CRL" path; option d is the
-service-startup failure path.
+**Q36.** **b)** `0x80092010 CRYPT_E_REVOKED`. On Server 2025 the
+output reads `CERT_TRUST_IS_REVOKED` / `CRYPT_E_REVOKED` (older
+builds print `Revocation Status: Revoked`). Option a is the
+"valid cert" path; option c is the "couldn't fetch CRL" path;
+option d is the service-startup failure path.
 
 **Q37.** Because OCSP responders rebuild their cache on a
 polling cycle from the CRL — Windows Online Responder default

@@ -135,7 +135,7 @@ For profiles with `ejbca1` (`pqc-full`, `pqc-linux`, `full`, `cbom-pipeline`, `e
 https://192.168.56.50:8443/ejbca/adminweb/
 ```
 
-EJBCA requires client cert auth via browser P12 import. ejbca1 has no `/vagrant` synced folder, so pull the P12 over SSH (run on the host):
+EJBCA requires client cert auth via browser P12 import. The superadmin P12 is created by the PQC migration orchestrator (`pqc-migrate.yml`), not the base provision — run it first (see the run-order recap in [how-it-works.md](how-it-works.md) Stage 5). ejbca1 has no `/vagrant` synced folder, so pull the P12 over SSH (run on the host):
 
 ```bash
 vagrant ssh ejbca1 -c "sudo base64 /opt/ejbca/data/secrets/superadmin.p12" | tr -d '\r' | base64 -d > superadmin.p12
@@ -143,17 +143,17 @@ vagrant ssh ejbca1 -c "sudo cat /opt/ejbca/data/secrets/superadmin.pwd"
 # Import superadmin.p12 (password from the second command) into Firefox/Chrome
 ```
 
-The admin UI lists `EJBCA-PQC-Root-CA` and `EJBCA-PQC-Issuing-CA` (pure ML-DSA-65 signing) plus `EJBCA-Chimera-Root-CA` (RSA-4096 primary signing key with an ML-DSA-65 alternative signing key).
+After the base build the admin UI lists `EJBCA-Root-CA` and `EJBCA-Issuing-CA`. Once the PQC migration orchestrator has run it also lists `EJBCA-PQC-Root-CA` and `EJBCA-PQC-Issuing-CA` (pure ML-DSA-65 signing) plus `EJBCA-Chimera-Root-CA` (RSA-4096 primary signing key with an ML-DSA-65 alternative signing key).
 
 ### Pure-PQC TLS handshake proof
 
-The pure-PQC endpoints are not part of the base `pqc-full` provision — stand them up first (from `vagrant/`):
+The pure-PQC endpoints are not part of the base `pqc-full` provision. They depend on the PQC CA hierarchy that only the PQC migration orchestrator creates, so run `pqc-migrate.yml` first (see the run-order recap in [how-it-works.md](how-it-works.md) Stage 5), then stand them up (from `vagrant/ansible/`):
 
 ```bash
-ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini ansible/playbooks/pqc-pure-leaf.yml \
+ansible-playbook -i inventory/$LAB_PROFILE/pqc.ini playbooks/pqc-pure-leaf.yml \
   -e "ejbca_token_password=foo123 lab_domain=yourlab.local"
-LAB_PROFILE=pqc-full ansible-playbook -i ansible/inventory/$LAB_PROFILE/pqc.ini \
-  ansible/playbooks/pqc-mtls.yml -e ejbca_token_password=foo123
+LAB_PROFILE=pqc-full ansible-playbook -i inventory/$LAB_PROFILE/pqc.ini \
+  playbooks/pqc-mtls.yml -e ejbca_token_password=foo123
 ```
 
 `pqc-pure-leaf.yml` enrolls the ML-DSA-65 leaf and starts the :8444 listener on observe1; `pqc-mtls.yml` puts OpenSSL 3.5 and the PQC CA chain on scanner1. Then see ML-DSA-65 in an actual TLS handshake:

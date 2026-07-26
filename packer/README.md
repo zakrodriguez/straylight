@@ -38,9 +38,9 @@ The post-processor packages a `.box` that embeds `vagrantfile-windows-publish.te
 
 ## Canonical target: Server 2025
 
-The lab's CA VMs (rootca, ca1, issueca) run Server 2025, whose post-domain-join WMI behavior is the source of the `InvalidSelectors` race (19+ rounds of mitigation work). The baked ADCS pre-install does not reach them, though: CA VMs use `BOX_WIN_SERVER_CORE`, which always stays on upstream gusztavvargadr Core boxes (Server 2025 Core sysprep stalls in Packer, and ADCS + sysprep is unsupported per Microsoft), so the race is mitigated at runtime during provisioning. Today the baked ADCS layer benefits no CA VM — it rides in the Desktop-SKU boxes consumed only by the `BOX_WIN_SERVER` VMs (manage1, sqlhost1, tc1), none of which runs a CA.
+The lab's CA VMs (rootca, ca1, issueca) run Server 2025, whose post-domain-join WMI behavior is the source of the `InvalidSelectors` race (19+ rounds of mitigation work). The baked ADCS pre-install does not reach them, though: CA VMs use `BOX_WIN_SERVER_CORE`, which always stays on upstream gusztavvargadr Core boxes (Server 2025 Core sysprep stalls in Packer, and ADCS + sysprep is unsupported per Microsoft), so the race is mitigated at runtime during provisioning. Today the baked ADCS layer benefits no CA VM — it rides in the Desktop-SKU boxes consumed only by the `BOX_WIN_SERVER` VMs (manage1, sqlhost1, tomcat1), none of which runs a CA.
 
-All four releases build from **one** parameterized template (`windows/windows-server.pkr.hcl`, selected via `-var win_version=<ver>`) sharing a single `windows/answer_files/Autounattend.xml` and the same lab-bake layer. Use the older versions for cross-version testing (e.g., does the lab still work against a Server 2019 CA?) or to compare Server 2025's WMI quirks to older releases.
+Both releases (2022, 2025) build from **one** parameterized template (`windows/windows-server.pkr.hcl`, selected via `-var win_version=<ver>`) sharing a single `windows/answer_files/Autounattend.xml` and the same lab-bake layer. Use Server 2022 for cross-version testing (e.g., does the lab still work against a Server 2022 CA?) or to compare Server 2025's WMI quirks to the older release.
 
 ## Patch baseline: runtime WSUS, not a baked snapshot
 
@@ -99,7 +99,7 @@ Packer phases (see the provisioner blocks in `windows/windows-server.pkr.hcl`):
 
 ## Using the baked box
 
-After `vagrant box add` succeeds, set `USE_STRAYLIGHT_BOXES=true` (env var or edit in `vagrant/config.rb`) to flip the `BOX_WIN_SERVER` VMs (manage1, sqlhost1, tc1) to the straylight/* boxes; Core-box VMs stay on upstream gusztavvargadr regardless. There is no automatic fallback — box selection is a plain `USE_STRAYLIGHT_BOXES` ternary in `config.rb`, so with the flag set, the straylight box for the selected version must be registered locally or `vagrant up` fails trying to fetch it.
+After `vagrant box add` succeeds, set `USE_STRAYLIGHT_BOXES=true` (env var or edit in `vagrant/config.rb`) to flip the `BOX_WIN_SERVER` VMs (manage1, sqlhost1, tomcat1) to the straylight/* boxes; Core-box VMs stay on upstream gusztavvargadr regardless. There is no automatic fallback — box selection is a plain `USE_STRAYLIGHT_BOXES` ternary in `config.rb`, so with the flag set, the straylight box for the selected version must be registered locally or `vagrant up` fails trying to fetch it.
 
 ### Pinning a box version (freshness contract)
 
@@ -114,7 +114,7 @@ export STRAYLIGHT_BOX_VERSION=2026.6.16   # the value build-images.sh printed
 
 ## What the bake saves you
 
-Only the `BOX_WIN_SERVER` VMs — manage1, sqlhost1, tc1 — can consume a straylight box; the CA/dc/web/wsus VMs use `BOX_WIN_SERVER_CORE`, which always stays on upstream gusztavvargadr boxes. On those consumers a pre-baked box short-circuits, per VM at every cold-build:
+Only the `BOX_WIN_SERVER` VMs — manage1, sqlhost1, tomcat1 — can consume a straylight box; the CA/dc/web/wsus VMs use `BOX_WIN_SERVER_CORE`, which always stays on upstream gusztavvargadr boxes. On those consumers a pre-baked box short-circuits, per VM at every cold-build:
 
 - `common : Install PowerShell 7 from local cache` (~90s + MSI mutex race)
 - Vagrant's Guest Additions install at first `vagrant up`

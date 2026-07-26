@@ -2,7 +2,7 @@
 
 Hands-on lab for openssl-3.x CLI mastery: 13 lessons, ~3.5 hours total.
 Self-contained — `bootstrap.sh` generates all sample certs/keys locally;
-no network or external CA required. Each lesson links to the corresponding
+no network or external CA required. Each lesson names the corresponding
 fixmycert.com interactive demo as an optional visual companion; the lab
 works standalone.
 
@@ -10,7 +10,7 @@ works standalone.
 
 ```bash
 cd vagrant/docs/openssl-lab
-bash bootstrap.sh             # generates certs/ (~5 min, one-time)
+bash bootstrap.sh             # generates certs/ (~seconds, one-time)
 $EDITOR lessons/01-inspect-cert.md
 ```
 

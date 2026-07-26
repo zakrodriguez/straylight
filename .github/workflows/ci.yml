@@ -76,6 +76,9 @@ jobs:
             azure/scripts/lib/*.sh \
             azure/labs/*/*.sh
 
+      - name: validate-harness stub tests (transport hardening)
+        run: bash vagrant/test/validate_harness_test.sh
+
       - name: ruby -c (Vagrantfile + lib/)
         uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
         with:

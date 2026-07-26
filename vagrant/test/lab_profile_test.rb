@@ -17,6 +17,11 @@ class LabProfileTest < Minitest::Test
     @tmpdir = Dir.mktmpdir('lab-profile-test-')
     @profiles_dir = File.join(@tmpdir, 'profiles')
     FileUtils.mkdir_p(@profiles_dir)
+    # Hermetic against the require-time LabEnv.load! of the real vagrant/.env
+    # (dev hosts keep LAB_PROFILE there; CI has no .env) — under random test
+    # order that value otherwise reaches whichever test runs first and flakes
+    # any dotenv/default-resolution expectation.
+    %w[LAB_PROFILE LAB_COMPONENTS ADCS_TOPOLOGY].each { |k| ENV.delete(k) }
     # Minitest loads this file once but setup runs per test; silence the
     # "already initialized constant" warning when re-pointing PROFILES_DIR.
     silence_warnings do

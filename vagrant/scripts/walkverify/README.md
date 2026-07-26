@@ -59,3 +59,12 @@ The shipped adcs-functest goldens (service-health, revocation) were produced by
 running `verify` with `--profile ad-cs-two-tier` and `parameters: {}` against
 the build each lab's "Before you start" block prescribes:
 `LAB_PROFILE=ad-cs-two-tier vagrant up dc1 issueca manage1`.
+
+## az700 goldens (azure-only)
+Six az700 goldens (`az700-vnet-*`, `az700-dns-*`) also ship, with
+`profile: azure-only` and a pinned `az_cli_version` parameter. Their steps run
+on `host=lab` (the hypervisor host) against a standing az700 deploy. `host=lab`
+steps execute with the `--vagrant-root` directory as cwd, and the az700 labs
+invoke `azure/scripts/az700.sh` by repo-root-relative path — so run azure-only
+labs with `--vagrant-root <repo root>` (the default is `<repo>/vagrant`, which
+does not resolve that path).

@@ -3,6 +3,9 @@
 **Date:** 2026-05-12
 **Companion to:** <https://www.gradenegger.eu/en/performing-a-functional-test-for-a-certification-body>
 **Predecessor pattern:** `2026-05-08-adcs-category-labs-design.md`
+(development archive; likewise the `adcs-templates` /
+`adcs-architecture` / `adcs-autoenrollment` walkthroughs referenced
+below — see revision log)
 
 ## Goal
 
@@ -149,10 +152,10 @@ Length target: 400–500 lines.
 ## File layout
 
 - `specs/2026-05-12-adcs-functest-labs-design.md` (this file)
-- `labs/adcs-functest-service-health-walkthrough.md`
-- `labs/adcs-functest-connectivity-walkthrough.md`
-- `labs/adcs-functest-issuance-walkthrough.md`
-- `labs/adcs-functest-revocation-walkthrough.md`
+- `labs/adcs-functest-1-service-health-walkthrough.md`
+- `labs/adcs-functest-2-connectivity-walkthrough.md`
+- `labs/adcs-functest-3-issuance-walkthrough.md`
+- `labs/adcs-functest-4-revocation-walkthrough.md`
 - `README.md` updated — new "ADCS Functional Test" subsection under Lessons
 - `INDEX.md` updated
 
@@ -224,3 +227,11 @@ add a brief note here in a revision log.
   functional-test article. 1:1 URL-section-to-step mapping; template
   publishing folded into Lab 3 Setup since `adcs-templates-walkthrough.md`
   already covers it in depth.
+- 2026-07-25 — Post-ship alignment. The four labs shipped with number
+  prefixes (`adcs-functest-1-service-health-walkthrough.md` …
+  `adcs-functest-4-revocation-walkthrough.md`); the File layout list
+  above now uses the shipped names, while the design-time un-numbered
+  names remain elsewhere in this spec. The predecessor spec and the
+  `adcs-templates` / `adcs-architecture` / `adcs-autoenrollment`
+  walkthroughs referenced in this spec live in the development
+  archive, not in this tree.
