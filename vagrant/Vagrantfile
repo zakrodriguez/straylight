@@ -178,7 +178,6 @@ COMMON_VARS[:software_source_linux] = '/software' if SOFTWARE_AVAILABLE
 COMMON_VARS[:observe_ip] = IP_ADDRESSES[:observe1]
 COMMON_VARS[:log_prefix] = LOG_PREFIX
 COMMON_VARS[:winlogbeat_version] = WINLOGBEAT_CONFIG[:version]
-COMMON_VARS[:sysmon_version] = SYSMON_CONFIG[:version]
 COMMON_VARS[:filebeat_version] = FILEBEAT_CONFIG[:version]
 COMMON_VARS[:logging_enabled] = LOGGING_ENABLED
 COMMON_VARS[:winlogbeat_enabled] = WINLOGBEAT_ENABLED

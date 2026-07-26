@@ -130,6 +130,9 @@ register_checks_acme1
 register_checks_observe1
 register_checks_hydra1
 register_checks_pqc_chimera
+register_checks_apps1
+register_checks_scanner1
+register_checks_sqlhost1
 
 # ═════════════════════════════════════════════════════════════════════════
 # Wait for all checks, then print results in order

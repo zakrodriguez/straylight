@@ -4,6 +4,68 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.12.0] — 2026-07-25
+
+### Added
+- **validate.sh coverage for apps1, scanner1, sqlhost1** — the last three
+  unvalidated VMs (curation-review chore, 2026-07-22). apps1: docker + the
+  six app containers (keycloak/-db, vault, nifi, gitea, minio) + published
+  ports + filebeat. scanner1: docker, CBOM-Lens, the OpenSSL 3.5
+  side-install, CipherIQ compose project, source-repo tree,
+  `cloudflare-pqc.timer`, CMS lab tree, filebeat. sqlhost1: MSSQLSERVER
+  running as svc-sql, port 1433, firewall rule, plus the standard
+  dns/domain-join/winlogbeat/PSFramework/ScriptBlock checks (deliberately no
+  machine-cert or sysmon assertions — cert provisioning happens in the
+  walkthroughs and the playbook doesn't ship sysmon). CI shellcheck now
+  covers `vagrant/scripts/checks/*.sh`. Live-validated on an 18-VM `full`
+  cold build (91 min, 17/18 first-try + sqlhost1 after the win_get_url fix
+  below; all three new check sets green). The same lab closed the last
+  curation chore: **nuke.sh parallel-destroy (#186) live-tested for real —
+  18 VMs torn down in 68 s**, profile-scoped (a coexisting powered-off lab
+  untouched), zero VirtualBox residue.
+
+### Fixed
+- **`win_get_url` checksum pins never worked in `sql_server` and `tomcat`** —
+  both passed `checksum: "sha256:<hash>"`, the `get_url` (Linux) prefix
+  convention; `ansible.windows.win_get_url` wants a bare `checksum` +
+  `checksum_algorithm: sha256` and defaults to SHA1, so the comparison could
+  never succeed. Latent since the #83 pinning campaign: tomcat's download is
+  cache-shadowed on the dev host and sqlhost1 had never been cold-built —
+  caught live by the validate-coverage build (the failing fwlink download
+  re-verified against the still-correct pinned SHA256 at fix time).
+
+### Changed
+- **Python test suites wired into CI** — new `python-tests` job runs the
+  three stdlib unittest suites (walkverify 78, buildmon 177, cbom-toolkit 42
+  — 297 tests) on every PR; previously none were CI-gated (curation-review
+  chore, 2026-07-22).
+
+### Removed
+- **`SYSMON_CONFIG` dead knob** — `config.rb`'s `SYSMON_CONFIG[:version]`
+  flowed through the Vagrantfile into generated group_vars and was consumed
+  by nothing: Microsoft ships Sysmon as a rolling release (no versioned URL,
+  no stable checksum — the role's own comment), so the knob was unwirable by
+  design. Removed from `config.rb`/`Vagrantfile`; `docs/configuration.md`
+  rows corrected to say so (curation-review chore, 2026-07-22).
+
+### Added
+- **AZ-700 hybrid module infrastructure (P3a, part 1)** — the `hybrid-vpn`
+  topology: `modules/vpngw.bicep` (route-based IKEv2 gateway, BGP-capable
+  ASN 65515, `@allowed` VpnGw1AZ/VpnGw2AZ floor, zone-redundant pip) +
+  `modules/lng-connection.bicep` (local network gateway declaring the lab's
+  `192.168.56.0/21` + S2S connection, Azure as responder, BGP off — enabling
+  it is a lab exercise) + `labs/hybrid-vpn/` (hub + gateway + LNG +
+  connection + test VM). Driver gains a generic dynamic-parameter hook: an
+  executable `labs/<slug>/params.sh` emits `key=value` deployment parameters
+  at deploy time — hybrid-vpn's supplies the current public IP (ipify) and a
+  generated, persisted PSK (`~/.straylight/az700/hybrid-vpn.env`, 0600;
+  delete to rotate) so nothing secret is committed. `post-deploy.sh` records
+  the gateway's public IP in the same env file (resilient to `--no-wait`).
+  CI shellcheck now covers `azure/labs/*/*.sh`. **CGNAT precheck run
+  2026-07-25: no CGNAT (public hop directly behind the router) — S2S is GO**;
+  recorded in `azure/docs/costs.md` along with the hybrid cost band
+  (~$0.36/hr gateway; same-day teardown mandatory).
+
 ## [2.11.0] — 2026-07-25
 
 ### Added
@@ -1065,7 +1127,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.11.0...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.12.0...HEAD
+[2.12.0]: https://github.com/zakrodriguez/straylight/compare/v2.11.0...v2.12.0
 [2.11.0]: https://github.com/zakrodriguez/straylight/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/zakrodriguez/straylight/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/zakrodriguez/straylight/compare/v2.8.3...v2.9.0

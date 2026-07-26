@@ -38,7 +38,8 @@
     url: "https://api.adoptium.net/v3/installer/latest/{{ temurin_major_version }}/ga/windows/x64/jdk/hotspot/normal/eclipse"
     dest: 'C:\tmp\temurin-jdk.msi'
     follow_redirects: all
-    checksum: "sha256:ccd97a7e313381a84e3567ffe10ad562884e399cc1fb1b4c5fa417de49efac78"
+    checksum: ccd97a7e313381a84e3567ffe10ad562884e399cc1fb1b4c5fa417de49efac78
+    checksum_algorithm: sha256
   when:
     - not java_exe.stat.exists
     - software_source is not defined or not (temurin_local.stat.exists | default(false))

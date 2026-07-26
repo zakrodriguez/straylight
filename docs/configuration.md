@@ -37,7 +37,7 @@ Windows config (DNS, audit, Sysmon, RSAT, cert templates, autoenrollment, AD for
 | CA name / CRL URL / validity periods | `config.rb` `PKI_CONFIG` | edit `PKI_CONFIG` in `config.rb` |
 | CRL period (root vs issuing) | role templates (`CAPolicy*.inf.j2`) | `vagrant/ansible/roles/subordinate_ca/templates/CAPolicy-subordinate.inf.j2` |
 | Container image tags (EJBCA / step-ca / Hydra etc.) | `config.rb` `EJBCA_CONFIG`, `STEPCA_CONFIG`, `HYDRA_CONFIG`, etc. | edit the config block in `config.rb` |
-| Beats / Sysmon versions | `config.rb` `WINLOGBEAT_CONFIG`, `FILEBEAT_CONFIG`, `SYSMON_CONFIG` | edit the config block in `config.rb` |
+| Beats versions | `config.rb` `WINLOGBEAT_CONFIG`, `FILEBEAT_CONFIG` | edit the config block in `config.rb` |
 | WSUS data disk size | `config.rb` `WSUS_CONTENT_DISK_GB` | edit `WSUS_CONTENT_DISK_GB` in `config.rb` |
 | YubiHSM mode | `YUBIHSM_MODE` env | `YUBIHSM_MODE=physical ./up.sh` |
 | Where Software / PSF / WSUS caches live | env vars or default to `vagrant/resources/*/` | `SOFTWARE_PATH=/path ./up.sh` |
@@ -343,15 +343,14 @@ APPS_CONFIG = {
 }
 ```
 
-#### Beats / Sysmon versions
+#### Beats versions
 
 ```ruby
 WINLOGBEAT_CONFIG = { version: "8.17.0" }
-SYSMON_CONFIG     = { version: "15.15"  }
 FILEBEAT_CONFIG   = { version: "8.17.0" }
 ```
 
-Looked up at provisioning time. To upgrade, bump the version here and re-run the role. Installers must exist in `vagrant/resources/software/` (or be downloadable at install time if the local cache is removed).
+Looked up at provisioning time. To upgrade, bump the version here and re-run the role. Installers must exist in `vagrant/resources/software/` (or be downloadable at install time if the local cache is removed). Sysmon has no version knob: Microsoft ships it as a rolling release with no versioned URL, so the role installs from the `C:\Software` cache when present and otherwise downloads the current release.
 
 #### Logging toggles
 
@@ -599,7 +598,7 @@ The per-role configuration surfaces that shape what gets installed and how each 
 | Advanced audit subcategories | `roles/windows_logging/tasks/main.yml` — `auditpol /set /subcategory:"..."` for Certification Services (CA VMs), Logon/Logoff, Account Management, etc. | Add `auditpol` calls in the role task |
 | PowerShell ScriptBlock + Module logging | `roles/windows_logging/tasks/main.yml` — registry writes under `HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell` | Default: ScriptBlock + Module both enabled |
 | Sysmon config XML | `roles/sysmon/files/sysmonconfig.xml` — SwiftOnSecurity baseline | Replace file or edit XML in-place |
-| Sysmon version | `SYSMON_CONFIG[:version]` in `config.rb` | `SYSMON_CONFIG` (`15.15`) |
+| Sysmon version | not pinnable — Microsoft serves a rolling release (no versioned URL, no stable checksum) | role installs from the `C:\Software` cache when present, else current release |
 | Winlogbeat channels (per-VM type) | `roles/winlogbeat/templates/winlogbeat.yml.j2` — Jinja2-gated channel blocks | Per-VM playbook sets `winlogbeat_dc_channels: true` / `winlogbeat_ca_channels: true` / `winlogbeat_iis_channels: true` / `winlogbeat_wsus_channels: true` |
 | Base channels (every VM) | Same template, always-on | Security, PowerShell/Operational, Sysmon/Operational |
 | Winlogbeat → OpenSearch output | `roles/winlogbeat/templates/winlogbeat.yml.j2` — hosts: `https://{{ observe_ip }}:{{ beats_tls_port \| default(9244) }}` (TLS ingest via the `observe_tls` nginx) | `observe_ip` extra_var (auto-derived from `IP_ADDRESSES[:observe1]`) |

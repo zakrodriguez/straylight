@@ -69,10 +69,12 @@ jobs:
           shellcheck -S error -e SC1091 \
             vagrant/*.sh \
             vagrant/scripts/*.sh \
+            vagrant/scripts/checks/*.sh \
             vagrant/scripts/lib/*.sh \
             scripts/*.sh \
             azure/scripts/*.sh \
-            azure/scripts/lib/*.sh
+            azure/scripts/lib/*.sh \
+            azure/labs/*/*.sh
 
       - name: ruby -c (Vagrantfile + lib/)
         uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
@@ -114,6 +116,28 @@ jobs:
           set -euo pipefail
           find azure -name '*.bicep' -exec bicep format {} \;
           git diff --exit-code -- azure
+
+  python-tests:
+    name: Python tests (walkverify + buildmon + cbom-toolkit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.11'
+      - name: Run unittest suites
+        run: |
+          set -euo pipefail
+          # PyYAML is walkverify's one non-stdlib dep (companion files);
+          # buildmon and cbom-toolkit are stdlib-only. Each suite runs from
+          # its package dir so intra-package imports resolve the same way the
+          # tools run in production.
+          python -m pip install --quiet pyyaml
+          for d in vagrant/scripts/walkverify vagrant/scripts/buildmon vagrant/cbom-toolkit/python; do
+            echo "== ${d}"
+            (cd "${d}" && python3 -m unittest discover -s tests)
+          done
 
   ruby-tests:
     name: Ruby tests (lab_profile resolver)

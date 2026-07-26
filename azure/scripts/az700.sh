@@ -96,6 +96,13 @@ cmd_deploy() {
 
   local -a extra=()
   [[ -f "${lab_dir}/main.bicepparam" ]] && extra+=(--parameters "${lab_dir}/main.bicepparam")
+  if [[ -x "${lab_dir}/params.sh" ]]; then
+    local dyn kv
+    dyn="$("${lab_dir}/params.sh")" || az700::die "params.sh failed for ${slug}"
+    for kv in ${dyn}; do
+      extra+=(--parameters "${kv}")
+    done
+  fi
   if [[ "${no_wait}" == "1" ]]; then
     az deployment group create --resource-group "${rg}" --name main \
       --template-file "${lab_dir}/main.bicep" "${extra[@]+"${extra[@]}"}" \

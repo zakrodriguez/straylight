@@ -64,7 +64,8 @@
   ansible.windows.win_get_url:
     url: "{{ sql_server_ssei_url }}"
     dest: "{{ sql_install_workdir }}\\SQLSSEI.exe"
-    checksum: "sha256:5d9d277dccef80f2395f915664bd8e63fe7496b7b9c005c2f0c78a3c70d03813"
+    checksum: 5d9d277dccef80f2395f915664bd8e63fe7496b7b9c005c2f0c78a3c70d03813
+    checksum_algorithm: sha256
     force: false
   when:
     - not sql_already_installed

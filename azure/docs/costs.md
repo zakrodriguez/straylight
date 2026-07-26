@@ -37,4 +37,15 @@ they differ (or the WAN address is in 100.64.0.0/10), you are behind CGNAT and
 IKE NAT-T may not survive; the hybrid module's P2S plan-B applies. Record the
 result here when you run it:
 
-- [ ] CGNAT precheck run: date ______, WAN IP matches public IP: yes / no
+- [x] CGNAT precheck run: date 2026-07-25, WAN IP matches public IP: **yes**
+  (evidence: hop 2 after the router is a public Charter backbone address —
+  `tracepath` shows no 100.64.0.0/10 or private carrier hop — and the
+  ipify-reported address sits in ordinary Charter residential space; no CGNAT
+  layer exists. S2S is GO.)
+
+## hybrid-vpn (the expensive topology)
+
+The VPN gateway (VpnGw1AZ) runs ~$0.36/hr **from creation, including the
+20-45 min provisioning window**. A full lab session (deploy, two labs,
+teardown) lands around $1-1.50. Never leave it up overnight — that's ~$9/day;
+the sweep timer is the backstop, same-day `destroy hybrid-vpn` is the rule.

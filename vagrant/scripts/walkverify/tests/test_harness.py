@@ -287,11 +287,14 @@ class TestPathMath(unittest.TestCase):
 
     def test_default_vagrant_root_not_doubled_and_exists(self):
         mod, _ = self._load_main()
-        self.assertTrue(mod._DEFAULT_VAGRANT_ROOT.endswith(
-            os.path.join("straylight", "vagrant")))
+        # Assert the shape, not the checkout dir name — the repo runs under
+        # different folder names (dev host vs CI checkout).
+        self.assertEqual(os.path.basename(mod._DEFAULT_VAGRANT_ROOT), "vagrant")
         self.assertNotIn(os.path.join("vagrant", "vagrant"),
                          mod._DEFAULT_VAGRANT_ROOT)
         self.assertTrue(os.path.isdir(mod._DEFAULT_VAGRANT_ROOT))
+        self.assertTrue(os.path.isfile(
+            os.path.join(mod._DEFAULT_VAGRANT_ROOT, "Vagrantfile")))
 
 if __name__ == "__main__":
     unittest.main()
