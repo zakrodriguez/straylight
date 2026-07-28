@@ -1,0 +1,39 @@
+{# swanctl connection for the Azure S2S tunnel — rendered only when the
+   env triple is complete. vpn1 is the INITIATOR from behind double NAT
+   (VBox NAT + home router): NAT-T handles the transport; the local IKE
+   identity must be the on-prem PUBLIC IP because that is the LNG
+   gatewayIpAddress Azure authenticates against. #}
+connections {
+  azure {
+    version = 2
+    remote_addrs = {{ strongswan_gateway_ip }}
+    local {
+      auth = psk
+      id = {{ strongswan_onprem_id }}
+    }
+    remote {
+      auth = psk
+      id = {{ strongswan_gateway_ip }}
+    }
+    proposals = {{ strongswan_ike_proposal }}
+    dpd_delay = 30s
+    children {
+      azure {
+        local_ts = {{ strongswan_local_ts }}
+        remote_ts = {{ strongswan_remote_ts }}
+        esp_proposals = {{ strongswan_esp_proposal }}
+        start_action = start
+        dpd_action = restart
+        close_action = start
+      }
+    }
+  }
+}
+
+secrets {
+  ike-azure {
+    id-local = {{ strongswan_onprem_id }}
+    id-remote = {{ strongswan_gateway_ip }}
+    secret = "{{ strongswan_psk }}"
+  }
+}

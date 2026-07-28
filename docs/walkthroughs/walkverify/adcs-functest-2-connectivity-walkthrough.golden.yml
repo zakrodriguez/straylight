@@ -1,0 +1,187 @@
+lab: adcs-functest-2-connectivity-walkthrough
+profile: ad-cs-two-tier
+parameters: {}
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  latency:
+    pattern: \b\d+\s*ms\b
+    placeholder: <LATENCY>
+steps:
+- step: host-connectivity-precheck
+  host: lab
+  command: 'vagrant status dc1 issueca web1 | grep -E ''^(dc1|issueca|web1) ''
+
+    # Expected: all three show "running"'
+  rc: 0
+  expect:
+  - running
+  strict: false
+  captured: 'dc1                       running (virtualbox)
+
+    issueca                   running (virtualbox)
+
+    web1                      running (virtualbox)
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: setup-ca
+  host: issueca
+  command: '$CA = "ISSUECA.yourlab.local\YOURLAB-Issuing-CA"
+
+    $Work = "C:\ProgramData\adcs-functest"
+
+    New-Item -Path $Work -ItemType Directory -Force | Out-Null
+
+    Set-Location $Work'
+  rc: 0
+  expect: []
+  strict: false
+  captured: '[lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: ping-interface
+  host: issueca
+  command: certutil -config $CA -ping
+  rc: 0
+  expect:
+  - interface is alive
+  - completed successfully
+  strict: false
+  captured: 'Connecting to ISSUECA.yourlab.local\YOURLAB-Issuing-CA ...
+
+    Server "YOURLAB-Issuing-CA" ICertRequest2 interface is alive (<LATENCY>)
+
+    CertUtil: -ping command completed successfully.
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: xchg-generate
+  host: issueca
+  command: 'certutil -config $CA -cainfo xchg > "$Work\xchg.cer"
+
+    Select-String -Path "$Work\xchg.cer" -Pattern ''BEGIN CERTIFICATE''
+
+    # Expected: a line -----BEGIN CERTIFICATE----- (certutil writes a
+
+    # "CA exchange cert[0]:" header before the PEM block; it reads PEM back
+
+    # natively, so the header is harmless to -dump and -verify below)'
+  rc: 0
+  expect:
+  - BEGIN CERTIFICATE
+  strict: false
+  captured: '
+
+    xchg.cer:2:-----BEGIN CERTIFICATE-----
+
+
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: xchg-dump
+  host: issueca
+  command: "certutil -dump \"$Work\\xchg.cer\" > \"$Work\\xchg-dump.txt\"\nSelect-String\
+    \ -Path \"$Work\\xchg-dump.txt\" `\n    -Pattern 'Subject:|Issuer:|NotAfter|Template=|CAExchange|URL=|Private\
+    \ Key Archival'"
+  rc: 0
+  expect:
+  - CAExchange
+  - pki\.yourlab\.local
+  strict: false
+  captured: '
+
+    xchg-dump.txt:8:Issuer:
+
+    xchg-dump.txt:16: NotAfter: 8/3/2026 11:47 AM
+
+    xchg-dump.txt:18:Subject:
+
+    xchg-dump.txt:62:                       URL=http://pki.yourlab.local/crl/YOURLAB-Issuing-CA.crl
+
+    xchg-dump.txt:69:                  URL=http://pki.yourlab.local/aia/YOURLAB-Issuing-CA.crt
+
+    xchg-dump.txt:73:        CAExchange
+
+    xchg-dump.txt:86:        Template=CA Exchange(1.3.6.1.4.1.311.21.8.170153.877409.16597124.6236344.575123.145.1.26)
+
+    xchg-dump.txt:92:        Private Key Archival (1.3.6.1.4.1.311.21.5)
+
+    xchg-dump.txt:101:             Policy Identifier=Private Key Archival
+
+
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '
+- step: xchg-verify
+  host: issueca
+  command: "certutil -verify -urlfetch \"$Work\\xchg.cer\" > \"$Work\\xchg-verify.txt\"\
+    \ 2>&1\nGet-Content \"$Work\\xchg-verify.txt\" |\n    Select-String -Pattern 'Issuer:|Verified\
+    \ \"Base CRL|Failed \"AIA\"|revocation check passed|completed successfully'"
+  rc: 0
+  expect:
+  - Leaf certificate revocation check passed
+  - completed successfully
+  strict: false
+  captured: "\nIssuer:\n  Issuer: CN=YOURLAB-Issuing-CA, DC=yourlab, DC=local\n  Failed\
+    \ \"AIA\" Time: 0 (null)\n  Verified \"Base CRL (08)\" Time: 0 f0f75ee0c2a9a64435fee5ec36dacd24e95b2d2a\n\
+    \    Issuer: CN=YOURLAB-Issuing-CA, DC=yourlab, DC=local\n    Issuer: CN=YOURLAB-Issuing-CA,\
+    \ DC=yourlab, DC=local\n  Issuer: CN=YOURLAB-Root-CA, DC=yourlab, DC=local\n \
+    \ Failed \"AIA\" Time: 0 (null)\n  Verified \"Base CRL (03)\" Time: 0 10db898955eb6f07674c880e87cdd90cd65ee6ce\n\
+    \    Issuer: CN=YOURLAB-Root-CA, DC=yourlab, DC=local\n  Issuer: CN=YOURLAB-Root-CA,\
+    \ DC=yourlab, DC=local\nLeaf certificate revocation check passed\nCertUtil: -verify\
+    \ command completed successfully.\n\n\n[lab_profile] active: ad-cs-two-tier (5\
+    \ VMs, source=lab_profile)\n"
+- step: cdp-break-verify
+  host: issueca
+  command: "# (1) Snapshot the hosts file (cleanup safety net)\nCopy-Item C:\\Windows\\\
+    System32\\drivers\\etc\\hosts \"$Work\\hosts.bak\" -Force\n\n# (2) Force a real\
+    \ fetch (no cache fallback) and blackhole the CDP host\ncertutil -urlcache CRL\
+    \ delete | Out-Null\nAdd-Content -Path C:\\Windows\\System32\\drivers\\etc\\hosts\
+    \ `\n    -Value \"`r`n10.255.255.254  pki.yourlab.local  # functest break\"\n\
+    ipconfig /flushdns | Out-Null\n\n# (3) Re-verify against the dead CDP\ncertutil\
+    \ -verify -urlfetch \"$Work\\xchg.cer\" > \"$Work\\xchg-verify-broken.txt\" 2>&1\n\
+    Get-Content \"$Work\\xchg-verify-broken.txt\" |\n    Select-String -Pattern '0x80072ee2|0x80092013|revocation\
+    \ server'"
+  rc: 0
+  expect:
+  - '0x80092013'
+  strict: false
+  captured: "\n    Error retrieving URL: The operation timed out 0x80072ee2 (WinHttp:\
+    \ 12002 ERROR_WINHTTP_TIMEOUT)\n    Error retrieving URL: The operation timed\
+    \ out 0x80072ee2 (WinHttp: 12002 ERROR_WINHTTP_TIMEOUT)\n    Error retrieving\
+    \ URL: The operation timed out 0x80072ee2 (WinHttp: 12002 ERROR_WINHTTP_TIMEOUT)\n\
+    \    Error retrieving URL: The operation timed out 0x80072ee2 (WinHttp: 12002\
+    \ ERROR_WINHTTP_TIMEOUT)\n    Error retrieving URL: The operation timed out 0x80072ee2\
+    \ (WinHttp: 12002 ERROR_WINHTTP_TIMEOUT)\nThe revocation function was unable to\
+    \ check revocation because the revocation server was offline. 0x80092013 (-2146885613\
+    \ CRYPT_E_REVOCATION_OFFLINE)\n\n\n[lab_profile] active: ad-cs-two-tier (5 VMs,\
+    \ source=lab_profile)\n"
+- step: restore-and-verify
+  host: issueca
+  command: "# (1) Restore the hosts file and flush\nCopy-Item \"$Work\\hosts.bak\"\
+    \ C:\\Windows\\System32\\drivers\\etc\\hosts -Force\nipconfig /flushdns | Out-Null\n\
+    \n# (2) Re-verify \u2014 the chain is green again\ncertutil -verify -urlfetch\
+    \ \"$Work\\xchg.cer\" |\n    Select-String -Pattern 'revocation check passed|completed\
+    \ successfully|Failed \"Base'\n# Expected: Leaf certificate revocation check passed\n\
+    #           CertUtil: -verify command completed successfully."
+  rc: 0
+  expect:
+  - completed successfully
+  strict: false
+  captured: '
+
+    Leaf certificate revocation check passed
+
+    CertUtil: -verify command completed successfully.
+
+
+
+    [lab_profile] active: ad-cs-two-tier (5 VMs, source=lab_profile)
+
+    '

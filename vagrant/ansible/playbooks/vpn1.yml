@@ -1,0 +1,22 @@
+---
+# VPN1 - strongSwan S2S initiator for the AZ-700 hybrid module.
+# Dials the Azure VPN gateway (azure/labs/hybrid-vpn) as IKEv2 initiator;
+# Azure is the responder, so no home-router port-forwards are needed.
+# Tunnel parameters come from ~/.straylight/az700/hybrid-vpn.env on the
+# CONTROLLER (written by az700.sh deploy hybrid-vpn); when absent the role
+# installs strongSwan but skips tunnel config — re-provision after deploy.
+- hosts: all
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Include common_linux role
+      ansible.builtin.include_role:
+        name: common_linux
+
+    - name: Include strongswan_azure role
+      ansible.builtin.include_role:
+        name: strongswan_azure
+
+    - name: Include filebeat role
+      ansible.builtin.include_role:
+        name: filebeat

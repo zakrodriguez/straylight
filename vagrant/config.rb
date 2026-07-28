@@ -90,6 +90,10 @@ VM_DEFAULTS = {
     memory: 1024,
     cpus: 1
   },
+  vpn: {
+    memory: 1024,
+    cpus: 1
+  },
   sql: {
     memory: 6144,
     cpus: 2

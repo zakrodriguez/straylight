@@ -10,3 +10,20 @@ IP and a persisted PSK at deploy time (`~/.straylight/az700/hybrid-vpn.env`,
 
 Deploy: `azure/scripts/az700.sh deploy hybrid-vpn --no-wait` then `watch hybrid-vpn` · Teardown: `azure/scripts/az700.sh destroy hybrid-vpn`
 Cost: ~$0.36/hr while the gateway exists — never leave it up overnight.
+
+## Tunnel-up runbook (on-prem side = the Straylight lab)
+
+Run from the operator's real uplink (the LNG address is your public IP):
+
+```bash
+azure/scripts/az700.sh deploy hybrid-vpn --no-wait   # ~21 min; writes the env file
+azure/scripts/az700.sh watch hybrid-vpn              # gate on Succeeded
+azure/scripts/az700.sh deploy hybrid-vpn             # idempotent re-run records the gateway pip
+cd vagrant && LAB_PROFILE=az700-hybrid ./up.sh       # dc1 + vpn1 (vpn1 reads the env file)
+# If vpn1 predates the deploy: LAB_PROFILE=az700-hybrid vagrant provision vpn1
+```
+
+Verify: `sudo swanctl --list-sas` on vpn1 shows `ESTABLISHED`; Azure side
+`az network vpn-connection show -g rg-straylight-az700-hybrid-vpn -n cn-straylight-s2s --query connectionStatus`
+flips to `Connected`. If your public IP changed since the deploy:
+`azure/scripts/az700.sh update-onprem-ip hybrid-vpn`, then re-provision vpn1.

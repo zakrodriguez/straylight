@@ -1,0 +1,27 @@
+---
+# Persistent route to the Azure-side pool (10.100.0.0/14) via vpn1 on the
+# host-only network. Included by dc1/manage1 playbooks, gated on
+# azure_routes_enabled — the Vagrantfile sets it true only when vpn1 is in
+# the active profile (az700-hybrid), so every other profile is untouched.
+
+- name: Find the host-only interface index (the adapter carrying the lab IP)
+  ansible.windows.win_shell: |
+    (Get-NetIPAddress -AddressFamily IPv4 |
+      Where-Object { $_.IPAddress -like '192.168.*' } |
+      Select-Object -First 1).InterfaceIndex
+  register: azure_routes_ifindex
+  changed_when: false
+
+- name: Add persistent route 10.100.0.0/14 via vpn1
+  ansible.windows.win_shell: |
+    $existing = Get-NetRoute -DestinationPrefix '10.100.0.0/14' -ErrorAction SilentlyContinue
+    if ($existing) {
+      'present'
+    } else {
+      New-NetRoute -DestinationPrefix '10.100.0.0/14' `
+        -NextHop '{{ vpn1_ip }}' `
+        -InterfaceIndex {{ azure_routes_ifindex.stdout | trim }} | Out-Null
+      'created'
+    }
+  register: azure_routes_result
+  changed_when: "'created' in azure_routes_result.stdout"

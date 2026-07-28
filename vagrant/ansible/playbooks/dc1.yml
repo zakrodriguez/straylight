@@ -42,3 +42,8 @@
         name: winlogbeat
       vars:
         winlogbeat_dc_channels: true
+
+    - name: Include azure_routes role (az700-hybrid profile only)
+      ansible.builtin.include_role:
+        name: azure_routes
+      when: azure_routes_enabled | default(false)

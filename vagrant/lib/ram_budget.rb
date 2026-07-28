@@ -47,6 +47,7 @@ module RamBudget
     'acme1'       => :acme,
     'scanner1'    => :scanner,
     'apps1'       => :apps,
+    'vpn1'        => :vpn,
   }.freeze
 
   # Effective configured memory for one VM: profile resources override,

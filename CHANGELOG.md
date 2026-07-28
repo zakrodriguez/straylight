@@ -4,6 +4,62 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.12.2] — 2026-07-28
+
+### Fixed
+- **AZ-700 hybrid S2S tunnel now negotiates (live-established 2026-07-27).**
+  First real tunnel-up against Azure caught two deploy-blocking bugs the
+  staging couldn't: (1) Azure's *default* IPsec/IKE policy would not
+  negotiate with strongSwan on VpnGw1AZ — the initiator got
+  `NO_PROPOSAL_CHOSEN` at IKE_SA_INIT for every combination in Azure's
+  documented default set. `lng-connection.bicep` now pins an explicit
+  policy (AES256/SHA256/DHGroup14 IKE, AES256/SHA256/no-PFS IPsec) that
+  matches the `strongswan_azure` proposals exactly. (2) The `az700-hybrid`
+  profile included `manage1`, whose playbook hangs on
+  `machine_cert : Wait for Root CA cert` because the profile ships no CA;
+  the profile is now `dc1 + vpn1`. Verified end to end: CHILD_SA
+  established (TS `192.168.56.0/21` ⇔ `10.100.0.0/14`), on-prem→Azure ping
+  ~39 ms, dc1→Azure through the `azure_routes` route + vpn1 forwarding,
+  Azure `connectionStatus: Connected`.
+
+
+- **adcs-functest connectivity walkthrough (Lab 2) reworked and made
+  VERIFIABLE** — it was the last unverified functest lab and it
+  misteaught throughout: its opening `-ping` steps rode remote DCOM
+  (deterministically `RPC_S_SERVER_UNAVAILABLE` on the shared-NAT
+  topology), Step 4's `certutil -cainfo xchg <file>` form is invalid
+  (the verb writes PEM to stdout — redirect it), the documented CDP/AIA
+  URLs and the LDAP-CDP fallback never existed (they are HTTP-only to
+  `pki.yourlab.local`), the Step 7 break asserted the wrong error code
+  and a non-zero exit, and the IPs were hardcoded to `.56` when labs
+  allocate a dynamic /24. Reworked to the two-actor CA-host convention
+  (all steps `host=issueca`, matching the revocation lab), with the
+  discovery-object and low-privilege steps demoted to prose (they need
+  directory rights the walkverify account lacks). New teaching content
+  grounded in live behavior: a blackholed CDP does **not** fail
+  verification while a CRL is cached — the cache must be cleared to force
+  the `0x80072ee2` → `0x80092013` revocation-offline path, and Server 2025
+  `-verify` still exits successfully because it only *determined* the
+  status. **Golden captured (8/8), `check` replay 8/8** — the functest
+  module is now fully verifiable end to end (labs 1, 2, 4; Lab 3 pending).
+
+
+### Added
+- **AZ-700 hybrid module, on-prem side (P3a, part 2)** — the lab becomes a
+  real S2S site: new `vpn1` VM (Ubuntu + strongSwan/charon-systemd, octet
+  45) dialing the Azure VPN gateway as IKEv2 initiator (Azure responds; no
+  home port-forwards), configured from the controller-side
+  `~/.straylight/az700/hybrid-vpn.env` the driver already writes — absent
+  parameters degrade to install-only with a clear message, and a
+  re-provision after `deploy hybrid-vpn` loads the tunnel. New
+  `az700-hybrid` profile (dc1 + manage1 + vpn1); new `azure_routes` role
+  gives dc1/manage1 persistent `10.100.0.0/14 → vpn1` routes, gated so no
+  other profile is touched. validate.sh gains a tunnel-tolerant vpn1 check
+  (an un-established SA between hybrid sessions is reported, not failed).
+  ARCHITECTURE/STRAYLIGHT-REFERENCE inventories now list 21 defined VMs.
+  Tunnel establishment itself awaits the first at-home session (needs the
+  operator's real uplink); everything up to that boundary is staged.
+
 ## [2.12.1] — 2026-07-26
 
 ### Removed
@@ -1207,7 +1263,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.12.1...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.12.2...HEAD
+[2.12.2]: https://github.com/zakrodriguez/straylight/compare/v2.12.1...v2.12.2
 [2.12.1]: https://github.com/zakrodriguez/straylight/compare/v2.12.0...v2.12.1
 [2.12.0]: https://github.com/zakrodriguez/straylight/compare/v2.11.0...v2.12.0
 [2.11.0]: https://github.com/zakrodriguez/straylight/compare/v2.10.0...v2.11.0

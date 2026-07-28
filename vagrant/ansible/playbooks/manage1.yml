@@ -88,3 +88,8 @@
     - name: Include cms_lab_windows role (CMS hands-on lab)
       ansible.builtin.include_role:
         name: cms_lab_windows
+
+    - name: Include azure_routes role (az700-hybrid profile only)
+      ansible.builtin.include_role:
+        name: azure_routes
+      when: azure_routes_enabled | default(false)

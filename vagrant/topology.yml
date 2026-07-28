@@ -135,6 +135,11 @@ vms:
     os: linux
     groups: [linux]
     depends_on: []
+  vpn1:
+    octet: 45
+    os: linux
+    groups: [linux]
+    depends_on: []
   acme1:
     octet: 70
     os: linux

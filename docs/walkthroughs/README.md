@@ -15,7 +15,7 @@ The operational acceptance test for the lab's core PKI — proves the deployed t
 | Lab | What it proves |
 |---|---|
 | [1 — Service health](labs/adcs-functest-1-service-health-walkthrough.md) | CA service state, audit events (4886 request / 4887 issued / 4872 CRL published), database and backup posture |
-| [2 — Connectivity](labs/adcs-functest-2-connectivity-walkthrough.md) | Every enrollment interface answers: DCOM/RPC, LDAP CDP/AIA objects, HTTP CDP, `certutil -ping` |
+| [2 — Connectivity](labs/adcs-functest-2-connectivity-walkthrough.md) | The enrollment interface is alive (`certutil -ping`), the CA exchange cert issues, and its HTTP CDP/AIA URLs verify — then a blackholed CDP shows the cache-masked revocation-offline failure |
 | [3 — Issuance](labs/adcs-functest-3-issuance-walkthrough.md) | A certificate request travels the full path: template → CSR → submit → issue → chain validation |
 | [4 — Revocation](labs/adcs-functest-4-revocation-walkthrough.md) | Revoke → CRL publish → client verification actually fails (with the real 26-week base + 1-day delta CRL windows) |
 

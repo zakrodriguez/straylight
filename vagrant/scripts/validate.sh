@@ -133,6 +133,7 @@ register_checks_pqc_chimera
 register_checks_apps1
 register_checks_scanner1
 register_checks_sqlhost1
+register_checks_vpn1
 
 # ═════════════════════════════════════════════════════════════════════════
 # Wait for all checks, then print results in order

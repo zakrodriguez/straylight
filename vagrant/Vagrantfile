@@ -179,6 +179,10 @@ COMMON_VARS[:observe_ip] = IP_ADDRESSES[:observe1]
 COMMON_VARS[:log_prefix] = LOG_PREFIX
 COMMON_VARS[:winlogbeat_version] = WINLOGBEAT_CONFIG[:version]
 COMMON_VARS[:filebeat_version] = FILEBEAT_CONFIG[:version]
+# az700-hybrid: dc1/manage1 route the Azure pool via vpn1; every other
+# profile leaves azure_routes_enabled false and never runs the role.
+COMMON_VARS[:azure_routes_enabled] = COMPONENTS.include?("vpn1")
+COMMON_VARS[:vpn1_ip] = IP_ADDRESSES[:vpn1]
 COMMON_VARS[:logging_enabled] = LOGGING_ENABLED
 COMMON_VARS[:winlogbeat_enabled] = WINLOGBEAT_ENABLED
 COMMON_VARS[:filebeat_enabled] = FILEBEAT_ENABLED
@@ -980,6 +984,41 @@ Vagrant.configure("2") do |config|
     end
   end
   end  # COMPONENTS.include?("acme1")
+
+  #=============================================================================
+  # VPN1 - strongSwan S2S initiator (AZ-700 hybrid module, az700-hybrid only)
+  #   Dials the Azure VPN gateway (azure/labs/hybrid-vpn) as IKEv2 initiator;
+  #   tunnel parameters come from ~/.straylight/az700/hybrid-vpn.env.
+  #=============================================================================
+  if COMPONENTS.include?("vpn1")
+  config.vm.define "vpn1", autostart: false do |vpn|
+    vpn.vm.box = BOX_LINUX_UBUNTU
+    vpn.vm.hostname = "vpn1"
+    vpn.vm.communicator = "ssh"
+    vpn.vm.network "private_network", ip: IP_ADDRESSES[:vpn1]
+
+    vpn.vm.provider "virtualbox" do |vb|
+      vb.name = "#{VB_PREFIX}-vpn1"
+      vb.memory = vm_memory("vpn1", VM_DEFAULTS[:vpn][:memory])
+      vb.cpus = vm_cpus("vpn1", VM_DEFAULTS[:vpn][:cpus])
+      vb.gui = false
+    end
+
+    # Disable default synced folder (re-enable with SSH-compatible type)
+    vpn.vm.synced_folder ".", "/vagrant", disabled: true
+    vpn.vm.synced_folder SOFTWARE_PATH, "/software", type: "virtualbox" if SOFTWARE_AVAILABLE
+
+    vpn.vm.provision "ansible" do |ansible|
+      ansible.playbook = "#{ANSIBLE_DIR}/playbooks/vpn1.yml"
+      ansible.config_file = "#{ANSIBLE_DIR}/ansible.cfg"
+      ansible.extra_vars = COMMON_VARS.merge({
+        ip_address: IP_ADDRESSES[:vpn1],
+      })
+      ansible.inventory_path = INVENTORY_PATH
+      ansible.compatibility_mode = "2.0"
+    end
+  end
+  end  # COMPONENTS.include?("vpn1")
 
   #=============================================================================
   # SCANNER1 - CBOM Scanner Hub on Ubuntu/Docker (Optional)

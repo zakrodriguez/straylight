@@ -1,0 +1,17 @@
+name: az700-hybrid
+description: |
+  On-prem side of the AZ-700 hybrid module: dc1 as the "corporate site" plus
+  vpn1 (strongSwan) initiating the S2S IKEv2 tunnel to the Azure VPN gateway
+  (azure/labs/hybrid-vpn — deploy it first so
+  ~/.straylight/az700/hybrid-vpn.env carries the gateway IP and PSK).
+  dc1 gets a persistent route for 10.100.0.0/14 via vpn1 and reaches Azure
+  private IPs over the tunnel.
+
+  manage1 is intentionally NOT included: its playbook enrolls a machine cert
+  (machine_cert waits for a Root CA cert in the trust store), and this
+  profile ships no CA — it would hang forever. A Windows relying-party host
+  for hybrid labs is a follow-up (gated PKI roles, or add a CA VM).
+
+components:
+  - dc1
+  - vpn1

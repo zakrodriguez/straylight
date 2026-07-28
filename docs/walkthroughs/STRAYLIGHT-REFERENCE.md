@@ -46,11 +46,11 @@ substitute when reading the labs: `yourlab.local` → `<your LAB_DOMAIN>`;
 `YOURLAB-Issuing-CA` / `YOURLAB-Root-CA` / `YOURLAB\Administrator` →
 the same with `<your LAB_NETBIOS>` in place of `YOURLAB`.
 
-## VM inventory (20 VMs defined; `full` ships 18)
+## VM inventory (21 VMs defined; `full` ships 18)
 
-`full` builds 18 of the 20 defined VMs — the two PQC-only AD CS VMs
+`full` builds 18 of the 21 defined VMs — the two PQC-only AD CS VMs
 (`rootca-pqc`, `issueca-pqc`) ship only in `pqc-adcs-two-tier` /
-`pqc-full`.
+`pqc-full`, and `vpn1` only in `az700-hybrid`.
 
 | VM | IP | OS | Role | Profile membership |
 |---|---|---|---|---|
@@ -67,6 +67,7 @@ the same with `<your LAB_NETBIOS>` in place of `YOURLAB`.
 | `wsus1` | 192.168.56.40 | Windows Server | WSUS for offline patching | `full` |
 | `tomcat1` | 192.168.56.60 | Windows + Java + Tomcat | JKS / keystore labs | `full`, JKS-relevant |
 | `sqlhost1` | 192.168.56.80 | Windows + SQL Server | SQL Server cert binding | `sql-cert-labs`, `full` |
+| `vpn1` | 192.168.56.45 | Linux + strongSwan | S2S IKEv2 initiator to the Azure VPN gateway (hybrid module) | `az700-hybrid` |
 | `ejbca1` | 192.168.56.50 | Linux + Docker | EJBCA CA + chimera CA | `ejbca-only`, `cbom-pipeline`, `pqc-linux`, `pqc-full`, `full` |
 | `stepca1` | 192.168.56.51 | Linux + Docker | smallstep step-ca + ACME provisioner | `stepca-only`, `oauth-oidc`, `cbom-pipeline`, `pqc-linux`, `pqc-full`, `full`, most ACME profiles |
 | `hydra1` | 192.168.56.52 | Linux + Docker | Ory Hydra OAuth/OIDC | `oauth-oidc`, `pqc-linux`, `pqc-full`, `full` |
@@ -103,6 +104,7 @@ cd vagrant && ./up.sh --list-profiles
 | `pqc-full` | 13 VMs incl. Windows + Linux | Pure PQC + chimera certs end-to-end (adds the ML-DSA AD CS hierarchy) |
 | `pqc-linux` | Linux-only PQC subset | PQC without Windows |
 | `sql-cert-labs` | dc1 + sqlhost1 + ... | SQL Server cert binding |
+| `az700-hybrid` | dc1 + manage1 + vpn1 | On-prem site for the AZ-700 hybrid S2S labs (deploy `azure/labs/hybrid-vpn` first) |
 | `stepca-only` | stepca1 + acme1 + observe1 | Step-ca standalone |
 | `full` | 18 VMs (of 20 defined) | All surfaces; ~77 GB RAM at current VM_DEFAULTS (needs a 96 GB+ host) |
 

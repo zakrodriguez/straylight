@@ -1,0 +1,4 @@
+---
+- name: Reload swanctl connections
+  ansible.builtin.command: swanctl --load-all
+  changed_when: true

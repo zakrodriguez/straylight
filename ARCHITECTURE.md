@@ -75,6 +75,7 @@ Two-tier matches enterprise best practice: root CA offline after signing the sub
 | `issueca-pqc` | 192.168.56.26 | Windows | ML-DSA-65 Enterprise Issuing CA (PQC hierarchy) |
 | `web1` | 192.168.56.30 | Windows | IIS CRL/AIA (CDP) distribution point |
 | `wsus1` | 192.168.56.40 | Windows | WSUS update server (golden-master cache) |
+| `vpn1` | 192.168.56.45 | Linux | strongSwan S2S initiator to the Azure VPN gateway (az700-hybrid) |
 | `ejbca1` | 192.168.56.50 | Linux | EJBCA CE (Docker) — independent PKI + PQC issuance |
 | `stepca1` | 192.168.56.51 | Linux | Smallstep step-ca (Docker) — ACME-native CA |
 | `hydra1` | 192.168.56.52 | Linux | Ory Hydra (Docker) — OAuth 2.0 / OIDC |
@@ -106,6 +107,7 @@ flowchart LR
     end
 
     subgraph "Linux / Docker"
+      VPN1[vpn1<br/>.45]
       EJBCA1[ejbca1<br/>.50]
       STEPCA1[stepca1<br/>.51]
       HYDRA1[hydra1<br/>.52]
@@ -118,7 +120,7 @@ flowchart LR
 
 > 🖌️ **Editable draw.io:** [`docs/diagrams/vm-inventory.drawio.svg`](docs/diagrams/vm-inventory.drawio.svg)
 
-Each profile (`vagrant/profiles/*.yml`) picks a subset and overrides per-VM memory/CPU. Of the **20 VMs** defined, the `full` profile ships **18**: `rootca-pqc` and `issueca-pqc` ship only in `pqc-adcs-two-tier` / `pqc-full`.
+Each profile (`vagrant/profiles/*.yml`) picks a subset and overrides per-VM memory/CPU. Of the **21 VMs** defined, the `full` profile ships **18**: `rootca-pqc` and `issueca-pqc` ship only in `pqc-adcs-two-tier` / `pqc-full`, and `vpn1` only in `az700-hybrid`.
 
 ## PQC feature matrix
 

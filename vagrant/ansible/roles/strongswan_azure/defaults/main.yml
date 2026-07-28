@@ -1,0 +1,18 @@
+---
+# strongswan_azure defaults. The tunnel triple (gateway IP, on-prem public
+# IP, PSK) is read from the controller-side env file that
+# azure/scripts/az700.sh deploy hybrid-vpn writes; everything else is the
+# track's locked address plan (STRAYLIGHT-REFERENCE, Azure conventions).
+strongswan_env_file: "{{ lookup('env', 'HOME') }}/.straylight/az700/hybrid-vpn.env"
+strongswan_gateway_ip: "{{ lookup('ansible.builtin.ini', 'GATEWAY_PUBLIC_IP', type='properties', file=strongswan_env_file, default='') }}"
+strongswan_onprem_id: "{{ lookup('ansible.builtin.ini', 'ONPREM_IP', type='properties', file=strongswan_env_file, default='') }}"
+strongswan_psk: "{{ lookup('ansible.builtin.ini', 'SHARED_KEY', type='properties', file=strongswan_env_file, default='') }}"
+
+# Traffic selectors: the lab's host-only supernet <-> the Azure-side pool.
+strongswan_local_ts: 192.168.56.0/21
+strongswan_remote_ts: 10.100.0.0/14
+
+# Azure route-based VPN gateway compatible proposals (VpnGw1AZ defaults
+# accept AES-256/SHA-256; DH14/modp2048 for IKE, no PFS on the child).
+strongswan_ike_proposal: aes256-sha256-modp2048
+strongswan_esp_proposal: aes256-sha256

@@ -1,0 +1,66 @@
+---
+# strongSwan (swanctl/charon-systemd) as the AZ-700 hybrid S2S initiator.
+# Idempotent both ways: without the controller env file it installs and
+# enables charon but writes no connection (clear message, no failure) so
+# vpn1 can build before the Azure side exists; a re-provision after
+# `az700.sh deploy hybrid-vpn` loads the tunnel.
+
+- name: Install strongSwan (charon-systemd + swanctl)
+  ansible.builtin.apt:
+    name:
+      - charon-systemd
+      - strongswan-swanctl
+    state: present
+    update_cache: true
+
+# repo's stock-module sysctl pattern (see opensearch_stack) — the
+# collection set deliberately excludes ansible.posix.
+- name: Enable IPv4 forwarding in /etc/sysctl.conf (vpn1 routes for the whole lab)
+  ansible.builtin.lineinfile:
+    path: /etc/sysctl.conf
+    regexp: '^net\.ipv4\.ip_forward'
+    line: 'net.ipv4.ip_forward=1'
+    state: present
+
+- name: Read current ip_forward
+  ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+  register: strongswan_ipfwd_current
+  changed_when: false
+
+- name: Apply ip_forward immediately
+  ansible.builtin.command: sysctl -w net.ipv4.ip_forward=1
+  changed_when: (strongswan_ipfwd_current.stdout | trim) != "1"
+
+- name: Ensure strongSwan service is enabled and running
+  ansible.builtin.systemd:
+    name: strongswan
+    enabled: true
+    state: started
+
+- name: Report tunnel-config availability
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Tunnel parameters present — rendering azure connection.'
+         if (strongswan_gateway_ip | length > 0 and strongswan_psk | length > 0 and strongswan_onprem_id | length > 0)
+         else 'No tunnel parameters (' ~ strongswan_env_file ~ ' missing or incomplete) —
+               skipping connection config. Run az700.sh deploy hybrid-vpn, then re-provision vpn1.' }}
+
+- name: Render the Azure swanctl connection
+  ansible.builtin.template:
+    src: azure.conf.j2
+    dest: /etc/swanctl/conf.d/azure.conf
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - strongswan_gateway_ip | length > 0
+    - strongswan_psk | length > 0
+    - strongswan_onprem_id | length > 0
+  notify: Reload swanctl connections
+
+- name: Remove stale connection when parameters are absent
+  ansible.builtin.file:
+    path: /etc/swanctl/conf.d/azure.conf
+    state: absent
+  when: strongswan_gateway_ip | length == 0 or strongswan_psk | length == 0 or strongswan_onprem_id | length == 0
+  notify: Reload swanctl connections
