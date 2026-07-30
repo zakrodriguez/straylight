@@ -16,3 +16,14 @@ strongswan_remote_ts: 10.100.0.0/14
 # accept AES-256/SHA-256; DH14/modp2048 for IKE, no PFS on the child).
 strongswan_ike_proposal: aes256-sha256-modp2048
 strongswan_esp_proposal: aes256-sha256
+
+# BGP over the tunnel (Lab 3). Configured only when BGP_PEER is present in
+# the env file — the base deploy stays static-route/BGP-off. Lab 3, Step 2
+# writes BGP_PEER (the gateway's default BGP peer, an in-VNet address) and
+# ONPREM_ASN after enabling BGP on the Azure connection, then re-provisions
+# vpn1. FRR peers over the established tunnel; ebgp-multihop is required
+# because the gateway's BGP address is not on-link across the tunnel.
+strongswan_bgp_peer: "{{ lookup('ansible.builtin.ini', 'BGP_PEER', type='properties', file=strongswan_env_file, default='') }}"
+strongswan_onprem_asn: "{{ lookup('ansible.builtin.ini', 'ONPREM_ASN', type='properties', file=strongswan_env_file, default='65050') }}"
+# vpn1's tunnel-facing address (its host-only IP; also the LNG bgp-peering-address).
+strongswan_bgp_router_id: "{{ ip_address | default('192.168.56.45') }}"

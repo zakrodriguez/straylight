@@ -1,0 +1,27 @@
+{# FRR BGP config for the AZ-700 hybrid Lab 3 — rendered only when BGP_PEER
+   is in the env (i.e. BGP was enabled on the Azure connection). vpn1 peers
+   the Azure gateway's default BGP address over the established tunnel and
+   advertises the on-prem supernet. #}
+frr version 8.1
+frr defaults traditional
+hostname vpn1
+log syslog informational
+!
+! Advertise the on-prem supernet: the `network` statement only originates a
+! prefix that exists in the RIB, and vpn1's connected route is its /24, not
+! the /21 — so pin a blackhole aggregate for the supernet to advertise.
+ip route {{ strongswan_local_ts }} blackhole
+!
+router bgp {{ strongswan_onprem_asn }}
+ bgp router-id {{ strongswan_bgp_router_id }}
+ no bgp ebgp-requires-policy
+ neighbor {{ strongswan_bgp_peer }} remote-as 65515
+ neighbor {{ strongswan_bgp_peer }} ebgp-multihop 2
+ !
+ address-family ipv4 unicast
+  network {{ strongswan_local_ts }}
+  neighbor {{ strongswan_bgp_peer }} activate
+ exit-address-family
+!
+line vty
+!

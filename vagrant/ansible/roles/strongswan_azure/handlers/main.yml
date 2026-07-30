@@ -2,3 +2,8 @@
 - name: Reload swanctl connections
   ansible.builtin.command: swanctl --load-all
   changed_when: true
+
+- name: Restart FRR
+  ansible.builtin.systemd:
+    name: frr
+    state: restarted

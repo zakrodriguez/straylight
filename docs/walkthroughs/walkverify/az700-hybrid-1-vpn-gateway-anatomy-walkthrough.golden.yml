@@ -1,0 +1,95 @@
+lab: az700-hybrid-1-vpn-gateway-anatomy-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.|169\.254\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded   (else: az700.sh deploy hybrid-vpn --no-wait; watch hybrid-vpn)"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: gateway-shape
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\naz network vnet-gateway show --resource-group\
+    \ $RG --name vpngw-hub \\\n  --query \"{type:gatewayType, vpnType:vpnType, sku:sku.name,\
+    \ gen:vpnGatewayGeneration, asn:bgpSettings.asn, active:activeActive}\" -o json\n\
+    # Expected: gatewayType Vpn, vpnType RouteBased, sku VpnGw1AZ,\n#           vpnGatewayGeneration\
+    \ Generation1, asn 65515, activeActive false"
+  rc: 0
+  expect:
+  - RouteBased
+  - VpnGw1AZ
+  strict: false
+  captured: "{\n  \"active\": false,\n  \"asn\": 65515,\n  \"gen\": \"Generation1\"\
+    ,\n  \"sku\": \"VpnGw1AZ\",\n  \"type\": \"Vpn\",\n  \"vpnType\": \"RouteBased\"\
+    \n}\n"
+- step: gateway-pip
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\naz network public-ip show --resource-group\
+    \ $RG --name pip-vpngw \\\n  --query \"{alloc:publicIPAllocationMethod, sku:sku.name,\
+    \ zones:zones, ip:ipAddress}\" -o json\n# Expected: publicIPAllocationMethod Static,\
+    \ sku Standard, zones [\"1\",\"2\",\"3\"]\n#           ip: the gateway's public\
+    \ address (what your on-prem peer dials)"
+  rc: 0
+  expect:
+  - Static
+  - Standard
+  strict: false
+  captured: "{\n  \"alloc\": \"Static\",\n  \"ip\": \"<PUBIP>\",\n  \"sku\": \"Standard\"\
+    ,\n  \"zones\": [\n    \"1\",\n    \"2\",\n    \"3\"\n  ]\n}\n"
+- step: lng-shape
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\naz network local-gateway show --resource-group\
+    \ $RG --name lgw-straylight \\\n  --query \"{onpremIp:gatewayIpAddress, space:localNetworkAddressSpace.addressPrefixes}\"\
+    \ -o json\n# Expected: gatewayIpAddress = your router's public IP (captured at\
+    \ deploy)\n#           localNetworkAddressSpace = [\"192.168.56.0/21\"]"
+  rc: 0
+  expect:
+  - 192\.168\.56\.0
+  strict: false
+  captured: "{\n  \"onpremIp\": \"<PUBIP>\",\n  \"space\": [\n    \"192.168.56.0/21\"\
+    \n  ]\n}\n"
+- step: connection-shape
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\naz network vpn-connection show --resource-group\
+    \ $RG --name cn-straylight-s2s \\\n  --query \"{type:connectionType, proto:connectionProtocol,\
+    \ bgp:enableBgp, policy:ipsecPolicies[0].{ike:ikeEncryption, ikeInt:ikeIntegrity,\
+    \ dh:dhGroup, esp:ipsecEncryption, pfs:pfsGroup}}\" -o json\n# Expected: connectionType\
+    \ IPsec, connectionProtocol IKEv2, enableBgp false,\n#           policy: AES256\
+    \ / SHA256 / DHGroup14 / AES256 / None"
+  rc: 0
+  expect:
+  - IPsec
+  - DHGroup14
+  strict: false
+  captured: "{\n  \"bgp\": false,\n  \"policy\": {\n    \"dh\": \"DHGroup14\",\n \
+    \   \"esp\": \"AES256\",\n    \"ike\": \"AES256\",\n    \"ikeInt\": \"SHA256\"\
+    ,\n    \"pfs\": \"None\"\n  },\n  \"proto\": \"IKEv2\",\n  \"type\": \"IPsec\"\
+    \n}\n"
+- step: connection-status
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\naz network vpn-connection show --resource-group\
+    \ $RG --name cn-straylight-s2s \\\n  --query \"{status:connectionStatus, ingress:ingressBytesTransferred,\
+    \ egress:egressBytesTransferred}\" -o json\n# Expected: connectionStatus NotConnected,\
+    \ 0 bytes each way\n#           (no on-prem peer has dialed in yet \u2014 that\
+    \ is Lab 2)"
+  rc: 0
+  expect:
+  - NotConnected
+  strict: false
+  captured: "{\n  \"egress\": 0,\n  \"ingress\": 0,\n  \"status\": \"NotConnected\"\
+    \n}\n"

@@ -52,8 +52,12 @@ class StepRunner:
             argv = ["vagrant", "winrm", host, "-c", script]
         else:
             argv = ["vagrant", "ssh", host, "-c", script]
+        # stdin from /dev/null: a step that shells into a VM (vagrant ssh /
+        # provision, ssh) would otherwise inherit and DRAIN the parent's stdin
+        # — which ate the `verify` approval prompt's piped input and lost the
+        # golden after a full live run (hybrid Lab 3, 2026-07-30).
         p = subprocess.run(argv, capture_output=True, text=True, timeout=300,
-                           cwd=self.vagrant_root)
+                           cwd=self.vagrant_root, stdin=subprocess.DEVNULL)
         # Combine both channels (spec: stdout+stderr), not pick one.
         out = (p.stdout or "") + (p.stderr or "")
         return (p.returncode, out)

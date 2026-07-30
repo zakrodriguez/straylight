@@ -64,3 +64,37 @@
     state: absent
   when: strongswan_gateway_ip | length == 0 or strongswan_psk | length == 0 or strongswan_onprem_id | length == 0
   notify: Reload swanctl connections
+
+# ── BGP over the tunnel (Lab 3) — only when BGP_PEER is set in the env ──
+
+- name: Install FRR (BGP speaker for the hybrid Lab 3)
+  ansible.builtin.apt:
+    name: frr
+    state: present
+  when: strongswan_bgp_peer | length > 0
+
+- name: Enable the bgpd daemon in FRR
+  ansible.builtin.lineinfile:
+    path: /etc/frr/daemons
+    regexp: '^bgpd='
+    line: 'bgpd=yes'
+    state: present
+  when: strongswan_bgp_peer | length > 0
+  notify: Restart FRR
+
+- name: Render the FRR BGP config
+  ansible.builtin.template:
+    src: frr.conf.j2
+    dest: /etc/frr/frr.conf
+    owner: frr
+    group: frr
+    mode: "0640"
+  when: strongswan_bgp_peer | length > 0
+  notify: Restart FRR
+
+- name: Ensure FRR is enabled and running (BGP mode)
+  ansible.builtin.systemd:
+    name: frr
+    enabled: true
+    state: started
+  when: strongswan_bgp_peer | length > 0

@@ -4,6 +4,57 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.13.0] — 2026-07-30
+
+### Added
+- **AZ-700 hybrid Lab 3 (BGP over VPN) completed and live-verified
+  (2026-07-30).** The `strongswan_azure` role gains an FRR BGP speaker
+  (gated on `BGP_PEER` in the env — base deploys unaffected): installs FRR,
+  enables `bgpd`, and renders `/etc/frr/frr.conf` — an eBGP neighbor for the
+  gateway's default BGP address, `ebgp-multihop 2`, advertising the on-prem
+  supernet via a blackhole aggregate. Live session established the eBGP
+  session and exchanged routes both ways (Azure learned `192.168.56.0/21`
+  from AS 65050; vpn1 learned `10.100.0.0/22` from Azure). Lab 3 is now
+  VERIFIABLE (5 steps); the whole hybrid module (labs 1–3) is verified.
+- **AZ-700 hybrid connectivity module content (labs 1–3, authored)** — the
+  track's flagship module: VPN gateway anatomy, the site-to-site tunnel end
+  to end, and BGP over the VPN. 3 labs (`docs/walkthroughs/az700-labs/`),
+  3 quizzes, a 24-question module exam, and the design spec, all grounded in
+  the real gateway/tunnel shape from the first live establishment
+  (2026-07-27): the four-resource model, route-based/AZ-SKU choices, the
+  pinned-IPsec-policy fix for Azure's non-negotiating default, the
+  `swanctl` SA + traffic selectors (`192.168.56.0/21 ⇔ 10.100.0.0/14`),
+  on-prem↔Azure reachability, and BGP concepts. Unlike the azure-only
+  modules these span three hosts (`host=lab`/`host=vpn1`/`host=dc1`).
+  Authored with skeleton goldens; the live golden capture and the Lab 3
+  BGP increment landed in this same release (the entry above and the
+  golden-capture entry under Fixed), making the whole module VERIFIABLE.
+  INDEX regenerated (9 AZ-700 labs).
+
+### Fixed
+- **walkverify: a step that shells into a VM no longer eats the `verify`
+  approval prompt.** Steps invoking `vagrant ssh`/`provision` inherited and
+  drained the parent stdin, so the piped approval hit `EOFError` and the
+  golden was lost after a full clean run (hybrid Lab 3). The runner now
+  passes `stdin=DEVNULL` to every step subprocess.
+- **AZ-700 hybrid labs golden-captured and corrected against a live tunnel
+  (2026-07-28).** Standing the tunnel up for capture re-proved the #271
+  pinned-IPsec-policy fix end to end — from a clean deploy the SA
+  established automatically, no manual policy add. Capture (labs 1–2 fully:
+  6/6 and 5/5 `check`; lab 3 Step 1 + teardown) caught four content bugs the
+  authoring couldn't: (1) escaped-slash CIDR expects (`/192\.168\.56\.0\/21/`)
+  break walkverify's `/…/` token parser — expects now drop the `/NN`
+  suffix; (2) `swanctl --list-sas --child` is invalid on 5.9.5 and a broad
+  `local|remote` grep would leak the on-prem/gateway public IPs — the
+  selector step now greps the CIDR lines only; (3) the gateway's **default**
+  BGP peer is a GatewaySubnet IP (`defaultBgpIpAddresses`, e.g.
+  `10.100.0.30`), not APIPA — APIPA (`customBgpIpAddresses`) is the
+  active-active/opt-in case; lab 3, quiz 3, and exam Q18 corrected;
+  (4) the teardown needs `--vagrant-root <repo root>` (the `az700.sh` cwd
+  gotcha). Goldens pin az CLI 2.88.0, mask public IPs to `<PUBIP>`, and
+  carry zero IP leaks. Labs 1–2 became VERIFIABLE here; lab 3's BGP
+  Steps 2–5 followed via the FRR/enableBgp increment (Added entry above).
+
 ## [2.12.2] — 2026-07-28
 
 ### Fixed
@@ -1263,7 +1314,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.12.2...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.13.0...HEAD
+[2.13.0]: https://github.com/zakrodriguez/straylight/compare/v2.12.2...v2.13.0
 [2.12.2]: https://github.com/zakrodriguez/straylight/compare/v2.12.1...v2.12.2
 [2.12.1]: https://github.com/zakrodriguez/straylight/compare/v2.12.0...v2.12.1
 [2.12.0]: https://github.com/zakrodriguez/straylight/compare/v2.11.0...v2.12.0
