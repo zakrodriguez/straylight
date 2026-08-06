@@ -1,0 +1,109 @@
+lab: az700-lb-2-application-gateway-routing-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.|169\.254\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-appgw\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: agw-sku
+  host: lab
+  command: "RG=rg-straylight-az700-appgw\naz network application-gateway show --resource-group\
+    \ $RG --name agw-straylight \\\n  --query \"{sku:sku.name, tier:sku.tier, capacity:sku.capacity}\"\
+    \ -o json\n# Expected: sku/tier Standard_v2, capacity 1"
+  rc: 0
+  expect:
+  - Standard_v2
+  strict: false
+  captured: "{\n  \"capacity\": 1,\n  \"sku\": \"Standard_v2\",\n  \"tier\": \"Standard_v2\"\
+    \n}\n"
+- step: listener
+  host: lab
+  command: "RG=rg-straylight-az700-appgw\naz network application-gateway http-listener\
+    \ list --resource-group $RG \\\n  --gateway-name agw-straylight \\\n  --query\
+    \ \"[].{name:name, protocol:protocol}\" -o json\n# Expected: listener-http, protocol\
+    \ Http"
+  rc: 0
+  expect:
+  - Http
+  strict: false
+  captured: "[\n  {\n    \"name\": \"listener-http\",\n    \"protocol\": \"Http\"\n\
+    \  }\n]\n"
+- step: backend-pools
+  host: lab
+  command: "RG=rg-straylight-az700-appgw\naz network application-gateway address-pool\
+    \ list --resource-group $RG \\\n  --gateway-name agw-straylight --query \"[].name\"\
+    \ -o json\n# Expected: pool-default and pool-images"
+  rc: 0
+  expect:
+  - pool-default
+  - pool-images
+  strict: false
+  captured: "[\n  \"pool-default\",\n  \"pool-images\"\n]\n"
+- step: path-map
+  host: lab
+  command: "RG=rg-straylight-az700-appgw\naz network application-gateway url-path-map\
+    \ show --resource-group $RG \\\n  --gateway-name agw-straylight --name pathmap\
+    \ \\\n  --query \"{default:defaultBackendAddressPool.id, rules:pathRules[].{name:name,\
+    \ paths:paths, pool:backendAddressPool.id}}\" -o json\n# Expected: a path rule\
+    \ 'images' matching /images/* -> a pool id ending pool-images;\n#           default\
+    \ pool id ending pool-default"
+  rc: 0
+  expect:
+  - images
+  - pool-images
+  strict: false
+  captured: "{\n  \"default\": \"/subscriptions/<GUID>/resourceGroups/rg-straylight-az700-appgw/providers/Microsoft.Network/applicationGateways/agw-straylight/backendAddressPools/pool-default\"\
+    ,\n  \"rules\": [\n    {\n      \"name\": \"images\",\n      \"paths\": [\n  \
+    \      \"/images/*\"\n      ],\n      \"pool\": \"/subscriptions/<GUID>/resourceGroups/rg-straylight-az700-appgw/providers/Microsoft.Network/applicationGateways/agw-straylight/backendAddressPools/pool-images\"\
+    \n    }\n  ]\n}\n"
+- step: route-proof
+  host: lab
+  command: "RG=rg-straylight-az700-appgw\nGIP=$(az network public-ip show --resource-group\
+    \ $RG --name agwpip-straylight \\\n  --query ipAddress -o tsv)\n# wait for the\
+    \ backends to register healthy behind the gateway\nfor i in $(seq 1 40); do\n\
+    \  out=$(curl -s --max-time 3 \"http://$GIP/\" 2>/dev/null)\n  case \"$out\" in\
+    \ vm-appgw*) break;; esac\n  sleep 5\ndone\necho \"default path -> $(curl -s --max-time\
+    \ 3 http://$GIP/)\"\necho \"/images/ path -> $(curl -s --max-time 3 http://$GIP/images/)\"\
+    \n# Expected: default path -> vm-appgw1, /images/ path -> vm-appgw2"
+  rc: 0
+  expect:
+  - vm-appgw1
+  - vm-appgw2
+  strict: false
+  captured: 'default path -> vm-appgw1
+
+    /images/ path -> vm-appgw2
+
+    '
+- step: teardown
+  host: lab
+  command: 'azure/scripts/az700.sh destroy appgw
+
+    # Expected: "delete submitted for rg-straylight-az700-appgw (async)".
+
+    #           Confirm the RG is gone later with: az700.sh sweep'
+  rc: 0
+  expect:
+  - delete submitted
+  strict: false
+  captured: 'delete submitted for rg-straylight-az700-appgw (async); confirm later
+    with: az700.sh list
+
+    '

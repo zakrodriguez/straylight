@@ -1,0 +1,112 @@
+lab: az700-lb-4-traffic-manager-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.|169\.254\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: create-profile
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\nTM=\"tmstraylight$(openssl rand -hex\
+    \ 3)\"\necho \"$TM\" > /tmp/tm-name\n# Create the profile (its create response\
+    \ doesn't project status cleanly), then\n# read the status/method back with `show`.\n\
+    az network traffic-manager profile create --resource-group $RG --name \"$TM\"\
+    \ \\\n  --routing-method Priority --unique-dns-name \"$TM\" \\\n  --ttl 30 --protocol\
+    \ HTTP --port 80 --path \"/\" -o none\naz network traffic-manager profile show\
+    \ --resource-group $RG --name \"$TM\" \\\n  --query \"{status:profileStatus, method:trafficRoutingMethod}\"\
+    \ -o tsv\n# Expected: Enabled  Priority"
+  rc: 0
+  expect:
+  - Enabled
+  strict: false
+  captured: "Enabled\tPriority\n"
+- step: add-primary
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\nTM=$(cat /tmp/tm-name)\nFIP=$(az network\
+    \ public-ip show --resource-group $RG --name lbpip-straylight \\\n  --query ipAddress\
+    \ -o tsv)\naz network traffic-manager endpoint create --resource-group $RG \\\n\
+    \  --profile-name \"$TM\" --name primary --type externalEndpoints \\\n  --target\
+    \ \"$FIP\" --endpoint-status Enabled --priority 1 \\\n  --query \"{name:name,\
+    \ status:endpointStatus, target:target}\" -o tsv\n# Expected: primary  Enabled\
+    \  <the LB public IP>"
+  rc: 0
+  expect:
+  - Enabled
+  strict: false
+  captured: "primary\tEnabled\t<PUBIP>\n"
+- step: add-secondary
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\nTM=$(cat /tmp/tm-name)\naz network\
+    \ traffic-manager endpoint create --resource-group $RG \\\n  --profile-name \"\
+    $TM\" --name secondary --type externalEndpoints \\\n  --target 198.51.100.10 --endpoint-status\
+    \ Enabled --priority 2 \\\n  --query \"{name:name, status:endpointStatus, priority:priority}\"\
+    \ -o tsv\n# Expected: secondary  Enabled  2"
+  rc: 0
+  expect:
+  - Enabled
+  strict: false
+  captured: "secondary\tEnabled\t2\n"
+- step: profile-config
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\nTM=$(cat /tmp/tm-name)\naz network\
+    \ traffic-manager profile show --resource-group $RG --name \"$TM\" \\\n  --query\
+    \ \"{method:trafficRoutingMethod, monitorProto:monitorConfig.protocol, monitorPort:monitorConfig.port,\
+    \ fqdn:dnsConfig.fqdn, endpoints:length(endpoints)}\" -o json\n# Expected: method\
+    \ Priority, monitorProto HTTP, monitorPort 80,\n#           fqdn <name>.trafficmanager.net,\
+    \ endpoints 2"
+  rc: 0
+  expect:
+  - Priority
+  - HTTP
+  strict: false
+  captured: "{\n  \"endpoints\": 2,\n  \"fqdn\": \"tmstraylight51c113.trafficmanager.net\"\
+    ,\n  \"method\": \"Priority\",\n  \"monitorPort\": 80,\n  \"monitorProto\": \"\
+    HTTP\"\n}\n"
+- step: resolve
+  host: lab
+  command: "TM=$(cat /tmp/tm-name)\nFQDN=\"${TM}.trafficmanager.net\"\n# TM answers\
+    \ with the chosen endpoint; allow a few seconds for the record\nfor i in $(seq\
+    \ 1 12); do\n  nslookup \"$FQDN\" 2>/dev/null | grep -A2 \"Name:\" && break\n\
+    \  sleep 5\ndone\nnslookup \"$FQDN\" 2>/dev/null | grep -E \"Name:|Address\"\n\
+    # Expected: the FQDN resolving to the primary endpoint (the LB public IP) \u2014\
+    \n#           Traffic Manager returned the priority-1 healthy endpoint by DNS"
+  rc: 0
+  expect:
+  - Address
+  strict: false
+  captured: "Name:\ttmstraylight51c113.trafficmanager.net\nAddress: <PUBIP>\n\nAddress:\t\
+    127.0.0.53#53\nName:\ttmstraylight51c113.trafficmanager.net\nAddress: <PUBIP>\n"
+- step: teardown
+  host: lab
+  command: 'rm -f /tmp/tm-name
+
+    azure/scripts/az700.sh destroy lb-standard
+
+    # Expected: "delete submitted for rg-straylight-az700-lb-standard (async)".
+
+    #           Confirm the RG is gone later with: az700.sh sweep'
+  rc: 0
+  expect:
+  - delete submitted
+  strict: false
+  captured: 'delete submitted for rg-straylight-az700-lb-standard (async); confirm
+    later with: az700.sh list
+
+    '

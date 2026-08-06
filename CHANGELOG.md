@@ -4,6 +4,55 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.15.0] — 2026-08-06
+
+### Added
+- **AZ-700 P4 — Load balancing & application delivery module.**
+  The fourth exam domain: five labs across the four Azure load-balancing
+  services, plus quizzes, the module exam, the design spec, and two new
+  Bicep topologies:
+  - **LB Lab 1 — Standard Load Balancer** (VERIFIABLE): a public Standard LB
+    over two backend VMs that serve their hostname on :80 (cloud-init, no
+    internet needed), dissecting SKU / frontend / backend pool / health probe
+    / rule, then curling the frontend to prove distribution.
+  - **LB Lab 2 — Application Gateway URL-path routing** (VERIFIABLE, Part A
+    deploy + `watch`, Part B hands-on): a Standard_v2 gateway with a path map
+    (`/images/*` → one pool, else another), proven by curling the gateway
+    with and without the path.
+  - **LB Lab 3 — Web Application Firewall** (RUNBOOK): the WAF policy model —
+    managed OWASP CRS, custom rules, Detection vs Prevention, exclusions —
+    against the `appgw` topology; documents the WAF_v2 upgrade.
+  - **LB Lab 4 — Traffic Manager** (VERIFIABLE): reuses the `lb-standard`
+    deployment; creates a DNS-based profile (Priority routing) with the LB as
+    the primary endpoint and resolves the `*.trafficmanager.net` name.
+  - **LB Lab 5 — Azure Front Door** (RUNBOOK): global edge L7 — profile /
+    endpoint / origin group / route, edge caching + edge WAF, and the
+    four-way service-selection decision.
+
+  New topologies `azure/labs/lb-standard` (Standard LB + 2 backends) and
+  `azure/labs/appgw` (Application Gateway Standard_v2 + path routing + 2
+  backends), plus a shared `azure/modules/backendvm.bicep` (Ubuntu + a
+  cloud-init stdlib hostname web server, NIC wired to an LB or App Gateway
+  backend pool). `naming.bicep` gains `lbStandard` and `appgw` address blocks
+  (inside `10.100.0.0/14`). INDEX regenerated (18 AZ-700 labs).
+- **AZ-700 P4 verified against live Azure (2026-08-06).** The three
+  config-tier labs were captured against real deployments — goldens frozen,
+  az CLI 2.88.0 pinned, subscription GUID and public IPs masked, no leaks.
+  The live-proof steps genuinely exercise each service: lb-1 curls the load
+  balancer frontend and gets a backend hostname; lb-2 curls the gateway `/`
+  vs `/images/` and sees the path map choose `vm-appgw1` vs `vm-appgw2`;
+  lb-4 resolves the `*.trafficmanager.net` name to the load balancer's IP.
+  Capture caught three bugs the authoring couldn't: (1) the Standard LB
+  deployment failed — a load-balancing rule sharing a frontend with an
+  outbound rule must set `disableOutboundSnat: true` (`build` can't catch
+  deploy-time semantics); (2) `traffic-manager profile create` doesn't
+  project `profileStatus`/`trafficRoutingMethod` cleanly — read them back
+  with `show`; (3) the NIC-based backend-pool count is under
+  `backendIPConfigurations` (capital IP, the AAZ pattern), confirmed live.
+  Labs 3 (WAF) and 5 (Front Door) remain runbook by design. All Bicep builds
+  + formats clean; the three verifiable labs lint clean against their frozen
+  goldens.
+
 ## [2.14.0] — 2026-08-06
 
 ### Added
@@ -1361,7 +1410,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.14.0...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.15.0...HEAD
+[2.15.0]: https://github.com/zakrodriguez/straylight/compare/v2.14.0...v2.15.0
 [2.14.0]: https://github.com/zakrodriguez/straylight/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/zakrodriguez/straylight/compare/v2.12.2...v2.13.0
 [2.12.2]: https://github.com/zakrodriguez/straylight/compare/v2.12.1...v2.12.2

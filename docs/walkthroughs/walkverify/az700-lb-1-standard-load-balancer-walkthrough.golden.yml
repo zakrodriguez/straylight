@@ -1,0 +1,99 @@
+lab: az700-lb-1-standard-load-balancer-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.|169\.254\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: lb-sku
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\naz network lb show --resource-group\
+    \ $RG --name lb-straylight \\\n  --query \"{sku:sku.name, tier:sku.tier}\" -o\
+    \ json\n# Expected: sku Standard"
+  rc: 0
+  expect:
+  - Standard
+  strict: false
+  captured: "{\n  \"sku\": \"Standard\",\n  \"tier\": \"Regional\"\n}\n"
+- step: frontend
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\naz network lb frontend-ip list --resource-group\
+    \ $RG --lb-name lb-straylight \\\n  --query \"[].{name:name, hasPublicIp:publicIPAddress.id!=null}\"\
+    \ -o json\n# Expected: one frontend named 'frontend' with a public IP attached"
+  rc: 0
+  expect:
+  - frontend
+  strict: false
+  captured: "[\n  {\n    \"hasPublicIp\": true,\n    \"name\": \"frontend\"\n  }\n\
+    ]\n"
+- step: backend-pool
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\naz network lb address-pool show --resource-group\
+    \ $RG --lb-name lb-straylight \\\n  --name bepool \\\n  --query \"length(backendIPConfigurations)\"\
+    \ -o tsv\n# Expected: 2   (the two backend VM NICs are pool members; NIC-based\
+    \ pools list\n#           members under backendIPConfigurations, not loadBalancerBackendAddresses)"
+  rc: 0
+  expect:
+  - '2'
+  strict: false
+  captured: '2
+
+    '
+- step: health-probe
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\naz network lb probe list --resource-group\
+    \ $RG --lb-name lb-straylight \\\n  --query \"[].{name:name, protocol:protocol,\
+    \ port:port, path:requestPath}\" -o json\n# Expected: an Http probe on port 80,\
+    \ requestPath '/'"
+  rc: 0
+  expect:
+  - Http
+  - '80'
+  strict: false
+  captured: "[\n  {\n    \"name\": \"probe-http\",\n    \"path\": \"/\",\n    \"port\"\
+    : 80,\n    \"protocol\": \"Http\"\n  }\n]\n"
+- step: lb-rule
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\naz network lb rule list --resource-group\
+    \ $RG --lb-name lb-straylight \\\n  --query \"[].{name:name, proto:protocol, feport:frontendPort,\
+    \ beport:backendPort}\" -o json\n# Expected: a Tcp rule, frontendPort 80 -> backendPort\
+    \ 80"
+  rc: 0
+  expect:
+  - Tcp
+  strict: false
+  captured: "[\n  {\n    \"beport\": 80,\n    \"feport\": 80,\n    \"name\": \"rule-http\"\
+    ,\n    \"proto\": \"Tcp\"\n  }\n]\n"
+- step: distribute
+  host: lab
+  command: "RG=rg-straylight-az700-lb-standard\nFIP=$(az network public-ip show --resource-group\
+    \ $RG --name lbpip-straylight \\\n  --query ipAddress -o tsv)\n# poll until a\
+    \ backend answers (probes need ~15-30s post-deploy)\nfor i in $(seq 1 40); do\n\
+    \  out=$(curl -s --max-time 3 \"http://$FIP\" 2>/dev/null)\n  case \"$out\" in\
+    \ vm-lb*) break;; esac\n  sleep 5\ndone\n# a few requests to show both backends\
+    \ serving\nfor i in 1 2 3 4; do curl -s --max-time 3 \"http://$FIP\"; done | sort\
+    \ -u\n# Expected: vm-lb1 and/or vm-lb2 (the LB distributing across the pool)"
+  rc: 0
+  expect:
+  - vm-lb[12]
+  strict: false
+  captured: 'vm-lb1
+
+    '

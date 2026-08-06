@@ -39,4 +39,17 @@ var addressPlan = {
     hub: '10.103.8.0/23'
     spoke1: '10.103.10.0/24'
   }
+  // Standard Load Balancer (lb-1, reused by traffic-manager lb-4): one VNet,
+  // one backend subnet holding the LB's two backend VMs.
+  lbStandard: {
+    vnet: '10.103.12.0/24'
+    backend: '10.103.12.0/27'
+  }
+  // Application Gateway (lb-2, referenced by waf lb-3): the gateway needs its
+  // OWN dedicated subnet (no other resources), separate from the backends.
+  appgw: {
+    vnet: '10.103.13.0/24'
+    gateway: '10.103.13.0/26'
+    backend: '10.103.13.64/27'
+  }
 }
