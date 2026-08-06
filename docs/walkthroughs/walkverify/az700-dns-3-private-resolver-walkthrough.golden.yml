@@ -1,0 +1,118 @@
+lab: az700-dns-3-private-resolver-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.|169\.254\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-dns-private-resolver\naz deployment group show\
+    \ --resource-group $RG --name main \\\n  --query properties.provisioningState\
+    \ -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: resolver-shape
+  host: lab
+  command: "RG=rg-straylight-az700-dns-private-resolver\naz dns-resolver show --resource-group\
+    \ $RG --name dnsr-straylight \\\n  --query \"{state:provisioningState, vnet:virtualNetwork.id}\"\
+    \ -o json\n# Expected: provisioningState Succeeded, vnet ending in /vnet-dnsr"
+  rc: 0
+  expect:
+  - Succeeded
+  - vnet-dnsr
+  strict: false
+  captured: "{\n  \"state\": \"Succeeded\",\n  \"vnet\": \"/subscriptions/<GUID>/resourceGroups/rg-straylight-az700-dns-private-resolver/providers/Microsoft.Network/virtualNetworks/vnet-dnsr\"\
+    \n}\n"
+- step: inbound-endpoint
+  host: lab
+  command: "RG=rg-straylight-az700-dns-private-resolver\naz dns-resolver inbound-endpoint\
+    \ list --resource-group $RG \\\n  --dns-resolver-name dnsr-straylight \\\n  --query\
+    \ \"[].{name:name, state:provisioningState, ip:ipConfigurations[0].privateIpAddress}\"\
+    \ -o json\n# Expected: one endpoint, provisioningState Succeeded, privateIpAddress\
+    \ in\n#           10.103.4.0/28 (snet-inbound) \u2014 the address on-prem forwards\
+    \ to"
+  rc: 0
+  expect:
+  - 10\.103\.4
+  - Succeeded
+  strict: false
+  captured: "[\n  {\n    \"ip\": \"10.103.4.4\",\n    \"name\": \"inbound\",\n   \
+    \ \"state\": \"Succeeded\"\n  }\n]\n"
+- step: outbound-endpoint
+  host: lab
+  command: "RG=rg-straylight-az700-dns-private-resolver\naz dns-resolver outbound-endpoint\
+    \ list --resource-group $RG \\\n  --dns-resolver-name dnsr-straylight \\\n  --query\
+    \ \"[].{name:name, state:provisioningState, subnet:subnet.id}\" -o json\n# Expected:\
+    \ one endpoint, provisioningState Succeeded, subnet ending in\n#           /snet-outbound"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: "[\n  {\n    \"name\": \"outbound\",\n    \"state\": \"Succeeded\",\n\
+    \    \"subnet\": \"/subscriptions/<GUID>/resourceGroups/rg-straylight-az700-dns-private-resolver/providers/Microsoft.Network/virtualNetworks/vnet-dnsr/subnets/snet-outbound\"\
+    \n  }\n]\n"
+- step: forwarding-rule
+  host: lab
+  command: "RG=rg-straylight-az700-dns-private-resolver\naz dns-resolver forwarding-rule\
+    \ list --resource-group $RG \\\n  --ruleset-name fwrs-straylight \\\n  --query\
+    \ \"[].{domain:domainName, state:forwardingRuleState, targets:targetDnsServers[].ipAddress}\"\
+    \ -o json\n# Expected: domainName straylight.lab. (trailing dot \u2014 FQDN form),\n\
+    #           forwardingRuleState Enabled, targets [\"192.168.56.10\"]"
+  rc: 0
+  expect:
+  - straylight.lab
+  - Enabled
+  strict: false
+  captured: "[\n  {\n    \"domain\": \"straylight.lab.\",\n    \"state\": \"Enabled\"\
+    ,\n    \"targets\": [\n      \"192.168.56.10\"\n    ]\n  }\n]\n"
+- step: ruleset-link
+  host: lab
+  command: "RG=rg-straylight-az700-dns-private-resolver\naz dns-resolver vnet-link\
+    \ list --resource-group $RG \\\n  --ruleset-name fwrs-straylight \\\n  --query\
+    \ \"[].{name:name, state:provisioningState, vnet:virtualNetwork.id}\" -o json\n\
+    # Expected: one link, provisioningState Succeeded, vnet ending in /vnet-dnsr"
+  rc: 0
+  expect:
+  - Succeeded
+  - vnet-dnsr
+  strict: false
+  captured: "[\n  {\n    \"name\": \"vnet-dnsr-link\",\n    \"state\": \"Succeeded\"\
+    ,\n    \"vnet\": \"/subscriptions/<GUID>/resourceGroups/rg-straylight-az700-dns-private-resolver/providers/Microsoft.Network/virtualNetworks/vnet-dnsr\"\
+    \n  }\n]\n"
+- step: vm-resolves
+  host: lab
+  command: "RG=rg-straylight-az700-dns-private-resolver\naz vm run-command invoke\
+    \ --resource-group $RG --name vm-dnsr1 \\\n  --command-id RunShellScript \\\n\
+    \  --scripts \"getent hosts mcr.microsoft.com >/dev/null && echo RESOLVED || echo\
+    \ FAILED\" \\\n  --query \"value[0].message\" -o tsv\n# Expected: output containing\
+    \ RESOLVED (the VM is up and its resolver answers a\n#           public name \u2014\
+    \ the baseline before hybrid forwarding rules apply)"
+  rc: 0
+  expect:
+  - RESOLVED
+  strict: false
+  captured: "Enable succeeded: \n[stdout]\nRESOLVED\n\n[stderr]\n\n"
+- step: teardown
+  host: lab
+  command: "azure/scripts/az700.sh destroy dns-private-resolver\n# Expected: \"delete\
+    \ submitted for rg-straylight-az700-dns-private-resolver\n#           (async)\"\
+    . Confirm the RG is gone later with: az700.sh sweep"
+  rc: 0
+  expect:
+  - delete submitted
+  strict: false
+  captured: 'delete submitted for rg-straylight-az700-dns-private-resolver (async);
+    confirm later with: az700.sh list
+
+    '

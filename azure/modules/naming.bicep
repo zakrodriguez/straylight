@@ -25,4 +25,18 @@ var addressPlan = {
   spoke2: '10.102.0.0/24'
   p2sPool: '172.16.201.0/24'
   onprem: '192.168.56.0/21'
+  // DNS Private Resolver (dns-3): standalone VNet, inbound/outbound endpoints
+  // on their own /28 subnets delegated to Microsoft.Network/dnsResolvers.
+  dnsResolver: {
+    vnet: '10.103.4.0/24'
+    inbound: '10.103.4.0/28'
+    outbound: '10.103.4.16/28'
+    workload: '10.103.4.32/27'
+  }
+  // Virtual WAN (hybrid-5, runbook): Microsoft-managed hub wants a dedicated
+  // /23; one spoke VNet connects to it.
+  vwan: {
+    hub: '10.103.8.0/23'
+    spoke1: '10.103.10.0/24'
+  }
 }

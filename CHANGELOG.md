@@ -4,6 +4,53 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.14.0] — 2026-08-06
+
+### Added
+- **AZ-700 P3b — hybrid labs 4–6 + DNS Private Resolver.**
+  Completes the two modules the prior phases left open-ended. Four new labs,
+  four quizzes, a design spec, and two new Bicep topologies:
+  - **Hybrid Lab 4 — Point-to-site VPN** (VERIFIABLE, config-level): reuses
+    the standing `hybrid-vpn` gateway (no new resource — P2S is a profile),
+    configures the client address pool (`172.16.201.0/24`), OpenVPN+IKEv2,
+    and an Azure-certificate root by hand, reads the profile back, and clears
+    it so Labs 1–3 goldens are unaffected. Client connect + Entra-ID/RADIUS
+    auth are prose (Windows/OpenVPN-client tasks).
+  - **Hybrid Lab 5 — Virtual WAN** (RUNBOOK, no golden): the managed
+    hub-and-spoke — Microsoft-operated virtual hub, automatic any-to-any,
+    secured hub / routing intent — contrasted with the vnet module's
+    self-built hub. New `azure/labs/vwan-lite` topology (Standard vWAN + one
+    virtual hub + a connected spoke); latency + cost keep it runbook-only.
+  - **Hybrid Lab 6 — ExpressRoute** (PAPER, no resources): circuits, private
+    vs Microsoft peering (public peering retired), SKUs, billing, Global
+    Reach, ExpressRoute Direct, FastPath, and VPN coexistence. Reference
+    architecture in `azure/labs/paper/expressroute.md`.
+  - **DNS Lab 3 — DNS Private Resolver** (VERIFIABLE, config-level): new
+    standalone `azure/labs/dns-private-resolver` topology (VNet + resolver +
+    inbound/outbound endpoints on /28 subnets delegated to
+    `Microsoft.Network/dnsResolvers` + a forwarding ruleset). Dissects the
+    four pieces; the cross-tunnel hybrid-resolution loop is a runbook
+    extension (needs `hybrid-vpn` standing). Closes the dns module's long-
+    deferred third lab.
+
+  `naming.bicep` gains `dnsResolver` and `vwan` address blocks (inside the
+  locked `10.100.0.0/14` pool). Both module exams gain a hands-on pass — the
+  hybrid exam adds a P2S/vWAN/ExpressRoute section (24 → 30 questions); the
+  dns exam's resolver section now maps to a real lab. INDEX regenerated
+  (13 AZ-700 labs). **VERIFIED against live Azure (2026-08-04)**: the two
+  config-level labs (hybrid-4 P2S, dns-3 resolver) were captured against
+  real deployments — goldens frozen, az CLI 2.88.0 pinned, no IP/GUID/SAS
+  leaks. The capture caught four bugs the authoring couldn't: (1) the
+  resolver endpoint queries need `--dns-resolver-name`, not `--resolver-name`;
+  (2) `vnet-gateway root-cert create --public-cert-data` is always resolved
+  as a **file path**, so the base64 root must be written to a file;
+  (3) the run-command liveness probe matched the wrong token; (4) the
+  teardown expect wording. `clear-p2s` simplified to a single gateway update
+  (removing `vpnClientConfiguration` drops the root certs with it); the P2S
+  client package URL is captured with its SAS query stripped. Labs 5 (vWAN)
+  and 6 (ExpressRoute) remain runbook/paper by design (no goldens). All
+  Bicep builds + formats clean; both verifiable labs lint clean.
+
 ## [2.13.0] — 2026-07-30
 
 ### Added
@@ -1314,7 +1361,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.13.0...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.14.0...HEAD
+[2.14.0]: https://github.com/zakrodriguez/straylight/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/zakrodriguez/straylight/compare/v2.12.2...v2.13.0
 [2.12.2]: https://github.com/zakrodriguez/straylight/compare/v2.12.1...v2.12.2
 [2.12.1]: https://github.com/zakrodriguez/straylight/compare/v2.12.0...v2.12.1

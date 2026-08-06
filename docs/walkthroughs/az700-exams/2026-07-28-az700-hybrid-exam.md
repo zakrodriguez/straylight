@@ -1,10 +1,10 @@
 # AZ-700 Module Exam — Hybrid Connectivity (Site-to-Site VPN & BGP)
 
-**Module:** az700-hybrid (Labs 1–3 hands-on; point-to-site, Virtual WAN, and
-ExpressRoute examined here, hands-on/paper labs arrive with P3b).
-**Format:** 24 questions in three sections — gateway anatomy (1–8),
-site-to-site tunnel (9–16), BGP and design (17–24). Mixed multiple-choice
-and short answer.
+**Module:** az700-hybrid (Labs 1–6: 1–3 site-to-site VPN + BGP hands-on,
+4 point-to-site + 5 Virtual WAN hands-on, 6 ExpressRoute paper).
+**Format:** 30 questions in four sections — gateway anatomy (1–8),
+site-to-site tunnel (9–16), BGP and design (17–24), and point-to-site /
+Virtual WAN / ExpressRoute (25–30). Mixed multiple-choice and short answer.
 **Suggested time:** 45–60 minutes, closed book.
 
 ---
@@ -202,6 +202,55 @@ one gateway capability), in one line each.
 
 ---
 
+## Section 4 — Point-to-site, Virtual WAN, ExpressRoute
+
+**Q25.** Is point-to-site a new Azure resource? Where is it configured, and
+what must the client address pool not overlap?
+
+(short answer)
+
+---
+
+**Q26.** Name the three point-to-site authentication models. Which tunnel
+protocol is required for Microsoft Entra ID auth?
+
+(short answer)
+
+---
+
+**Q27.** Two VNets are connected to the same Standard virtual hub. What must
+you configure for them to reach each other?
+
+a) A peering between the two VNets
+b) A UDR on each pointing at the hub
+c) Nothing — Standard vWAN gives automatic any-to-any
+d) An NVA in the hub with forwarding rules
+
+---
+
+**Q28.** What is a *secured virtual hub*, and what feature forces traffic
+through its firewall without any UDRs?
+
+(short answer)
+
+---
+
+**Q29.** ExpressRoute: name the two current peering types and what each
+reaches, the status of public peering, and the gateway type a VNet needs for
+private peering.
+
+(short answer)
+
+---
+
+**Q30.** ExpressRoute design gotchas: (a) does a single circuit meet the
+99.95% SLA; (b) is ExpressRoute encrypted by default; (c) in ExpressRoute +
+S2S VPN coexistence, what arbitrates the preferred path?
+
+(short answer)
+
+---
+
 ## Answers
 
 ### Section 1
@@ -291,4 +340,27 @@ via an on-prem VPN device.
 **BGP** (dynamic routing + failover convergence); a **route-based, AZ SKU
 gateway** (only these support active-active + BGP + zone redundancy).
 
-</details>
+### Section 4
+
+**Q25.** **No** — P2S is a **profile on the existing virtual network gateway**
+(`vpnClientConfiguration`). The client address pool must not overlap the
+**VNet address space** or the **on-prem space** (the lab uses
+`172.16.201.0/24`, outside both).
+
+**Q26.** **Azure certificate**, **Microsoft Entra ID**, and **RADIUS**.
+**OpenVPN** is required for Entra ID auth.
+
+**Q27.** **c)** Nothing — Standard vWAN provides automatic any-to-any; both
+spoke prefixes appear in the hub route table automatically.
+
+**Q28.** A virtual hub with **Azure Firewall deployed into it**; **routing
+intent** (send private and/or internet traffic to the firewall) forces
+inspection across all flows **without UDRs**.
+
+**Q29.** **Private peering** reaches your **VNets**; **Microsoft peering**
+reaches **Microsoft public services**; **public peering is retired**. Private
+peering needs an **ExpressRoute-type gateway** (not a VPN gateway).
+
+**Q30.** (a) **No** — the 99.95% SLA needs **two circuits / redundant peering
+locations**. (b) **No** — ExpressRoute is **not encrypted by default**.
+(c) **BGP** (ER primary preferred; VPN as encrypted backup).

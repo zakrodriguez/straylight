@@ -1,0 +1,114 @@
+lab: az700-hybrid-4-point-to-site-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.|169\.254\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\naz network vnet-gateway show --resource-group\
+    \ $RG --name vpngw-hub \\\n  --query vpnType -o tsv\n# Expected: RouteBased  \
+    \ (policy-based gateways cannot do P2S)"
+  rc: 0
+  expect:
+  - RouteBased
+  strict: false
+  captured: 'RouteBased
+
+    '
+- step: make-root
+  host: lab
+  command: "WORK=$(mktemp -d)\nopenssl genpkey -algorithm RSA -out \"$WORK/root.key\"\
+    \ 2>/dev/null\nopenssl req -x509 -new -nodes -key \"$WORK/root.key\" -days 365\
+    \ \\\n  -subj \"/CN=P2SRootCert\" -out \"$WORK/root.crt\" 2>/dev/null\n# Azure\
+    \ wants the DER bytes, base64, single line. `root-cert create` reads\n# --public-cert-data\
+    \ as a FILE PATH (that arg is always resolved as a path,\n# never inline), so\
+    \ write the base64 to a file for the next step:\nopenssl x509 -in \"$WORK/root.crt\"\
+    \ -outform der | base64 -w0 > \"$WORK/root.b64\"\necho \"$WORK\" > /tmp/p2s-work-dir\n\
+    openssl x509 -in \"$WORK/root.crt\" -noout -subject | grep -o P2SRootCert\n# Expected:\
+    \ P2SRootCert   (the root exists; $WORK/root.b64 holds its base64 form)"
+  rc: 0
+  expect:
+  - P2SRootCert
+  strict: false
+  captured: 'P2SRootCert
+
+    '
+- step: enable-p2s
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\naz network vnet-gateway update --resource-group\
+    \ $RG --name vpngw-hub \\\n  --address-prefixes 172.16.201.0/24 \\\n  --client-protocol\
+    \ OpenVPN IKEv2 \\\n  --query provisioningState -o tsv\n# Expected: Succeeded\
+    \   (the update blocks until the profile is applied)"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: add-root
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\nWORK=$(cat /tmp/p2s-work-dir)\naz network\
+    \ vnet-gateway root-cert create --resource-group $RG \\\n  --gateway-name vpngw-hub\
+    \ --name P2SRoot --public-cert-data \"$WORK/root.b64\" \\\n  --query provisioningState\
+    \ -o tsv\n# Expected: Succeeded   (the root is now trusted for client certificates)"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: p2s-config
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\naz network vnet-gateway show --resource-group\
+    \ $RG --name vpngw-hub \\\n  --query \"vpnClientConfiguration.{pool:vpnClientAddressPool.addressPrefixes,\
+    \ protocols:vpnClientProtocols, roots:vpnClientRootCertificates[].name}\" -o json\n\
+    # Expected: pool [\"172.16.201.0/24\"], protocols include OpenVPN (and IKEv2),\n\
+    #           roots [\"P2SRoot\"]"
+  rc: 0
+  expect:
+  - 172\.16\.201\.0
+  - OpenVPN
+  strict: false
+  captured: "{\n  \"pool\": [\n    \"172.16.201.0/24\"\n  ],\n  \"protocols\": [\n\
+    \    \"IkeV2\",\n    \"OpenVPN\"\n  ],\n  \"roots\": [\n    \"P2SRoot\"\n  ]\n\
+    }\n"
+- step: gen-client
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\n# The generated URL carries a short-lived\
+    \ SAS token; strip the query string\n# (?sv=...&sig=...) so only the package location\
+    \ is shown, never the secret.\naz network vnet-gateway vpn-client generate --resource-group\
+    \ $RG \\\n  --name vpngw-hub --processor-architecture Amd64 -o tsv | sed 's/?.*//'\n\
+    # Expected: https://<storage>.blob.core.windows.net/.../profile.zip\n#       \
+    \    (the real URL includes a SAS token \u2014 download it on the client and\n\
+    #            import into the OpenVPN/native client)"
+  rc: 0
+  expect:
+  - blob.core.windows.net
+  strict: false
+  captured: 'https://nfvprodsuppdm.blob.core.windows.net/vpnprofileimmutable/<GUID>/vpnprofile/<GUID>/vpnclientconfiguration.zip
+
+    '
+- step: clear-p2s
+  host: lab
+  command: "RG=rg-straylight-az700-hybrid-vpn\n# Removing vpnClientConfiguration clears\
+    \ the pool, protocols, AND the root\n# certificates in one gateway update \u2014\
+    \ the gateway returns to S2S-only.\naz network vnet-gateway update --resource-group\
+    \ $RG --name vpngw-hub \\\n  --remove vpnClientConfiguration \\\n  --query provisioningState\
+    \ -o tsv\nrm -f /tmp/p2s-work-dir\n# Expected: Succeeded   (P2S profile cleared;\
+    \ the gateway is back to S2S-only)"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
