@@ -52,4 +52,12 @@ var addressPlan = {
     gateway: '10.103.13.0/26'
     backend: '10.103.13.64/27'
   }
+  // Private access (private-1 service endpoints, private-2 private endpoint):
+  // one VNet, a workload subnet (VM + service-endpoint subject) and a
+  // dedicated private-endpoint subnet.
+  privateLink: {
+    vnet: '10.103.16.0/24'
+    workload: '10.103.16.0/27'
+    endpoint: '10.103.16.32/27'
+  }
 }

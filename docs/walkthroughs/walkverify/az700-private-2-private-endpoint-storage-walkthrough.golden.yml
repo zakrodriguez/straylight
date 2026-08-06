@@ -1,0 +1,113 @@
+lab: az700-private-2-private-endpoint-storage-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.|169\.254\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: create-pe
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\nSA=$(az storage account list --resource-group\
+    \ $RG --query \"[0].name\" -o tsv)\nSAID=$(az storage account show --resource-group\
+    \ $RG --name $SA --query id -o tsv)\naz network private-endpoint create --resource-group\
+    \ $RG --name pe-storage \\\n  --vnet-name vnet-plink --subnet snet-pe \\\n  --private-connection-resource-id\
+    \ \"$SAID\" --group-id blob \\\n  --connection-name pe-conn \\\n  --query provisioningState\
+    \ -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: dns-zone
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\naz network private-dns zone create\
+    \ --resource-group $RG \\\n  --name privatelink.blob.core.windows.net -o none\n\
+    az network private-dns link vnet create --resource-group $RG \\\n  --zone-name\
+    \ privatelink.blob.core.windows.net --name link-plink \\\n  --virtual-network\
+    \ vnet-plink --registration-enabled false \\\n  --query provisioningState -o tsv\n\
+    # Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: zone-group
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\naz network private-endpoint dns-zone-group\
+    \ create --resource-group $RG \\\n  --endpoint-name pe-storage --name default\
+    \ \\\n  --private-dns-zone privatelink.blob.core.windows.net --zone-name blob\
+    \ \\\n  --query provisioningState -o tsv\n# Expected: Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: pe-ip
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\n# The private endpoint's IP lives\
+    \ on its NIC \u2014 read it via the NIC.\nNICID=$(az network private-endpoint\
+    \ show --resource-group $RG --name pe-storage \\\n  --query \"networkInterfaces[0].id\"\
+    \ -o tsv)\naz network nic show --ids \"$NICID\" \\\n  --query \"ipConfigurations[0].privateIPAddress\"\
+    \ -o tsv\n# Expected: a 10.103.16.x address (the private endpoint's NIC address\
+    \ in snet-pe)"
+  rc: 0
+  expect:
+  - 10\.103\.16
+  strict: false
+  captured: '10.103.16.36
+
+    '
+- step: resolve-private
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\nSA=$(az storage account list --resource-group\
+    \ $RG --query \"[0].name\" -o tsv)\naz vm run-command invoke --resource-group\
+    \ $RG --name vm-plink1 \\\n  --command-id RunShellScript \\\n  --scripts \"getent\
+    \ hosts $SA.blob.core.windows.net\" \\\n  --query \"value[0].message\" -o tsv\
+    \ 2>/dev/null | grep -oE '10\\.103\\.16\\.[0-9]+' | head -1\n# Expected: a 10.103.16.x\
+    \ address \u2014 the public blob name now resolves to the\n#           private\
+    \ endpoint (contrast Lab 1, where it stayed public)"
+  rc: 0
+  expect:
+  - 10\.103\.16
+  strict: false
+  captured: '10.103.16.36
+
+    '
+- step: teardown
+  host: lab
+  command: 'azure/scripts/az700.sh destroy private-link
+
+    # Expected: "delete submitted for rg-straylight-az700-private-link (async)".
+
+    #           Confirm the RG is gone later with: az700.sh sweep'
+  rc: 0
+  expect:
+  - delete submitted
+  strict: false
+  captured: 'delete submitted for rg-straylight-az700-private-link (async); confirm
+    later with: az700.sh list
+
+    '

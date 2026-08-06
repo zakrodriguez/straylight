@@ -1,0 +1,90 @@
+lab: az700-private-1-service-endpoints-walkthrough
+profile: azure-only
+parameters:
+  az_cli_version: 2.88.0
+normalizers:
+  guid:
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    placeholder: <GUID>
+  pubip:
+    pattern: \b(?!10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|127\.|169\.254\.)\d{1,3}(?:\.\d{1,3}){3}\b
+    placeholder: <PUBIP>
+steps:
+- step: deploy-precheck
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\naz deployment group show --resource-group\
+    \ $RG --name main \\\n  --query properties.provisioningState -o tsv\n# Expected:\
+    \ Succeeded"
+  rc: 0
+  expect:
+  - Succeeded
+  strict: false
+  captured: 'Succeeded
+
+    '
+- step: enable-endpoint
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\naz network vnet subnet update --resource-group\
+    \ $RG --vnet-name vnet-plink \\\n  --name snet-workload --service-endpoints Microsoft.Storage\
+    \ -o none\naz network vnet subnet show --resource-group $RG --vnet-name vnet-plink\
+    \ \\\n  --name snet-workload --query \"serviceEndpoints[].service\" -o tsv\n#\
+    \ Expected: Microsoft.Storage"
+  rc: 0
+  expect:
+  - Microsoft.Storage
+  strict: false
+  captured: 'Microsoft.Storage
+
+    '
+- step: lock-firewall
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\nSA=$(az storage account list --resource-group\
+    \ $RG --query \"[0].name\" -o tsv)\nSUBNET=$(az network vnet subnet show --resource-group\
+    \ $RG --vnet-name vnet-plink \\\n  --name snet-workload --query id -o tsv)\naz\
+    \ storage account network-rule add --resource-group $RG --account-name $SA \\\n\
+    \  --subnet \"$SUBNET\" -o none\naz storage account update --resource-group $RG\
+    \ --name $SA \\\n  --default-action Deny -o none\naz storage account show --resource-group\
+    \ $RG --name $SA \\\n  --query \"{default:networkRuleSet.defaultAction, allowed:networkRuleSet.virtualNetworkRules[0].virtualNetworkResourceId}\"\
+    \ -o json\n# Expected: defaultAction Deny, allowed = the snet-workload subnet\
+    \ id\n#           (the vnet rule's id is under virtualNetworkResourceId, not id)"
+  rc: 0
+  expect:
+  - Deny
+  - snet-workload
+  strict: false
+  captured: "{\n  \"allowed\": \"/subscriptions/<GUID>/resourceGroups/rg-straylight-az700-private-link/providers/Microsoft.Network/virtualNetworks/vnet-plink/subnets/snet-workload\"\
+    ,\n  \"default\": \"Deny\"\n}\n"
+- step: reachable
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\nSA=$(az storage account list --resource-group\
+    \ $RG --query \"[0].name\" -o tsv)\naz vm run-command invoke --resource-group\
+    \ $RG --name vm-plink1 \\\n  --command-id RunShellScript \\\n  --scripts \"curl\
+    \ -s -o /dev/null -w '%{http_code}\\n' --max-time 10 https://$SA.blob.core.windows.net/\"\
+    \ \\\n  --query \"value[0].message\" -o tsv 2>/dev/null | grep -oE '4[0-9][0-9]'\
+    \ | head -1\n# Expected: an HTTP 4xx code (e.g. 400) \u2014 the request REACHED\
+    \ storage over the\n#           service endpoint and got an app-level error, proving\
+    \ connectivity\n#           (a firewall block would time out instead)"
+  rc: 0
+  expect:
+  - 40[0-9]
+  strict: false
+  captured: '400
+
+    '
+- step: dns-public
+  host: lab
+  command: "RG=rg-straylight-az700-private-link\nSA=$(az storage account list --resource-group\
+    \ $RG --query \"[0].name\" -o tsv)\naz vm run-command invoke --resource-group\
+    \ $RG --name vm-plink1 \\\n  --command-id RunShellScript \\\n  --scripts \"getent\
+    \ hosts $SA.blob.core.windows.net\" \\\n  --query \"value[0].message\" -o tsv\
+    \ 2>/dev/null | grep -oE '[^ ]+\\.store\\.core\\.windows\\.net' | head -1\n# Expected:\
+    \ a *.store.core.windows.net backend \u2014 the public name resolves to a\n# \
+    \          PUBLIC storage endpoint (service endpoints don't change DNS;\n#   \
+    \        contrast Lab 2, where the same name becomes a private 10.x IP)"
+  rc: 0
+  expect:
+  - store.core.windows.net
+  strict: false
+  captured: 'blob.dsz04prdstr10c.store.core.windows.net
+
+    '

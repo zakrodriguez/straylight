@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [2.16.0] — 2026-08-06
+
+### Added
+- **AZ-700 P5 — Private Access module.** The fifth exam domain:
+  keeping traffic to Azure PaaS off the public internet. Four labs, four
+  quizzes, the module exam, the design spec, and one new Bicep topology:
+  - **Private Lab 1 — Service endpoints** (VERIFIABLE): enables a
+    `Microsoft.Storage` service endpoint on a subnet, locks the storage
+    firewall to it (default Deny + allow subnet), proves reachability from
+    the allowed subnet, and shows DNS stays public (the service-endpoint vs
+    private-endpoint distinction).
+  - **Private Lab 2 — Private endpoint to storage** (VERIFIABLE): creates a
+    blob private endpoint + the `privatelink.blob.core.windows.net` zone +
+    VNet link + DNS zone group, then proves it — a VM resolves the public
+    blob name to the private `10.103.16.x` endpoint IP.
+  - **Private Lab 3 — Private Link Service** (RUNBOOK): the provider side —
+    internal Standard LB frontend, NAT subnet, alias, visibility/approval,
+    and the consumer private-endpoint flow.
+  - **Private Lab 4 — Hybrid private-endpoint DNS** (RUNBOOK): the capstone —
+    on-prem resolving an Azure private endpoint over the S2S tunnel via a
+    conditional forwarder to the DNS Private Resolver inbound endpoint (ties
+    the hybrid tunnel + dns-3 resolver + Lab 2 together).
+
+  New topology `azure/labs/private-link` (VNet with workload + private-endpoint
+  subnets, a StorageV2 account, and a VM), reused by labs 1 and 2 in one
+  session. `naming.bicep` gains a `privateLink` address block (`10.103.16.0/24`,
+  inside `10.100.0.0/14`). INDEX regenerated (22 AZ-700 labs).
+- **AZ-700 P5 verified against live Azure (2026-08-06).** The two verifiable
+  labs were captured against a real deployment — goldens frozen, az CLI 2.88.0
+  pinned, subscription GUID and public IPs masked, no leaks. The proofs work
+  end to end: private-1 curls the storage endpoint from the allowed subnet
+  (HTTP 400 = reached over the service endpoint) and shows the public name
+  still resolves to a `*.store.core.windows.net` backend; private-2 resolves
+  the storage account's **public** blob name from the VM and gets back the
+  **private** endpoint IP (`10.103.16.36`), the same address the endpoint's
+  NIC carries. Capture caught three query/expect bugs the authoring couldn't:
+  (1) a storage account's vnet firewall rule id is under
+  `virtualNetworkResourceId`, not `id`; (2) `getent hosts` output has no
+  `Address:` label (that's `nslookup`) — assert the resolved backend host;
+  (3) a private endpoint's IP is read from its **NIC**, not the (empty)
+  `customDnsConfigs`. Labs 3 (Private Link Service) and 4 (hybrid PE-DNS)
+  remain runbook by design. All Bicep builds + formats clean; both verifiable
+  labs lint clean against their frozen goldens.
+
 ## [2.15.0] — 2026-08-06
 
 ### Added
@@ -1410,7 +1454,8 @@ Initial tagged release. End-to-end one-tier AD CS lab provisioning from scratch 
 ### Deprecated at v0.0.1
 - `ADCS_TOPOLOGY` env var — replaced by `LAB_PROFILE`. The resolver hard-errors with a migration hint if the old var is set without `LAB_PROFILE`.
 
-[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.15.0...HEAD
+[Unreleased]: https://github.com/zakrodriguez/straylight/compare/v2.16.0...HEAD
+[2.16.0]: https://github.com/zakrodriguez/straylight/compare/v2.15.0...v2.16.0
 [2.15.0]: https://github.com/zakrodriguez/straylight/compare/v2.14.0...v2.15.0
 [2.14.0]: https://github.com/zakrodriguez/straylight/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/zakrodriguez/straylight/compare/v2.12.2...v2.13.0
